@@ -1,0 +1,126 @@
+/**
+ * Task and Agent types — mirrors the backend contracts for F2.
+ * Hand-rolled until `ts-rs` exports land; once they do, this file can be
+ * replaced with the generated bindings.
+ */
+
+export type TaskStatus =
+  | 'queued'
+  | 'in_progress'
+  | 'pending_verify'
+  | 'done'
+  | 'paused'
+  | 'blocked'
+  | 'abandoned';
+
+export interface AcceptanceCheck {
+  id: string;
+  text: string;
+  verified: boolean;
+  verified_by?: string;
+}
+
+export interface Lease {
+  holder: string;
+  until: string;
+}
+
+export interface TaskHistoryEvent {
+  at: string;
+  by: string;
+  from: string;
+  to: string;
+}
+
+export interface TaskArtifacts {
+  files: string[];
+  turns: string[];
+  diff?: string;
+}
+
+export interface TaskNotes {
+  why_paused?: string;
+  why_abandoned?: string;
+  feedback?: unknown[];
+}
+
+export interface Task {
+  schema_version: number;
+  id: string;
+  title: string;
+  status: TaskStatus;
+  created_at: string;
+  created_by: string;
+  updated_at: string;
+  updated_by: string;
+  parent?: string;
+  children: string[];
+  blocked_by: string[];
+  unblocks: string[];
+  assignee?: string;
+  claim_lease?: Lease;
+  previous_assignees: string[];
+  labels: string[];
+  acceptance: { checks: AcceptanceCheck[] };
+  artifacts: TaskArtifacts;
+  notes: TaskNotes;
+  history: { events: TaskHistoryEvent[] };
+}
+
+export interface CreateTaskRequest {
+  title: string;
+  parent?: string;
+  depends_on?: string[];
+  acceptance?: { checks: { text: string }[] };
+  labels?: string[];
+  created_by: string;
+}
+
+export interface PatchTaskRequest {
+  title?: string;
+  status?: TaskStatus;
+  assignee?: string | null;
+  labels?: string[];
+  acceptance?: { checks: AcceptanceCheck[] };
+  notes?: TaskNotes;
+  by: 'human' | string;
+}
+
+export interface DeleteTaskRequest {
+  why: string;
+  by: 'human' | string;
+}
+
+export type AgentKind = 'claude' | 'codex' | string;
+
+export interface Agent {
+  id: string;
+  kind: AgentKind;
+  label: string;
+  created_at: string;
+}
+
+export interface CreateAgentRequest {
+  kind: string;
+  label: string;
+}
+
+/** Convenience: status → tone (color category) for badges. */
+export function statusTone(s: TaskStatus): 'neutral' | 'accent' | 'warn' | 'success' | 'danger' {
+  switch (s) {
+    case 'queued':
+      return 'neutral';
+    case 'in_progress':
+      return 'accent';
+    case 'pending_verify':
+      return 'warn';
+    case 'done':
+      return 'success';
+    case 'paused':
+      return 'neutral';
+    case 'blocked':
+      return 'warn';
+    case 'abandoned':
+      return 'danger';
+  }
+}

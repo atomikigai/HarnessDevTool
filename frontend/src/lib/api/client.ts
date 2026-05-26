@@ -122,8 +122,55 @@ export interface CreateSessionResponse {
   session_id: string;
 }
 
+import type {
+  Task,
+  CreateTaskRequest,
+  PatchTaskRequest,
+  DeleteTaskRequest,
+  TaskStatus,
+  Agent,
+  CreateAgentRequest
+} from './models/task';
+
+export interface ListTasksFilters {
+  status?: TaskStatus;
+  label?: string;
+  assignee?: string;
+}
+
 export const api = {
   health: (signal?: AbortSignal) => apiRequest<HealthResponse>('/health', { signal }),
+  agents: {
+    list: (signal?: AbortSignal) => apiRequest<Agent[]>('/agents', { signal }),
+    create: (body: CreateAgentRequest, signal?: AbortSignal) =>
+      apiRequest<Agent>('/agents', { method: 'POST', body, signal })
+  },
+  tasks: {
+    list: (threadId: string, filters: ListTasksFilters = {}, signal?: AbortSignal) => {
+      const qs = new URLSearchParams();
+      if (filters.status) qs.set('status', filters.status);
+      if (filters.label) qs.set('label', filters.label);
+      if (filters.assignee) qs.set('assignee', filters.assignee);
+      const suffix = qs.toString() ? `?${qs.toString()}` : '';
+      return apiRequest<Task[]>(`/threads/${threadId}/tasks${suffix}`, { signal });
+    },
+    get: (threadId: string, taskId: string, signal?: AbortSignal) =>
+      apiRequest<Task>(`/threads/${threadId}/tasks/${taskId}`, { signal }),
+    create: (threadId: string, body: CreateTaskRequest, signal?: AbortSignal) =>
+      apiRequest<Task>(`/threads/${threadId}/tasks`, { method: 'POST', body, signal }),
+    patch: (threadId: string, taskId: string, body: PatchTaskRequest, signal?: AbortSignal) =>
+      apiRequest<Task>(`/threads/${threadId}/tasks/${taskId}`, {
+        method: 'PATCH',
+        body,
+        signal
+      }),
+    remove: (threadId: string, taskId: string, body: DeleteTaskRequest, signal?: AbortSignal) =>
+      apiRequest<null>(`/threads/${threadId}/tasks/${taskId}`, {
+        method: 'DELETE',
+        body,
+        signal
+      })
+  },
   threads: {
     list: (signal?: AbortSignal) => apiRequest<ThreadSummary[]>('/threads', { signal }),
     create: (title?: string, signal?: AbortSignal) =>

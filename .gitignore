@@ -14,5 +14,4 @@ frontend/src/lib/api/types/
 *.log
 .DS_Store
 
-# Design reference folders (live outside repo, copies pulled in by mistake)
-DEVTOOL - GUI*/
+# Design reference folders are tracked (see DEVTOOL - GUI/).

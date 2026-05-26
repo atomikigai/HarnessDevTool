@@ -125,6 +125,50 @@ sources: []
 - **Propuesta**: confiamos en el sandbox del CLI hijo para sus tools. Nuestro `harness-sandbox` envuelve solo lo que el harness-bridge ejecuta directamente (raro: la mayoría son rails read-only).
 - **Decidir en F3**.
 
+### N7 · Implementar módulos SQL y SSH (F4) `[PENDIENTE, F4]`
+Hay diseño UI ya hecho para ambos módulos, vive en `DEVTOOL - GUI/` (gitignored, copia local del usuario):
+- `harness-table-v2.jsx` — vista de tabla virtualizada estilo "paper" con row-detail panel derecho, breadcrumbs sara/public/users, tabs Data/Query/Schema/Relations. Es la referencia para **SQL** (DB Manager).
+- `harness-ssh.jsx` — referencia para **SSH Manager** (FileZilla-style 2-paneles, drag&drop, transfer queue).
+- Screenshots: `screenshots/preview.png` y `paper-interactive.png` muestran SQL en uso.
+
+Lo que falta:
+- **Backend SQL** (crate `module-db`): drivers sqlx para SQLite/Postgres/MySQL; pool por conexión guardada; query runner con pagination + cancel; introspección de schema (DB→tabla→columna); endpoints REST (`GET /api/db/connections`, `POST /api/db/query`, etc) + SSE para streaming de filas grandes.
+- **Backend SSH** (crate `module-ssh`): russh + russh-sftp; gestión de identidades + agente + host keys; cola de transferencias resumable; endpoints REST + SSE para progreso.
+- **Frontend SQL**: ruta `/sql/+page.svelte` con layout 3-col (sidebar conexiones → tablas → tabla virtualizada). Adaptar `harness-table-v2.jsx` a Svelte 5 + Tailwind v4.
+- **Frontend SSH**: ruta `/ssh/+page.svelte` con dos paneles local↔remote, drag&drop, queue panel inferior.
+- **IconRail**: las entradas SQL y SSH están hoy disabled con badge "soon"; habilitarlas cuando el módulo esté listo.
+
+Este es el alcance entero de **F4** (ver `phase-4-modules.md`). Anotado aquí porque ya existe diseño UI listo para arrancar.
+
+### N6 · Llenar los tabs del SessionRightPanel con datos reales `[PENDIENTE, F2.5/F3]`
+El panel derecho de la sesión (`SessionRightPanel.svelte`) tiene 3 tabs y solo el de Tasks lee data parcial. Pendiente:
+
+- **Tasks**: hoy lee de `tasksState` que se suscribe vía SSE solo a la thread seleccionada. Funciona PARCIAL porque la sesión claude actual NO crea tasks vía MCP todavía (espera spawn vía orchestrator F3). **Acción**: verificar que cuando el claude de la sesión llame `mcp__harness__task_create` (cuando exista, hoy solo está `task_list/get/claim/etc`), las nuevas tasks aparezcan en el panel en tiempo real vía el SSE `task.created` que ya existe.
+  - Hay que añadir la tool MCP `task.create` (no está en el set F2; el shard la lista pero la matriz Q9 solo permite create al orchestrator). En F3 cuando el orchestrator exista, esto cierra el loop.
+  - Para sesiones humanas (sin orchestrator), añadir un botón "+ task" en el tab que llame al REST endpoint con `created_by: "human"`.
+
+- **Agents (sub-agentes)**: el tab debe mostrar los agentes paralelos spawneados POR esta sesión claude (no por el harness directamente). Esto requiere:
+  - Que claude pueda llamar a una tool MCP tipo `agent.spawn { role, prompt, ... }` que vaya al harness y arranque una sub-sesión hija marcada con `parent_session_id = <sid>`.
+  - Backend: el shape `SessionMeta` necesita campo opcional `parent_session_id`. El Manager lista hijas vía `list_children(parent_sid)`.
+  - SSE: emitir `subagent.spawned/started/exited` filtrables por `?parent_session=<sid>`.
+  - Frontend: el componente `SessionRightPanel.svelte` tiene markup preparado en el tab Agents (con comentario TODO(F3)) — enchufar al store cuando exista.
+  - **Esto es esencialmente F3 entero** (el orchestrator y sus workers). Solo anotar aquí el requisito de UI: tab debe reflejar live.
+
+- **Info**: hoy muestra metadata estática (id, kind, cwd, status, pid). Faltan:
+  - Token usage real (requiere parseo del output del CLI o tool MCP `session.stats`).
+  - Costo acumulado en USD (idem).
+  - Modelo exacto (claude-3.5-sonnet, claude-opus, etc — derivable del CLI output o de un flag al spawn).
+  - Tiempo total wallclock vs tiempo del modelo.
+  - **Mecanismo**: cuando el CLI hijo expone esto en su output, parsear; alternativa, el harness lleva contadores con base en heartbeats del proceso. Decidir en F3.
+
+### N5 · Adjuntar archivos a las sesiones `[PENDIENTE, F3+]`
+- El footer del SessionMainView tiene un botón clip (icono Paperclip) puesto visualmente pero `disabled`.
+- Hace falta: endpoint backend que acepte multipart (archivos) y los inyecte como contexto al PTY (¿escribir paths en el stdin? ¿exponer un "drop zone" que el agente lea via tool MCP?).
+- **Decidir el mecanismo en F3** (cuando el orchestrator pueda pedir adjuntos como parte de una task). Posibles caminos:
+  - (a) Endpoint `POST /api/sessions/:sid/attach` que copia el archivo a `$HARNESS_HOME/.runtime/attach/<sid>/<name>` y emite SSE `session.attachment` con el path; el agente lo lee del FS.
+  - (b) Endpoint que mete el path como texto en stdin (más sucio; depende del CLI).
+- Habilitar el botón cuando el mecanismo esté claro.
+
 ### N4 · Auth re-login dentro del container `[PENDIENTE]`
 - Si el bind-mount de `~/.claude/` es del host y el CLI hace refresh de token, ¿escribe sobre el host?
 - **Propuesta**: bind-mount RW por default; el container y el host comparten `~/.claude/` literalmente (el host no debe usar `claude` con otra cuenta en paralelo).
@@ -141,9 +185,9 @@ sources: []
 
 ## Estado de cierre
 
-**Resueltas**: Q1, Q6, Q8, Q10, Q12, Q15, Q16, Q17, Q20, N2 (10).
-**Pendientes originales**: Q2, Q3, Q4, Q5, Q7, Q9, Q11, Q13, Q14, Q18, Q19 (11 de 20).
-**Nuevas del cleanup pendientes**: N1, N3, N4 (3).
+**Resueltas**: Q1, Q6, Q7, Q8, Q10, Q12, Q15, Q16, Q17, Q20, N2 (11). Q7 cerrada con spike F2 (claude OK, codex deferred).
+**Pendientes originales**: Q2, Q3, Q4, Q5, Q9, Q11, Q13, Q14, Q18, Q19 (10 de 20).
+**Nuevas pendientes**: N1, N3, N4, N5, N6, N7 (6).
 
-**Total pendiente**: **14** preguntas.
-**Críticas/bloqueantes**: **Q7** (spike al inicio de F2) y **Q9** (antes de F2). F1 ya no tiene blockers.
+**Total pendiente**: **16** preguntas.
+**Críticas/bloqueantes**: **Q9** (matriz roles × tools, antes de F3 — propuesta ya en chat, falta confirmar y persistir aquí).

@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<title>Harness GUI — Paleta de colores</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #0a0a0d; color: #e6e6e6; font-family: ui-sans-serif, system-ui, sans-serif; height: 100%; }
+  body { overflow: hidden; }
+  #root { width: 100%; height: 100vh; }
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Inter:wght@400;500;600&display=swap');
+</style>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel" src="design-canvas.jsx"></script>
+<script type="text/babel" src="themes.jsx"></script>
+<script type="text/babel" src="harness-table.jsx"></script>
+
+<script type="text/babel">
+const { useState } = React;
+
+function App() {
+  const themes = window.HARNESS_THEMES;
+  const HarnessGUI = window.HarnessGUI;
+
+  // Build artboards programmatically — 1920x1080 each
+  const boards = [
+    { id: 'signal', label: '01 · Signal — conservador, preserva el teal de marca + matices sutiles por tipo', theme: themes.signal },
+    { id: 'syntax', label: '02 · Syntax — vibrante, cada tipo de dato con su propio color (estilo editor)', theme: themes.syntax },
+    { id: 'warmth', label: '03 · Warmth — cálido gruvbox, menos fatiga visual en sesiones largas', theme: themes.warmth },
+    { id: 'paper',  label: '04 · Paper — modo claro, máxima legibilidad diurna', theme: themes.paper  },
+  ];
+
+  const hybrids = [
+    { id: 'linen', label: '05 · Linen — Paper × Warmth: papel crema, tinta sepia, acento terracota', theme: themes.linen },
+    { id: 'mocha', label: '06 · Mocha — Warmth refinado: base espresso, ámbar saturado, mayor contraste', theme: themes.mocha },
+  ];
+
+  return (
+    <DesignCanvas
+      title="Harness GUI — Exploración de paleta"
+      subtitle="4 direcciones para hacer la tabla más visual y escaneable. Pruebas con la pantalla users."
+    >
+      <DCSection id="palettes" title="Paletas de color">
+        {boards.map(b => (
+          <DCArtboard
+            key={b.id}
+            id={b.id}
+            label={b.label}
+            width={1920}
+            height={1080}
+          >
+            <HarnessGUI theme={b.theme} />
+          </DCArtboard>
+        ))}
+      </DCSection>
+
+      <DCSection id="hybrids" title="Híbridos · iteración a partir de Paper + Warmth" subtitle="Combinaciones nuevas a partir de las dos favoritas">
+        {hybrids.map(b => (
+          <DCArtboard
+            key={b.id}
+            id={b.id}
+            label={b.label}
+            width={1920}
+            height={1080}
+          >
+            <HarnessGUI theme={b.theme} />
+          </DCArtboard>
+        ))}
+      </DCSection>
+    </DesignCanvas>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>

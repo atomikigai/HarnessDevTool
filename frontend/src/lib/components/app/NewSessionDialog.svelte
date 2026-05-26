@@ -19,9 +19,18 @@
     open: boolean;
     /** Optional existing thread to attach the session to. */
     threadId?: string | null;
+    /**
+     * Called after the session is created with the new ids. When provided,
+     * the dialog does NOT navigate away — the caller is expected to update
+     * its own selection (e.g. the redesigned Agents view). When omitted,
+     * the dialog falls back to navigating to the dedicated session route
+     * so existing callers (e.g. the rail's "+" button outside this view)
+     * keep their behaviour.
+     */
+    onCreated?: (info: { threadId: string; sessionId: string }) => void;
   }
 
-  let { open = $bindable(false), threadId = null }: Props = $props();
+  let { open = $bindable(false), threadId = null, onCreated }: Props = $props();
 
   let kind = $state<SessionKind>('claude');
   let cwd = $state<string>('');
@@ -52,7 +61,11 @@
       });
       open = false;
       reset();
-      await goto(`/threads/${tid}/sessions/${res.data.session_id}`);
+      if (onCreated) {
+        onCreated({ threadId: tid, sessionId: res.data.session_id });
+      } else {
+        await goto(`/threads/${tid}/sessions/${res.data.session_id}`);
+      }
     } catch (err) {
       if (err instanceof ApiError) {
         const body = err.body as { error?: string; install_hint?: string } | undefined;

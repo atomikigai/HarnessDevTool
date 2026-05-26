@@ -1,185 +1,229 @@
+<!--
+  Agents view — root page of the harness UI.
+
+  Layout (left to right):
+    [ IconRail (rendered by +layout.svelte) ]
+    [ SessionsColumn        — middle column, list of sessions      ]
+    [ SessionMainView       — terminal + chrome + footer prompt    ]
+    [ SessionRightPanel     — Tasks / Agents / Info tabs           ]
+
+  The page also carries the "Dashboard" subheader above the three columns
+  (per the redesign brief). The connection chip lives in the top bar; the
+  Protocol/Refresh controls live here because they belong to this view.
+-->
 <script lang="ts">
-  import {
-    Card,
-    CardHeader,
-    CardTitle,
-    CardDescription,
-    CardContent
-  } from '$lib/components/ui/card';
+  import { onMount, onDestroy } from 'svelte';
   import { Button } from '$lib/components/ui/button';
-  import {
-    Activity,
-    CircleAlert,
-    CircleCheck,
-    RefreshCw,
-    Loader2,
-    Plus,
-    Terminal,
-    ListChecks,
-    Bot
-  } from '$lib/icons';
+  import { CircleCheck, CircleAlert, Loader2, RefreshCw } from '$lib/icons';
+  import SessionsColumn from '$lib/components/app/SessionsColumn.svelte';
+  import SessionMainView from '$lib/components/app/SessionMainView.svelte';
+  import SessionRightPanel from '$lib/components/app/SessionRightPanel.svelte';
   import NewSessionDialog from '$lib/components/app/NewSessionDialog.svelte';
   import { health } from '$lib/stores/health.svelte';
   import { sessionsState } from '$lib/stores/session.svelte';
+  import { tasksState } from '$lib/stores/tasks.svelte';
+  import { taskProgress } from '$lib/sessionDisplay';
+  import type { SessionMeta } from '$lib/api/client';
 
-  let newSessionOpen = $state(false);
+  // ── Local UI state ────────────────────────────────────────────────────────
+  let selectedSessionId = $state<string | null>(null);
+  let collapsed = $state(false);
+  let newDialogOpen = $state(false);
+  let lastActiveIds = new Set<string>();
 
-  // The TopBar owns the polling cadence; this page just reads the store
-  // and offers a manual refresh button.
+  // ── Derived ───────────────────────────────────────────────────────────────
+  // Build a flat session list from the live `sessionsState.threads`. We show
+  // both running and exited sessions so the user can review history; the UI
+  // status helper colors them appropriately.
+  const allSessions = $derived.by<SessionMeta[]>(() => {
+    const out: SessionMeta[] = [];
+    for (const t of sessionsState.threads) {
+      if (Array.isArray(t.sessions)) {
+        for (const s of t.sessions) out.push(s);
+      }
+    }
+    // Newest first — `started_at` is ISO so lexical sort works.
+    out.sort((a, b) => (a.started_at < b.started_at ? 1 : -1));
+    return out;
+  });
+
+  const selectedSession = $derived<SessionMeta | null>(
+    selectedSessionId ? (allSessions.find((s) => s.id === selectedSessionId) ?? null) : null
+  );
+
+  // Per-thread task progress — only computed for the currently-selected
+  // thread (the tasks SSE only subscribes to one thread at a time). All
+  // other threads show "—/—" until F3 wires a multi-thread progress store.
+  const progressByThread = $derived.by<Record<string, ReturnType<typeof taskProgress>>>(() => {
+    const map: Record<string, ReturnType<typeof taskProgress>> = {};
+    if (tasksState.threadId) {
+      map[tasksState.threadId] = taskProgress(tasksState.items);
+    }
+    return map;
+  });
+
+  // ── Effects ───────────────────────────────────────────────────────────────
+  // Auto-select the first session once data lands. Also auto-select any
+  // newly-created session (so the New-session modal "feels" connected even
+  // though it navigates away today).
+  $effect(() => {
+    if (!sessionsState.loaded) return;
+    if (allSessions.length === 0) {
+      selectedSessionId = null;
+      return;
+    }
+    if (!selectedSessionId || !allSessions.some((s) => s.id === selectedSessionId)) {
+      selectedSessionId = allSessions[0].id;
+    }
+  });
+
+  // Detect freshly-spawned sessions and auto-select them.
+  $effect(() => {
+    const ids = new Set(allSessions.map((s) => s.id));
+    for (const id of ids) {
+      if (!lastActiveIds.has(id) && lastActiveIds.size > 0) {
+        selectedSessionId = id;
+        break;
+      }
+    }
+    lastActiveIds = ids;
+  });
+
+  // Drive the tasks store from the selected session's thread.
+  $effect(() => {
+    const tid = selectedSession?.thread_id ?? null;
+    if (tid) {
+      tasksState.start(tid);
+    } else {
+      tasksState.stop();
+    }
+  });
+
+  // ── Polling ───────────────────────────────────────────────────────────────
+  // The IconRail also polls sessions, but it may be unmounted later (when the
+  // user navigates to a different route). Keeping a dedicated poller here
+  // makes the home page self-sufficient.
+  const POLL_MS = 5_000;
+  let timer: ReturnType<typeof setInterval> | null = null;
+  let controller: AbortController | null = null;
+
+  function refreshSessions() {
+    controller?.abort();
+    controller = new AbortController();
+    sessionsState.refresh(controller.signal);
+  }
+
+  onMount(() => {
+    refreshSessions();
+    timer = setInterval(refreshSessions, POLL_MS);
+  });
+
+  onDestroy(() => {
+    if (timer) clearInterval(timer);
+    controller?.abort();
+    tasksState.stop();
+  });
+
+  function onSelect(id: string) {
+    selectedSessionId = id;
+  }
+
+  function onNew() {
+    newDialogOpen = true;
+  }
+
+  function onToggleCollapsed() {
+    collapsed = !collapsed;
+  }
+
+  async function onSessionKilled() {
+    // Refresh the list so the killed session updates its status badge.
+    refreshSessions();
+  }
+
+  async function onSessionReplaced(newId: string) {
+    refreshSessions();
+    selectedSessionId = newId;
+  }
 </script>
 
-<div class="h-full overflow-y-auto">
-  <div class="mx-auto flex max-w-5xl flex-col gap-6 p-8">
-    <header class="flex items-start justify-between gap-4">
-      <div>
-        <h1 class="text-3xl font-medium tracking-tight">Dashboard</h1>
-        <p class="mt-1 text-sm" style="color: var(--fg-muted);">
-          Backend health, active sessions, and shell wiring.
-        </p>
-      </div>
-      <div class="flex items-center gap-2">
-        {#if health.protocolVersion}
-          <span
-            class="inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium"
-            style="border-color: var(--accent-soft-border); background: var(--accent-soft); color: var(--accent);"
-            title="X-Protocol-Version header from backend"
-          >
-            <CircleCheck class="h-3.5 w-3.5" />
-            Protocol v{health.protocolVersion}
-          </span>
-        {:else}
-          <span
-            class="inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium"
-            style="border-color: var(--border-subtle); background: var(--surface-panel); color: var(--fg-muted);"
-          >
-            <CircleAlert class="h-3.5 w-3.5" />
-            Protocol unknown
-          </span>
-        {/if}
-        <Button
-          variant="outline"
-          size="sm"
-          onclick={() => health.refresh()}
-          disabled={health.state === 'connecting'}
+<div class="flex h-full min-h-0 flex-col">
+  <!-- Dashboard subheader -->
+  <header
+    class="flex h-14 shrink-0 items-center justify-between gap-4 border-b px-5"
+    style="background: var(--surface-window); border-color: var(--border-subtle);"
+  >
+    <div>
+      <h1 class="font-serif text-xl font-semibold tracking-tight" style="color: var(--fg-default);">
+        Dashboard
+      </h1>
+      <p class="text-xs" style="color: var(--fg-muted);">
+        Backend health, active sessions, and shell wiring.
+      </p>
+    </div>
+    <div class="flex items-center gap-2">
+      {#if health.protocolVersion}
+        <span
+          class="inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-[11px] font-medium"
+          style="
+            border-color: var(--accent-soft-border);
+            background: var(--accent-soft);
+            color: var(--accent);
+          "
+          title="X-Protocol-Version header from backend"
         >
-          {#if health.state === 'connecting'}
-            <Loader2 class="h-4 w-4 animate-spin" />
-          {:else}
-            <RefreshCw class="h-4 w-4" />
-          {/if}
-          Refresh
-        </Button>
-      </div>
-    </header>
-
-    <Card>
-      <CardHeader>
-        <CardTitle class="flex items-center gap-2 font-sans text-base font-semibold">
-          <Terminal class="h-4 w-4" style="color: var(--fg-muted);" />
-          Sessions
-          {#if sessionsState.active.length > 0}
-            <span
-              class="ml-1 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider"
-              style="background: var(--accent-soft); color: var(--accent);"
-            >
-              {sessionsState.active.length} running
-            </span>
-          {/if}
-        </CardTitle>
-        <CardDescription>Launch a claude or codex CLI inside a managed PTY.</CardDescription>
-      </CardHeader>
-      <CardContent class="flex flex-col gap-4">
-        <Button onclick={() => (newSessionOpen = true)} class="self-start">
-          <Plus class="h-4 w-4" />
-          New session
-        </Button>
-        {#if sessionsState.threads.length > 0}
-          <div class="flex flex-col gap-1.5">
-            <span class="h-eyebrow">Threads</span>
-            <ul class="flex flex-col gap-1">
-              {#each sessionsState.threads as t (t.id)}
-                <li
-                  class="flex items-center justify-between gap-3 rounded-md border px-3 py-1.5 text-sm"
-                  style="border-color: var(--border-subtle); background: var(--surface-window);"
-                >
-                  <span class="font-mono text-xs" style="color: var(--fg-muted);" title={t.id}>
-                    {t.id.slice(0, 8)}
-                  </span>
-                  <span class="flex-1 truncate" style="color: var(--fg-default);">
-                    {t.title ?? '(untitled)'}
-                  </span>
-                  <a
-                    href={`/threads/${t.id}/tasks`}
-                    class="inline-flex items-center gap-1 rounded px-2 py-0.5 text-[11px]"
-                    style="background: var(--accent-soft); color: var(--accent);"
-                  >
-                    <ListChecks class="h-3 w-3" /> Tasks
-                  </a>
-                </li>
-              {/each}
-            </ul>
-          </div>
-        {/if}
-        <a
-          href="/agents"
-          class="inline-flex items-center gap-1.5 self-start text-xs hover:underline"
-          style="color: var(--fg-muted);"
+          <CircleCheck class="h-3 w-3" />
+          Protocol v{health.protocolVersion}
+        </span>
+      {:else}
+        <span
+          class="inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-[11px] font-medium"
+          style="
+            border-color: var(--border-subtle);
+            background: var(--surface-panel);
+            color: var(--fg-muted);
+          "
         >
-          <Bot class="h-3 w-3" /> Agents registry →
-        </a>
-      </CardContent>
-    </Card>
-
-    <Card>
-      <CardHeader>
-        <CardTitle class="flex items-center gap-2 font-sans text-base font-semibold">
-          <Activity class="h-4 w-4" style="color: var(--fg-muted);" />
-          Backend
-        </CardTitle>
-        <CardDescription>GET /api/health, refreshed every 10s.</CardDescription>
-      </CardHeader>
-      <CardContent>
-        {#if health.error && !health.data}
-          <div
-            class="flex items-start gap-3 rounded-md border px-4 py-3 text-sm"
-            style="border-color: color-mix(in srgb, var(--dot-danger) 35%, transparent); background: color-mix(in srgb, var(--dot-danger) 10%, transparent); color: var(--dot-danger);"
-          >
-            <CircleAlert class="mt-0.5 h-4 w-4" />
-            <div>
-              <p class="font-medium">Backend unreachable</p>
-              <p class="mt-0.5 text-xs" style="color: var(--fg-muted);">{health.error}</p>
-            </div>
-          </div>
-        {:else if !health.data}
-          <div class="flex items-center gap-2 text-sm" style="color: var(--fg-muted);">
-            <Loader2 class="h-4 w-4 animate-spin" />
-            Loading…
-          </div>
+          <CircleAlert class="h-3 w-3" />
+          Protocol unknown
+        </span>
+      {/if}
+      <Button
+        variant="outline"
+        size="sm"
+        onclick={() => health.refresh()}
+        disabled={health.state === 'connecting'}
+      >
+        {#if health.state === 'connecting'}
+          <Loader2 class="h-3.5 w-3.5 animate-spin" />
         {:else}
-          <dl class="grid gap-4 sm:grid-cols-2">
-            <div>
-              <dt class="h-eyebrow">Backend version</dt>
-              <dd class="mt-1 font-mono text-lg">{health.data.version}</dd>
-            </div>
-            <div>
-              <dt class="h-eyebrow">Uptime</dt>
-              <dd class="mt-1 font-mono text-lg">{health.data.uptime_s}s</dd>
-            </div>
-          </dl>
-          {#if health.error}
-            <p class="mt-3 text-xs" style="color: var(--dot-warn);">
-              Last refresh failed: {health.error}
-            </p>
-          {/if}
-          {#if health.lastUpdated}
-            <p class="mt-3 text-xs" style="color: var(--fg-muted);">
-              Updated {health.lastUpdated.toLocaleTimeString()}
-            </p>
-          {/if}
+          <RefreshCw class="h-3.5 w-3.5" />
         {/if}
-      </CardContent>
-    </Card>
+        Refresh
+      </Button>
+    </div>
+  </header>
+
+  <!-- Three-column body -->
+  <div class="flex min-h-0 flex-1">
+    <SessionsColumn
+      sessions={allSessions}
+      {selectedSessionId}
+      {onSelect}
+      {onNew}
+      {collapsed}
+      {onToggleCollapsed}
+      {progressByThread}
+    />
+    <SessionMainView session={selectedSession} {onSessionReplaced} {onSessionKilled} />
+    <SessionRightPanel session={selectedSession} />
   </div>
 </div>
 
-<NewSessionDialog bind:open={newSessionOpen} />
+<NewSessionDialog
+  bind:open={newDialogOpen}
+  onCreated={({ sessionId }) => {
+    refreshSessions();
+    selectedSessionId = sessionId;
+  }}
+/>

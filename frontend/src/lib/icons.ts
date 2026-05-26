@@ -32,5 +32,8 @@ export {
   User,
   Link2,
   AlertTriangle,
-  Network
+  Network,
+  Paperclip,
+  RotateCcw,
+  Send
 } from 'lucide-svelte';

@@ -1,4 +1,5 @@
 //! State machine transitions per lessons-learned §D2.
+#![allow(clippy::collapsible_match)]
 
 use super::model::{Task, TaskStatus};
 use crate::Error;

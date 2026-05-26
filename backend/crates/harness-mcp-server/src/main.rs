@@ -16,7 +16,6 @@ use tracing::{debug, error, info};
 
 mod dispatcher;
 mod protocol;
-mod tasks_shim;
 mod tools;
 
 use crate::dispatcher::Dispatcher;

@@ -4,9 +4,9 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
-use crate::tasks_shim::{
-    Artifacts, ClaimResult, ListFilters, TaskError, TaskPatch, TaskStore,
-};
+use std::str::FromStr;
+
+use harness_core::{Artifacts, ClaimResult, ListFilters, TaskPatch, TaskStatus, TaskStore};
 
 fn str_arg<'a>(args: &'a Value, key: &str) -> Result<&'a str, String> {
     args.get(key)
@@ -18,14 +18,18 @@ fn opt_str<'a>(args: &'a Value, key: &str) -> Option<&'a str> {
     args.get(key).and_then(|v| v.as_str())
 }
 
-fn map_err(e: TaskError) -> String {
+fn map_err(e: harness_core::Error) -> String {
     e.to_string()
 }
 
 pub fn list(store: &TaskStore, default_thread: &str, args: &Value) -> Result<Value, String> {
     let thread_id = opt_str(args, "thread_id").unwrap_or(default_thread);
+    let status = match opt_str(args, "status") {
+        Some(s) => Some(TaskStatus::from_str(s).map_err(|e| format!("bad status: {e}"))?),
+        None => None,
+    };
     let filters = ListFilters {
-        status: opt_str(args, "status").map(String::from),
+        status,
         label: opt_str(args, "label").map(String::from),
         assignee: opt_str(args, "assignee").map(String::from),
     };

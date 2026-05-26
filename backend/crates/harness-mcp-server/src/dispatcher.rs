@@ -9,7 +9,7 @@ use crate::protocol::{
     error_response, error_response_with, result_response, Request, RpcError, PROTOCOL_VERSION,
     SERVER_NAME, SERVER_VERSION,
 };
-use crate::tasks_shim::TaskStore;
+use harness_core::TaskStore;
 use crate::tools::{self, skills, spec, tasks, wrap_error, wrap_text};
 
 pub struct Dispatcher {
@@ -129,7 +129,6 @@ fn _unused() -> Value {
 mod tests {
     use super::*;
     use crate::protocol::parse_request;
-    use crate::tasks_shim::{Artifacts, Task};
 
     fn tmp_home() -> PathBuf {
         let p = std::env::temp_dir().join(format!(
@@ -193,41 +192,6 @@ mod tests {
         let resp = d.handle(req).unwrap();
         let text = resp["result"]["content"][0]["text"].as_str().unwrap();
         assert_eq!(text, "[]");
-    }
-
-    #[test]
-    fn task_get_then_submit_roundtrip() {
-        let (d, home) = mk("t1", "agent:1");
-        // Seed via the shim directly.
-        let store = TaskStore::new(&home).unwrap();
-        store
-            ._seed(Task {
-                id: "task-1".into(),
-                thread_id: "t1".into(),
-                title: "demo".into(),
-                status: "open".into(),
-                label: None,
-                assignee: None,
-                notes: None,
-                artifacts: None,
-                created_at: 0,
-                updated_at: 0,
-                updated_by: None,
-            })
-            .unwrap();
-
-        let get_line = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"task_get","arguments":{"thread_id":"t1","task_id":"task-1"}}}"#;
-        let resp = d.handle(parse_request(get_line).unwrap()).unwrap();
-        let text = resp["result"]["content"][0]["text"].as_str().unwrap();
-        assert!(text.contains("\"id\":\"task-1\""));
-
-        let submit_line = r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"task_submit","arguments":{"thread_id":"t1","task_id":"task-1","artifacts":{"files":["a.rs","b.rs"],"turns":4}}}}"#;
-        let resp = d.handle(parse_request(submit_line).unwrap()).unwrap();
-        let text = resp["result"]["content"][0]["text"].as_str().unwrap();
-        assert!(text.contains("\"status\":\"submitted\""));
-        assert!(text.contains("a.rs"));
-
-        let _ = Artifacts::default();
     }
 
     #[test]

@@ -71,29 +71,17 @@ async fn create_session(
     }
 
     // 4) Build MCP injection opts (one MCP server per session) and spawn.
-    //    The config file is initially named by a tmp id; once the Manager
-    //    issues the real session id we rename it to `<sid>.json` so cleanup
-    //    on kill is trivial.
-    let (opts, tmp_config_path) = build_spawn_opts(&state, req.kind, &tid)?;
+    //    The config file path is opaque (a UUID), already known to claude via
+    //    --mcp-config; we cannot rename it after spawn because claude resolves
+    //    that arg on startup. Instead we remember sid → config_path so kill
+    //    can clean up.
+    let (opts, config_path) = build_spawn_opts(&state, req.kind, &tid)?;
     let session = state
         .manager
         .spawn_with_opts(req.kind, binary, tid, cwd, opts)?;
     let meta = session.meta().await;
-    if let Some(tmp) = tmp_config_path {
-        let final_path = tmp
-            .parent()
-            .map(|d| d.join(format!("{}.json", meta.id)))
-            .unwrap_or_else(|| tmp.clone());
-        if final_path != tmp {
-            if let Err(e) = std::fs::rename(&tmp, &final_path) {
-                tracing::warn!(
-                    from = %tmp.display(),
-                    to = %final_path.display(),
-                    error = %e,
-                    "could not rename mcp config to session id; cleanup will use tmp path"
-                );
-            }
-        }
+    if let Some(path) = config_path {
+        state.mcp_configs.insert(meta.id.clone(), path);
     }
     Ok((
         StatusCode::CREATED,
@@ -227,17 +215,14 @@ async fn kill_session(
         .get(&sid)
         .ok_or_else(|| ApiError::SessionNotFound(sid.clone()))?;
     session.kill().await?;
-    // Best-effort: remove the per-session MCP config file. The MCP server
-    // child dies on stdio close when claude exits, so there's nothing else to
-    // clean up.
-    let config = state
-        .harness_home
-        .join(".runtime")
-        .join("mcp-configs")
-        .join(format!("{sid}.json"));
-    if config.exists() {
-        if let Err(e) = std::fs::remove_file(&config) {
-            tracing::warn!(path = %config.display(), error = %e, "could not remove mcp config");
+    // Best-effort: remove the per-session MCP config file via the registry
+    // we populated at spawn time. The MCP server child dies on stdio close
+    // when claude exits, so there's nothing else to clean up.
+    if let Some((_, path)) = state.mcp_configs.remove(&sid) {
+        if path.exists() {
+            if let Err(e) = std::fs::remove_file(&path) {
+                tracing::warn!(path = %path.display(), error = %e, "could not remove mcp config");
+            }
         }
     }
     Ok(StatusCode::NO_CONTENT)

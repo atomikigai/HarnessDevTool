@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::Result;
+use dashmap::DashMap;
 use harness_core::{AgentsRegistry, Scheduler, Store, TaskStore};
 use harness_session::{AgentKind, Manager};
 use tokio::sync::broadcast;
@@ -27,6 +28,10 @@ pub struct AppState {
     /// Path to the `harness-mcp-server` binary used by the bridge. `None` if
     /// it could not be located; spawn then proceeds without MCP injection.
     pub mcp_server_binary: Option<PathBuf>,
+    /// Per-session MCP config file paths, kept for cleanup on session kill.
+    /// Keyed by session id; the file lives at `<harness_home>/.runtime/mcp-configs/<id>.json`
+    /// where `<id>` is a UUID we generate at config-write time (NOT the session id).
+    pub mcp_configs: DashMap<String, PathBuf>,
     pub start_time: Instant,
     pub version: &'static str,
     pub tick_tx: broadcast::Sender<String>,
@@ -55,6 +60,7 @@ impl AppState {
             binaries,
             harness_home: cfg.home.clone(),
             mcp_server_binary,
+            mcp_configs: DashMap::new(),
             start_time: Instant::now(),
             version: env!("CARGO_PKG_VERSION"),
             tick_tx,

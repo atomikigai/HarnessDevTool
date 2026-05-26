@@ -576,6 +576,7 @@ dependencies = [
  "base64",
  "bytes",
  "chrono",
+ "dashmap",
  "dirs",
  "futures",
  "harness-core",

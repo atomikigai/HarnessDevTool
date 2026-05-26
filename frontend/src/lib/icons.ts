@@ -17,5 +17,20 @@ export {
   X,
   Square,
   ChevronLeft,
-  Circle
+  ChevronRight,
+  Circle,
+  ListChecks,
+  Pause,
+  Play,
+  CheckCircle2,
+  XCircle,
+  Trash2,
+  Edit3,
+  GitBranch,
+  Clock,
+  Tag,
+  User,
+  Link2,
+  AlertTriangle,
+  Network
 } from 'lucide-svelte';

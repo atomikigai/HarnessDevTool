@@ -11,11 +11,19 @@ default = []
 ts-export = ["dep:ts-rs"]
 
 [dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
 serde = { workspace = true }
 serde_json = { workspace = true }
-uuid = { workspace = true }
-chrono = { workspace = true }
-ts-rs = { workspace = true, optional = true }
-thiserror = { workspace = true }
-tracing = { workspace = true }
 tokio = { workspace = true }
+tracing = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+toml_edit.workspace = true
+rusqlite.workspace = true
+fs2.workspace = true
+schemars.workspace = true
+ts-rs = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile = "3"

@@ -4,17 +4,20 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::Result;
-use harness_core::Store;
+use harness_core::{AgentsRegistry, Scheduler, Store, TaskStore};
 use harness_session::{AgentKind, Manager};
 use tokio::sync::broadcast;
 
 use crate::config::Config;
 
 /// Shared application state.
-#[derive(Debug)]
 pub struct AppState {
     pub store: Arc<Store>,
     pub manager: Arc<Manager>,
+    pub tasks: Arc<TaskStore>,
+    pub agents: Arc<AgentsRegistry>,
+    #[allow(dead_code)]
+    pub scheduler: Arc<Scheduler>,
     /// Detected absolute paths for agent CLIs. Missing entries mean the binary
     /// was not on `PATH` at boot; spawn attempts for those kinds return 400.
     pub binaries: HashMap<AgentKind, PathBuf>,
@@ -34,12 +37,21 @@ impl AppState {
         let store = Arc::new(Store::new(&cfg.home)?);
         let sessions_root = cfg.home.join("profiles").join("default").join("sessions");
         let manager = Arc::new(Manager::new(sessions_root)?);
+        let task_store = TaskStore::new(&cfg.home)?;
+        // Scheduler takes the store by value; we hand it a clone so AppState
+        // can also expose it through `tasks`.
+        let scheduler = Arc::new(Scheduler::spawn(task_store.clone()));
+        let tasks = Arc::new(task_store);
+        let agents = Arc::new(AgentsRegistry::new(&cfg.home)?);
         let binaries = detect_binaries();
         let mcp_server_binary = detect_mcp_server_binary();
         let (tick_tx, _) = broadcast::channel(64);
         Ok(Self {
             store,
             manager,
+            tasks,
+            agents,
+            scheduler,
             binaries,
             harness_home: cfg.home.clone(),
             mcp_server_binary,

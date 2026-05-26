@@ -36,11 +36,11 @@ async fn events(
     Query(q): Query<EventsQuery>,
 ) -> Sse<Box<dyn Stream<Item = Result<SseEvent, Infallible>> + Send + Unpin>> {
     let stream: Box<dyn Stream<Item = Result<SseEvent, Infallible>> + Send + Unpin> =
-        match q.session {
-            Some(sid) => Box::new(Box::pin(session_stream(state, sid))),
-            None => {
+        match (q.session, q.thread) {
+            (Some(sid), _) => Box::new(Box::pin(session_stream(state, sid))),
+            (None, Some(tid)) => Box::new(Box::pin(thread_stream(state, tid))),
+            (None, None) => {
                 // Legacy F0 behavior: forward the 5s tick channel as-is.
-                let _ = q.thread;
                 let rx = state.tick_tx.subscribe();
                 let s = BroadcastStream::new(rx).filter_map(|res| async move {
                     match res {
@@ -57,6 +57,30 @@ async fn events(
             .interval(Duration::from_secs(15))
             .text("keep-alive"),
     )
+}
+
+/// Stream for `?thread=<tid>` (no session): forwards task events for the
+/// thread as named SSE events.
+fn thread_stream(
+    state: Arc<AppState>,
+    tid: String,
+) -> impl Stream<Item = Result<SseEvent, Infallible>> + Send {
+    let rx = state.tasks.subscribe(&tid);
+    BroadcastStream::new(rx).filter_map(|res| async move {
+        let ev = match res {
+            Ok(ev) => ev,
+            Err(_lag) => return None,
+        };
+        let kind = match &ev {
+            harness_core::TaskEvent::Created { .. } => "task.created",
+            harness_core::TaskEvent::Changed { .. } => "task.changed",
+            harness_core::TaskEvent::Updated { .. } => "task.updated",
+            harness_core::TaskEvent::Ready { .. } => "task.ready",
+            harness_core::TaskEvent::LeaseExpired { .. } => "task.lease-expired",
+        };
+        let data = serde_json::to_string(&ev).unwrap_or_else(|_| "{}".into());
+        Some(Ok(SseEvent::default().event(kind).data(data)))
+    })
 }
 
 /// Stream for `?session=<sid>`:

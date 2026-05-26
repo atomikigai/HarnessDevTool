@@ -17,7 +17,11 @@ pub enum ApiError {
     BinaryNotFound { kind: AgentKind, hint: String },
     #[error("bad request: {0}")]
     BadRequest(String),
+    #[error(transparent)]
+    Core(#[from] harness_core::Error),
 }
+
+pub type ApiResult<T> = std::result::Result<T, ApiError>;
 
 impl From<harness_core::StoreError> for ApiError {
     fn from(e: harness_core::StoreError) -> Self {
@@ -63,6 +67,19 @@ impl IntoResponse for ApiError {
             ),
             ApiError::BadRequest(m) => {
                 (StatusCode::BAD_REQUEST, Json(json!({ "error": m.clone() })))
+            }
+            ApiError::Core(e) => {
+                let (code, msg) = match e {
+                    harness_core::Error::NotFound(_) => (StatusCode::NOT_FOUND, e.to_string()),
+                    harness_core::Error::InvalidTransition { .. } => {
+                        (StatusCode::CONFLICT, e.to_string())
+                    }
+                    harness_core::Error::Busy { .. } => (StatusCode::CONFLICT, e.to_string()),
+                    harness_core::Error::Validation(_) => (StatusCode::BAD_REQUEST, e.to_string()),
+                    harness_core::Error::LeaseNotHeld(_) => (StatusCode::FORBIDDEN, e.to_string()),
+                    _ => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+                };
+                return (code, Json(json!({ "error": msg }))).into_response();
             }
         };
         (status, body).into_response()

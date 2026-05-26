@@ -1,0 +1,14 @@
+node_modules
+.svelte-kit
+build
+.env
+.env.*
+!.env.example
+.DS_Store
+*.log
+vite.config.js.timestamp-*
+vite.config.ts.timestamp-*
+
+# ts-rs generated types (regenerable from backend)
+src/lib/api/types/*
+!src/lib/api/types/.gitkeep

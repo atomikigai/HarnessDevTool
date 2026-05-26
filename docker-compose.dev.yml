@@ -1,0 +1,60 @@
+# Dev stack with hot-reload.
+# Uses lightweight base images and mounts source code as volumes so we don't
+# rebuild the production images on every change. Cargo/pnpm caches live in
+# named volumes to keep restarts fast.
+services:
+  backend:
+    image: rust:1-bookworm
+    container_name: harness-backend-dev
+    working_dir: /app
+    command: >
+      bash -lc "
+        rustup component add rustfmt clippy >/dev/null 2>&1 || true;
+        cargo install cargo-watch --locked >/dev/null 2>&1 || true;
+        cargo watch -x 'run -p harness-server'
+      "
+    ports:
+      - "${BACKEND_PORT:-7777}:7777"
+    environment:
+      HARNESS_HOME: /data
+      RUST_LOG: ${RUST_LOG:-debug}
+      CARGO_HOME: /cargo
+    volumes:
+      - ./backend:/app
+      - ${HARNESS_HOME:-~/.harness}:/data
+      - backend-cargo:/cargo
+      - backend-target:/app/target
+    networks:
+      - harness
+
+  frontend:
+    image: node:20-bookworm
+    container_name: harness-frontend-dev
+    working_dir: /app
+    command: >
+      bash -lc "
+        corepack enable && corepack prepare pnpm@latest --activate;
+        pnpm install --frozen-lockfile || pnpm install;
+        pnpm dev --host 0.0.0.0 --port 5173
+      "
+    ports:
+      - "5173:5173"
+    environment:
+      PUBLIC_API_BASE: http://localhost:${BACKEND_PORT:-7777}/api
+      NODE_ENV: development
+    volumes:
+      - ./frontend:/app
+      - frontend-node-modules:/app/node_modules
+    depends_on:
+      - backend
+    networks:
+      - harness
+
+networks:
+  harness:
+    driver: bridge
+
+volumes:
+  backend-cargo:
+  backend-target:
+  frontend-node-modules:

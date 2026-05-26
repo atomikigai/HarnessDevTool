@@ -1,0 +1,15 @@
+# Rust
+backend/target/
+backend/bindings/
+
+# Node
+frontend/node_modules/
+frontend/.svelte-kit/
+frontend/build/
+frontend/src/lib/api/types/
+
+# Runtime / local
+.env
+.env.local
+*.log
+.DS_Store

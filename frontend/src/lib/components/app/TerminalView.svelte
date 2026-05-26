@@ -15,9 +15,16 @@
   interface Props {
     threadId: string;
     sessionId: string;
+    /**
+     * When true, the component renders only the xterm canvas — the small
+     * header (session-id + connection state + kill button) is suppressed
+     * because an outer panel already provides that chrome. Used by
+     * SessionMainView in the redesigned Agents view.
+     */
+    embedded?: boolean;
   }
 
-  let { threadId, sessionId }: Props = $props();
+  let { threadId, sessionId, embedded = false }: Props = $props();
 
   let containerEl: HTMLDivElement | null = $state(null);
   let term: Terminal | null = null;
@@ -233,43 +240,51 @@
 </script>
 
 <div class="flex h-full w-full flex-col" style="background: #0b1220;">
-  <div
-    class="flex items-center justify-between border-b px-3 py-1.5"
-    style="background: var(--surface-panel); border-color: var(--border-subtle);"
-  >
-    <div class="flex items-center gap-2 text-xs" style="color: var(--fg-muted);">
-      <span class="font-mono">{sessionId.slice(0, 8)}</span>
-      {#if connState === 'open'}
-        <span
-          class="inline-flex items-center gap-1.5 text-[10px]"
-          style="color: var(--dot-success);"
-        >
-          <span class="h-dot h-dot--ok"></span>
-          live
-        </span>
-      {:else if connState === 'connecting' || connState === 'reconnecting'}
-        <span class="inline-flex items-center gap-1.5 text-[10px]" style="color: var(--dot-warn);">
-          <span class="h-dot h-dot--warn"></span>
-          {connState}
-        </span>
-      {:else}
-        <span class="inline-flex items-center gap-1.5 text-[10px]" style="color: var(--fg-muted);">
-          <span class="h-dot"></span>
-          closed
-        </span>
-      {/if}
-    </div>
-    <Button
-      variant="outline"
-      size="sm"
-      onclick={onKill}
-      disabled={killed || exited}
-      title="Send SIGTERM and remove the session"
-      class="!text-[var(--dot-danger)] !border-[color-mix(in_srgb,var(--dot-danger)_35%,transparent)] hover:!bg-[color-mix(in_srgb,var(--dot-danger)_10%,transparent)]"
+  {#if !embedded}
+    <div
+      class="flex items-center justify-between border-b px-3 py-1.5"
+      style="background: var(--surface-panel); border-color: var(--border-subtle);"
     >
-      <Square class="h-3.5 w-3.5" />
-      Kill
-    </Button>
-  </div>
+      <div class="flex items-center gap-2 text-xs" style="color: var(--fg-muted);">
+        <span class="font-mono">{sessionId.slice(0, 8)}</span>
+        {#if connState === 'open'}
+          <span
+            class="inline-flex items-center gap-1.5 text-[10px]"
+            style="color: var(--dot-success);"
+          >
+            <span class="h-dot h-dot--ok"></span>
+            live
+          </span>
+        {:else if connState === 'connecting' || connState === 'reconnecting'}
+          <span
+            class="inline-flex items-center gap-1.5 text-[10px]"
+            style="color: var(--dot-warn);"
+          >
+            <span class="h-dot h-dot--warn"></span>
+            {connState}
+          </span>
+        {:else}
+          <span
+            class="inline-flex items-center gap-1.5 text-[10px]"
+            style="color: var(--fg-muted);"
+          >
+            <span class="h-dot"></span>
+            closed
+          </span>
+        {/if}
+      </div>
+      <Button
+        variant="outline"
+        size="sm"
+        onclick={onKill}
+        disabled={killed || exited}
+        title="Send SIGTERM and remove the session"
+        class="!text-[var(--dot-danger)] !border-[color-mix(in_srgb,var(--dot-danger)_35%,transparent)] hover:!bg-[color-mix(in_srgb,var(--dot-danger)_10%,transparent)]"
+      >
+        <Square class="h-3.5 w-3.5" />
+        Kill
+      </Button>
+    </div>
+  {/if}
   <div bind:this={containerEl} class="min-h-0 flex-1 overflow-hidden"></div>
 </div>

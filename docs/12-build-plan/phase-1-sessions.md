@@ -11,7 +11,7 @@ sources: []
 # F1 — Sesiones
 
 ## Meta
-Que el usuario haga clic en "New session" en la UI, elija `claude` o `codex`, vea el binario arrancando en un xterm.js, pueda escribir input y vea la respuesta del modelo en streaming. **Una sola sesión a la vez**, sin tareas, sin MCP.
+Que el usuario haga clic en "New session" en la UI, elija `claude`, `codex` o `cursor`, vea el binario arrancando en un xterm.js, pueda escribir input y vea la respuesta del modelo en streaming. **Múltiples sesiones simultáneas permitidas** (multi-tab), sin tareas, sin MCP.
 
 ## Entregables
 
@@ -19,7 +19,8 @@ Que el usuario haga clic en "New session" en la UI, elija `claude` o `codex`, ve
 - [ ] Crate **`harness-session`**:
   - [ ] Wrapper sobre `portable-pty`.
   - [ ] `Manager { sessions: DashMap<SessionId, AgentSession> }`.
-  - [ ] `spawn(kind: Claude | Codex, cwd, args[])` → `SessionId`.
+  - [ ] `spawn(kind: Claude | Codex | Cursor, cwd, args[])` → `SessionId`.
+  - [ ] Args por kind incluyen el **bypass del approval interno** del CLI (ej. `claude --dangerously-skip-permissions`, equivalentes en `codex`/`cursor`). Centralizado en `spawn_args_for(kind)`.
   - [ ] `input(id, bytes)`, `resize(id, cols, rows)`, `kill(id, signal)`.
   - [ ] Reader task que empuja bytes del PTY a un `EventSink`.
   - [ ] Cleanup: drop de sesión kill el child + cancela tasks.
@@ -31,8 +32,12 @@ Que el usuario haga clic en "New session" en la UI, elija `claude` o `codex`, ve
   - [ ] `DELETE /api/sessions/:sid`.
   - [ ] SSE `/api/events?thread=:id&session=:sid` emite `session.output { seq, b64data }`.
 - [ ] Detección de binarios:
-  - [ ] `which claude` / `which codex` al arrancar; cachear path.
+  - [ ] `which claude` / `which codex` / `which cursor` al arrancar; cachear path.
   - [ ] Si no existen, endpoint devuelve error con mensaje claro y comandos de instalación sugeridos.
+- [ ] **AGENTS.md del proyecto** (Q2 resuelta):
+  - [ ] Endpoint `POST /api/threads/:id/workdirs { paths: [...] }` para pasar explícitamente las carpetas locales a usar.
+  - [ ] Endpoint `POST /api/threads/:id/agents-config/spawn` que arranca un agente dedicado "config-AGENTS" para que ayude al usuario a armar/actualizar el `AGENTS.md`.
+  - [ ] Fallback secundario: si `working_dir` está dentro de un git root con `AGENTS.md`, hacer snapshot.
 - [ ] Persistencia del output:
   - [ ] `~/.harness/profiles/<p>/sessions/<sid>/output.log` (raw bytes, rotación a 50 MiB).
 
@@ -42,8 +47,10 @@ Que el usuario haga clic en "New session" en la UI, elija `claude` o `codex`, ve
   volumes:
     - /usr/local/bin/claude:/usr/local/bin/claude:ro
     - /usr/local/bin/codex:/usr/local/bin/codex:ro
+    - /usr/local/bin/cursor:/usr/local/bin/cursor:ro
     - ${HOME}/.claude:/root/.claude:rw
     - ${HOME}/.codex:/root/.codex:rw
+    - ${HOME}/.cursor:/root/.cursor:rw
     - ./.harness-data:/data
   ```
 - [ ] Verificar que el binario monto se ejecuta dentro del container distroless. Si requiere libs dinámicas → switchear backend a `debian:slim`.
@@ -56,7 +63,8 @@ Que el usuario haga clic en "New session" en la UI, elija `claude` o `codex`, ve
   - [ ] Resize observer → debounce 100ms → POST `/sessions/:sid/resize`.
   - [ ] Botón "Kill".
 - [ ] Sidebar muestra sesiones activas (badge contador).
-- [ ] Modal "New session" desde dashboard / thread view: select `claude` | `codex`, optional cwd.
+- [ ] **Multi-tab**: cada sesión activa abre una pestaña; el usuario puede tener varias visibles/conmutables.
+- [ ] Modal "New session" desde dashboard / thread view: select `claude` | `codex` | `cursor`, optional cwd, optional rutas locales adicionales (Q2).
 
 ## Test de aceptación
 
@@ -69,7 +77,6 @@ Que el usuario haga clic en "New session" en la UI, elija `claude` o `codex`, ve
 
 ## Lo que NO está en F1
 
-- Múltiples sesiones simultáneas en una sola UI (lista sí, vista activa una).
 - Coordinación entre sesiones (F3).
 - MCP bridge (F2).
 - Persistencia de "qué hizo el modelo" como Items estructurados — solo se guarda el PTY raw.
@@ -83,3 +90,9 @@ Que el usuario haga clic en "New session" en la UI, elija `claude` o `codex`, ve
 ## Decisiones a confirmar
 - ¿Soportar Windows en F1 o esperar a F6? Recomiendo **esperar**: ConPTY + bind-mount cross-OS es scope creep.
 - ¿Permitir cambiar `cwd` al spawn? Sí, default a `$HOME` dentro del container; usuario puede sobre-escribir.
+
+## Decisiones ya tomadas (ref `decisions-locked`)
+- CLIs soportados: `claude`, `codex`, `cursor` (cerrado).
+- Múltiples sesiones simultáneas: **sí desde F1**.
+- Bypass del approval interno del CLI hijo: **sí**, control de seguridad vive en el harness.
+- `AGENTS.md`: agente "config-AGENTS" + API explícita de rutas locales.

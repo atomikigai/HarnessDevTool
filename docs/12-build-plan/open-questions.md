@@ -17,10 +17,12 @@ sources: []
 ### Q1 · Identidad/profile activo `[RESUELTA]`
 → Profile activo es **global del backend**, resuelto vía symlink `~/.harness/active_profile` + env `HARNESS_PROFILE`. Cambio de profile en UI dispara symlink update + restart suave. Ver [[cross-cutting/profiles]] y [[build-plan/decisions-locked]].
 
-### Q2 · `AGENTS.md` snapshot del proyecto del usuario `[PENDIENTE]`
-- Cuando el thread tiene `working_dir = /home/me/proj/myapp`, ¿cómo encuentra el harness el `AGENTS.md`?
-- **Propuesta**: subir desde `working_dir` buscando git root; si existe `<git-root>/AGENTS.md`, snapshot. Si no, fallback a `~/AGENTS.md` global del usuario. Si tampoco, vacío.
-- **Decisión requerida antes de F1**.
+### Q2 · `AGENTS.md` snapshot del proyecto del usuario `[RESUELTA]`
+→ Dos caminos complementarios desde F1:
+1. **Agente "config-AGENTS"**: el usuario puede lanzar un agente dedicado que arme/actualice el `AGENTS.md` con los repos que vaya a trabajar en ese momento.
+2. **API/UI de rutas locales**: una función explícita para pasar al thread las rutas de las carpetas locales a usar (sin depender de auto-discovery).
+
+El fallback automático (git root → `<git-root>/AGENTS.md`) queda como conveniencia secundaria. Ver [[build-plan/decisions-locked]] → "Comportamiento del harness".
 
 ### Q3 · Correlación de logs cross-process `[PENDIENTE]`
 - El `harness-server` loggea con `tracing`. El `claude`/`codex` hijo escribe a su PTY. ¿Cómo correlacionamos?
@@ -29,13 +31,11 @@ sources: []
 
 ## F1 — Sesiones
 
-### Q4 · Múltiples sesiones simultáneas en UI desde F1 `[PENDIENTE]`
-- ¿Permitimos lista + tabs desde F1 o esperamos a F3?
-- **Propuesta**: F1 = lista en sidebar muestra activas pero vista activa **una sola** a la vez. Multi-tab en F3 cuando el equipo lo necesita.
+### Q4 · Múltiples sesiones simultáneas en UI desde F1 `[RESUELTA]`
+→ Se permiten **múltiples sesiones simultáneas desde F1** (lista en sidebar + multi-tab). No esperamos a F3.
 
-### Q5 · CLIs desconocidos (no `claude` ni `codex`) `[PENDIENTE]`
-- ¿Soportamos otros (aider, cursor-cli)?
-- **Propuesta**: F1 hardcodea dos opciones. F4+ generaliza con `agent_kind: "custom"` + plantilla del usuario.
+### Q5 · CLIs desconocidos (no `claude` ni `codex`) `[RESUELTA]`
+→ Conjunto cerrado de CLIs soportados: **`claude`, `codex`, `cursor`**. No se soportan otros (aider, etc.) en el roadmap actual; `agent_kind: "custom"` queda descartado por ahora.
 
 ### Q6 · Persistencia del PTY raw `[RESUELTA]`
 → 50 MiB con rotación zstd. Documentado en [[agents/spawn-lifecycle]].
@@ -115,10 +115,13 @@ sources: []
 - `claude` admite `--append-system-prompt` y `--system-prompt`. `codex` por confirmar.
 - **Spike en F1** junto con Q7.
 
-### N3 · Sandbox de las tools que el CLI ejecuta `[PENDIENTE]`
-- `claude` tiene su propio sandbox/approval para `shell.exec`. ¿Necesitamos sandbox adicional desde el harness?
-- **Propuesta**: confiamos en el sandbox del CLI hijo para sus tools. Nuestro `harness-sandbox` envuelve solo lo que el harness-bridge ejecuta directamente (raro: la mayoría son rails read-only).
-- **Decidir en F3**.
+### N3 · Sandbox de las tools que el CLI ejecuta `[RESUELTA]`
+→ Los CLIs hijos (`claude`, `codex`, `cursor`) se arrancan con **bypass de su sistema interno de permissions/approval** (ej. `claude --dangerously-skip-permissions` o equivalente por CLI). El control de seguridad vive en el harness:
+- `harness-sandbox` envuelve lo que ejecuta directamente el harness-bridge.
+- Los rails MCP del harness deciden qué tools del bridge están expuestas al CLI.
+- El bind-mount del workspace y la red del container son el perímetro real.
+
+Asumimos que el usuario corre el harness en un entorno de confianza (single-user local self-host).
 
 ### N4 · Auth re-login dentro del container `[PENDIENTE]`
 - Si el bind-mount de `~/.claude/` es del host y el CLI hace refresh de token, ¿escribe sobre el host?
@@ -136,9 +139,9 @@ sources: []
 
 ## Estado de cierre
 
-**Resueltas**: Q1, Q6, Q8, Q10, Q12, Q15, Q16, Q17, Q20 (9 de 20 originales).
-**Pendientes originales**: Q2, Q3, Q4, Q5, Q7, Q9, Q11, Q13, Q14, Q18, Q19 (11 de 20).
-**Nuevas del cleanup**: N1, N2, N3, N4 (4).
+**Resueltas**: Q1, Q2, Q4, Q5, Q6, Q8, Q10, Q12, Q15, Q16, Q17, Q20 (12 de 20 originales).
+**Pendientes originales**: Q3, Q7, Q9, Q11, Q13, Q14, Q18, Q19 (8 de 20).
+**Nuevas del cleanup**: N1, N2, N4 pendientes; N3 resuelta.
 
-**Total pendiente**: **15** preguntas.
+**Total pendiente**: **11** preguntas.
 **Críticas/bloqueantes**: **Q7 + N2** (spike F1) y **Q9** (antes de F2).

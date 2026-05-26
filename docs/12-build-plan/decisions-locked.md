@@ -64,6 +64,10 @@ sources: []
 | Budget hard cap default | **$10 USD por thread** (dev); configurable | seguridad económica |
 | `skills.search` antes de F5 | **devuelve `[]`** | no rompe agentes que ya la usen |
 | Roundtripability | **Test obligatorio desde F0** | export → import → resume sin pérdida |
+| CLIs soportados | **`claude`, `codex`, `cursor`** (conjunto cerrado) | Foco; sin `agent_kind: "custom"` por ahora |
+| Permissions del CLI hijo | **Bypass del approval interno** (`--dangerously-skip-permissions` o equivalente) | El control vive en `harness-sandbox` + rails MCP del bridge |
+| Múltiples sesiones simultáneas en UI | **Sí desde F1** (lista + multi-tab) | Necesario para flujo real desde el día 1 |
+| `AGENTS.md` del proyecto | **(a) agente "config-AGENTS" + (b) función para pasar rutas locales** explícitas | Control del usuario sobre qué repos entran al contexto |
 
 ## Estética
 

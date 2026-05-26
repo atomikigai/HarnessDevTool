@@ -52,10 +52,11 @@ Implementar la máquina de tareas como en [[foundations/lessons-learned]] §D y 
     - `spec.read` { thread_id, scope? }
     - `skills.search` { query, top_k }   // devuelve [] hasta F5
   - [ ] Cada tool valida params, llama al core, devuelve resultado MCP.
-- [ ] El `harness-session::Manager` al hacer `spawn(claude, ...)`:
+- [ ] El `harness-session::Manager` al hacer `spawn(claude|codex|cursor, ...)`:
   - [ ] Lanza el MCP server como child del child (o como peer process).
-  - [ ] Inyecta `--mcp-config` al `claude` con un JSON apuntando al socket/stdin.
+  - [ ] Inyecta `--mcp-config` al CLI con un JSON apuntando al socket/stdin.
   - [ ] Esto requiere **un MCP server por sesión** (o uno compartido con auth por session token).
+  - [ ] **Bypass de permissions del CLI hijo**: el CLI se arranca con su flag de skip-approval (ej. `claude --dangerously-skip-permissions`), de modo que las tools MCP que el harness expone se ejecutan sin prompts del CLI. El control vive en `harness-sandbox` + el set de tools que el bridge decide registrar (ver [[build-plan/decisions-locked]] → "Permissions del CLI hijo").
 
 ### Backend — scheduler básico
 - [ ] Loop background: cada 2s recoge tasks `queued` con `blocked_by∅` y notifica vía SSE (no asigna automáticamente; en F2 el humano dispara los workers).

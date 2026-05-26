@@ -1,0 +1,100 @@
+---
+id: build-plan/phase-4-modules
+title: F4 — Módulos verticales (DB + SSH)
+shard: 12-build-plan
+tags: [phase, f4, modules, db, ssh]
+summary: DB lite y SSH/SFTP usables por el humano y como tools por los agentes.
+related: [build-plan/phase-3-team, module-db-manager/overview, module-ssh-manager/overview]
+sources: []
+---
+
+# F4 — Módulos verticales
+
+## Meta
+Habilitar **dos módulos verticales** que el usuario usa directamente desde la UI y que también exponen **tools** a los agentes vía el MCP server. Esto evita gastar tokens en operaciones puramente humanas (browsear una DB) pero permite al equipo invocarlas cuando aplican.
+
+## Entregables — Module DB
+
+### Backend (`module-db`)
+- [ ] Crate `module-db` con `sqlx` features `sqlite` (default), `postgres`, `mysql` (opt-in).
+- [ ] Schemas en `harness-core/schemas/db.connection.v1.json`.
+- [ ] Storage `~/.harness/profiles/<p>/modules/db/connections.db` (SQLite con conexiones guardadas; passwords en keyring).
+- [ ] `Manager` con `AnyPool` (SQLite | Postgres | MySQL).
+- [ ] Operaciones:
+  - [ ] `connection.list/add/remove/test`.
+  - [ ] `schema.tree` (introspección).
+  - [ ] `query.run` (paginado), `query.cancel`, `export`.
+- [ ] Tools MCP:
+  - [ ] `db.query { connection, sql, params?, limit? }`.
+  - [ ] `db.schema { connection, scope? }`.
+  - [ ] `db.explain { connection, sql }`.
+
+### Frontend
+- [ ] Ruta `/db` → lista de conexiones + botón Add.
+- [ ] Ruta `/db/[conn]` → árbol de schema (sidebar) + tabs Editor SQL / Browser tabla.
+- [ ] Componente `<SqlEditor>` (CodeMirror 6 + `@codemirror/lang-sql`).
+- [ ] `<ResultTable>` con TanStack Virtual.
+- [ ] Form "Add connection" con valibot (URL parsing, sslmode, etc.).
+
+### Test de aceptación DB
+1. Add SQLite local (`/data/test.db`).
+2. Schema tree muestra tablas existentes.
+3. Editor SQL: `SELECT * FROM users LIMIT 10` → 10 filas pintadas en <500 ms.
+4. Cancelar una query lenta → backend confirma cancel.
+5. Desde una sesión `claude` activa, el agente llama `db.query` y recibe resultado JSON.
+
+## Entregables — Module SSH
+
+### Backend (`module-ssh`)
+- [ ] Crate `module-ssh` con `russh` + `russh-sftp` + `russh-keys`.
+- [ ] Storage `~/.harness/profiles/<p>/modules/ssh/{identities.db, known_hosts}`.
+- [ ] Operaciones:
+  - [ ] `host.list/add/remove/test`.
+  - [ ] `session.open/close`.
+  - [ ] `sftp.list/mkdir/rmdir/unlink/rename`.
+  - [ ] `transfer.queue/pause/resume/cancel` con resume.
+  - [ ] `ssh.exec` (no interactivo).
+- [ ] Verificación de host keys con TOFU + warning fuerte si cambia.
+- [ ] Tools MCP:
+  - [ ] `ssh.exec { host, cmd, env? }` (con approval por default).
+  - [ ] `sftp.list { host, path }`.
+  - [ ] `sftp.put / sftp.get`.
+
+### Frontend
+- [ ] Ruta `/ssh` → lista de hosts.
+- [ ] Ruta `/ssh/[host]` → dos paneles (local / remote) + cola de transferencias abajo.
+- [ ] `<FilePane>` con virtual list.
+- [ ] `<TransferQueue>` con progreso por archivo.
+- [ ] Drag & drop entre paneles → encolar.
+
+### Test de aceptación SSH
+1. Add host con key file → test OK.
+2. Listar carpeta remota → contenido visible <2s.
+3. Subir archivo 100 MiB → progreso, velocidad, ETA → completa.
+4. Cancelar mitad de transferencia → resume continúa desde offset correcto.
+5. Desde `claude` en sesión: `sftp.list` devuelve entries; approval pedido para `ssh.exec`.
+
+## Entregables — Approval-and-remember
+
+- [ ] Mecanismo de [[harness-core/approval-flow]] §"Allow and remember".
+- [ ] Persistencia en `~/.harness/profiles/<p>/policy.toml` con reglas `<tool, args-pattern> → allow`.
+- [ ] UI: modal de approval con checkbox "Remember this decision for similar calls".
+- [ ] Auditoría: cada regla guarda `created_at`, `created_by`, hash de args.
+
+## Lo que NO está en F4
+- Migraciones DDL desde UI (solo SELECT + ejecución SQL libre).
+- Terminal SSH interactiva (xterm.js sobre SSH channel) — pospuesto.
+- Diagrama ER, query builder visual.
+- Sync entre DBs.
+- Multi-hop SSH (ProxyJump) avanzado.
+
+## Riesgos
+- **DB drivers en distroless**: `sqlx-sqlite` necesita `libsqlite3` o `sqlite-bundled`. Compilar con bundled para evitar libs externas.
+- **Cancelación de queries MySQL**: requiere conexión auxiliar; cuidado con pool starvation.
+- **TLS de Postgres**: certs montados como volumen o env var. Documentar bien.
+- **SSH key passphrase**: si la key está protegida, pedir passphrase la primera vez y guardar en keyring.
+- **SSH host key changes**: comportamiento agresivo (block) vs permissivo (warn) — elegir block + UI clara.
+
+## Decisiones a confirmar
+- ¿Default DB engines compilados en imagen Docker? **Solo SQLite**; postgres/mysql como features → el usuario rebuilda si los necesita.
+- ¿Aprobaciones de `ssh.exec`/`db.query` automáticas para queries `SELECT` y `LIST`? Recomiendo **sí** para read-only; **no** para write/exec.

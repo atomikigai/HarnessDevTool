@@ -1,0 +1,117 @@
+# HarnessDevTool — Documentación Shardeada
+
+> Índice maestro. Cada entrada apunta a un **shard** corto (un archivo, un concepto). Los shards usan frontmatter YAML para que un LLM pueda filtrar por `id`, `tags`, `shard` (grupo) o `related`. Lee primero [[meta/shard-format]] para entender la convención.
+
+## Cómo navegar
+- **Por ID**: cada shard tiene un `id` único tipo `harness-core/agent-loop`. Busca por id exacto.
+- **Por tag**: filtra el frontmatter por etiquetas (`rust`, `ipc`, `sveltekit`, `sandbox`, ...).
+- **Por grupo**: los directorios numerados (`01-foundations`, `02-architecture`, ...) agrupan por dominio.
+- **Cross-refs**: enlaces `[[id]]` apuntan a otros shards. Sigue el grafo, no leas todo.
+
+## Grupos
+
+### 00 · Meta
+- [[meta/shard-format]] — Convención de frontmatter y enlaces.
+- [[meta/conventions]] — Estilo de redacción, nombres, idioma.
+- [[meta/glossary]] — Términos: harness, turn, item, thread, sandbox, surface.
+
+### 01 · Fundamentos (qué es un harness y por qué)
+- [[foundations/harness-concept]] — Definición y motivación.
+- [[foundations/anthropic-principles]] — GAN-inspired tri-agent, context anxiety, evaluator bias.
+- [[foundations/openai-codex-architecture]] — Codex core en Rust, App Server, JSON-RPC.
+- [[foundations/lessons-learned]] — **Síntesis prescriptiva** OpenAI + Anthropic → este repo. Empezar aquí si vienes nuevo al "porqué".
+- [[foundations/design-tradeoffs]] — Cuándo simplificar; qué componente es "load-bearing".
+
+> **Vista visual**: `docs/architecture.html` — diagrama en HTML del sistema completo (abrir en navegador).
+
+### 02 · Arquitectura del sistema
+- [[architecture/system-overview]] — Diagrama: surfaces → App Server → harness core → herramientas.
+- [[architecture/layered-architecture]] — Capas y responsabilidades.
+- [[architecture/process-model]] — Procesos, hilos, child processes.
+- [[architecture/ipc-protocol]] — JSON-RPC sobre stdio (JSONL).
+- [[architecture/state-persistence]] — Disco, thread history, resume/fork.
+
+### 03 · Harness Core (Rust)
+- [[harness-core/rust-crate-layout]] — Workspace Cargo, crates internos.
+- [[harness-core/agent-loop]] — Bucle: prompt → modelo → tool calls → repetir.
+- [[harness-core/thread-lifecycle]] — create / resume / fork / archive.
+- [[harness-core/turn-and-item-primitives]] — Unidad de trabajo y de I/O.
+- [[harness-core/prompt-construction]] — Orden estricto para caché.
+- [[harness-core/prompt-caching]] — Prefix caching, qué invalida.
+- [[harness-core/context-compaction]] — Auto-compact y reset.
+- [[harness-core/tool-execution]] — FuturesOrdered, paralelismo.
+- [[harness-core/sandbox]] — Permisos de escritura, FS jails.
+- [[harness-core/mcp-integration]] — Servidores MCP externos.
+- [[harness-core/approval-flow]] — `approval_request`, allow/deny.
+- [[harness-core/streaming-events]] — SSE / item delta.
+- [[harness-core/auth-and-config]] — `~/.harness/config.toml`, claves.
+
+### 04 · App Server (broker JSON-RPC)
+- [[app-server/overview]] — Por qué un proceso largo dedicado.
+- [[app-server/jsonrpc-transport]] — Stdio bidireccional, JSONL.
+- [[app-server/message-processor]] — Traduce JSON-RPC → core ops.
+- [[app-server/backward-compat]] — Versionado de mensajes.
+- [[app-server/web-deployment]] — HTTP+SSE para clientes web.
+
+### 05 · Frontend Shell (SvelteKit)
+- [[frontend-shell/tech-stack]] — SvelteKit + Tauri + Tailwind.
+- [[frontend-shell/sveltekit-integration]] — Cómo habla con el App Server.
+- [[frontend-shell/tauri-vs-app-server]] — Cuándo embebes binario vs lo lanzas como child.
+- [[frontend-shell/event-stream-ui]] — Render incremental de items.
+- [[frontend-shell/state-store]] — Stores Svelte ↔ thread state.
+- [[frontend-shell/routing-shell]] — Sidebar: Agentes / DB / SSH.
+
+### 06 · Módulo Agentes (Claude CLI)
+- [[module-agents/overview]] — Qué hace el módulo.
+- [[module-agents/claude-cli-bootstrap]] — Detectar/instalar/lanzar `claude`.
+- [[module-agents/session-pty]] — PTY en Rust (`portable-pty`).
+- [[module-agents/multi-agent]] — Varias sesiones en paralelo.
+
+### 07 · Módulo DB Manager (lite)
+- [[module-db-manager/overview]] — Alcance: SQLite, Postgres, MySQL.
+- [[module-db-manager/supported-engines]] — Drivers Rust (sqlx).
+- [[module-db-manager/connection-pool]] — Pool por conexión guardada.
+- [[module-db-manager/query-runner]] — Ejecutar / paginar / cancelar.
+- [[module-db-manager/schema-introspection]] — Árbol DB → tabla → columna.
+- [[module-db-manager/sveltekit-views]] — Tabla virtualizada, editor SQL.
+
+### 08 · Módulo SSH Manager (FileZilla-style)
+- [[module-ssh-manager/overview]] — Alcance: SSH + SFTP.
+- [[module-ssh-manager/ssh-backend]] — `russh` / `russh-sftp`.
+- [[module-ssh-manager/sftp-transfer]] — Cola de transferencias, resumable.
+- [[module-ssh-manager/sessions-and-keys]] — Identidades, agente, host keys.
+- [[module-ssh-manager/sveltekit-views]] — Dos paneles, drag&drop.
+- [[module-ssh-manager/transfer-queue]] — Estado, progreso, retry.
+
+### 09 · Cross-cutting
+- [[cross-cutting/logging-tracing]] — `tracing`, spans por turn.
+- [[cross-cutting/error-model]] — `thiserror` + códigos JSON-RPC.
+- [[cross-cutting/config-files]] — Layout en disco.
+- [[cross-cutting/security-model]] — Sandbox, secretos, host keys.
+- [[cross-cutting/testing-strategy]] — Unit, integration, eval.
+- [[cross-cutting/telemetry]] — Métricas opt-in.
+
+### 10 · Recetas
+- [[recipes/bootstrap-new-tool]] — Cómo añadir un módulo nuevo.
+- [[recipes/add-mcp-server]] — Conectar un MCP server.
+- [[recipes/add-frontend-route]] — Nueva vista SvelteKit.
+
+### 11 · Referencias
+- [[references/sources]] — URLs fuente con notas.
+- [[references/rust-crates]] — Crates externos recomendados.
+- [[references/file-tree]] — Layout sugerido del repo.
+
+### 12 · Plan de construcción (vivo) ⭐
+- [[build-plan/overview]] — F0–F6, criterios de "done".
+- [[build-plan/tech-stack-locked]] — Stack final (Axum · SvelteKit · ts-rs · valibot · Justfile · Docker).
+- [[build-plan/repo-layout]] — Estructura definitiva del repo.
+- [[build-plan/phase-0-skeleton]] — Server arranca, persiste, sirve shell.
+- [[build-plan/phase-1-sessions]] — PTY de claude/codex visible en UI.
+- [[build-plan/phase-2-tasks-mcp]] — Máquina de tareas + MCP bridge.
+- [[build-plan/phase-3-team]] — Planner/Generator/Evaluator + budget + sandbox.
+- [[build-plan/phase-4-modules]] — DB Manager + SSH Manager.
+- [[build-plan/phase-5-skills]] — Skills + Learner (proposed) + Curator determinístico + FTS5.
+- [[build-plan/phase-6-polish]] — Curator LLM + GEPA + USER.md + packaging.
+- [[build-plan/decisions-locked]] — Decisiones fijadas (no re-abrir sin justificación).
+- [[build-plan/open-questions]] — Preguntas abiertas por fase, lo siguiente a aclarar.
+- [[build-plan/risks]] — Matriz de riesgos con mitigaciones.

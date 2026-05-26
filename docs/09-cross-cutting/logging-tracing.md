@@ -1,0 +1,46 @@
+---
+id: cross-cutting/logging-tracing
+title: Logging y tracing
+shard: 09-cross-cutting
+tags: [logging, tracing, observability]
+summary: `tracing` con spans jerárquicos thread > turn > tool.exec.
+related: [cross-cutting/telemetry, harness-core/agent-loop]
+sources: []
+---
+
+# Logging y tracing
+
+## Stack
+- `tracing` + `tracing-subscriber` + `tracing-appender` (rotación diaria).
+- Salida: `~/.harness/logs/harness.log` por defecto; JSON formatter para parseo.
+- Nivel runtime configurable: `RUST_LOG=harness_core=debug,sqlx=warn`.
+
+## Spans jerárquicos
+
+```
+session
+└── thread.run (thread_id)
+    └── turn.run (turn_id)
+        ├── prompt.build (prefix_hash, segments)
+        ├── llm.stream  (provider, model, tokens_in, tokens_out, cost)
+        └── tool.exec (name, args_hash, duration, exit)
+            └── sandbox.enforce (level, denials)
+```
+
+Cada span lleva atributos estables para correlación.
+
+## Reglas
+- **Stdout es sagrado**: en el App Server, `tracing` va a stderr o file. Stdout es exclusivo para JSON-RPC.
+- **No loggear secretos**: el prompt builder sustituye `{{secret:*}}` antes de loggear el prompt completo.
+- **Spans cortos**: nada de spans abiertos por horas; cerrar al terminar la operación.
+- **Nivel correcto**: `info` para eventos de negocio (turn iniciado), `debug` para detalle interno, `trace` para datos crudos.
+
+## Métricas como atributos
+En vez de exporters dedicados (v1), las métricas viven como atributos del span:
+- `turn.run` ⇒ `iterations`, `tokens_in`, `tokens_out`, `cost_usd`, `cache_hit_rate`.
+- `tool.exec` ⇒ `duration_ms`, `bytes_in`, `bytes_out`.
+
+Un parser CLI (`harness stats --since 1d`) agrega del log JSON.
+
+## UI debug
+Atajo `Cmd/Ctrl+Shift+D` abre panel con últimos 100 spans del thread activo en tiempo real.

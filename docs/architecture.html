@@ -1,0 +1,453 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>HarnessDevTool — Arquitectura</title>
+<style>
+  :root {
+    --bg: #0f1419;
+    --panel: #1a2030;
+    --panel-2: #232b3e;
+    --border: #2d3748;
+    --text: #e2e8f0;
+    --muted: #94a3b8;
+    --accent: #f59e0b;
+    --surface: #60a5fa;
+    --transport: #a78bfa;
+    --core: #34d399;
+    --service: #f472b6;
+    --module: #fbbf24;
+    --platform: #64748b;
+    --flow: #fb923c;
+    --note: #fde68a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 32px;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif;
+    font-size: 14px;
+    line-height: 1.5;
+  }
+  h1 {
+    margin: 0 0 8px;
+    font-size: 28px;
+    font-weight: 700;
+  }
+  h1 .sub {
+    color: var(--muted);
+    font-weight: 400;
+    font-size: 16px;
+  }
+  .lead {
+    color: var(--muted);
+    max-width: 880px;
+    margin-bottom: 32px;
+  }
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+    padding: 12px 16px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    margin-bottom: 24px;
+  }
+  .legend .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+  }
+  .dot {
+    width: 12px;
+    height: 12px;
+    border-radius: 3px;
+    display: inline-block;
+  }
+  .arch {
+    display: flex;
+    flex-direction: column;
+    gap: 22px;
+  }
+  .layer {
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--panel);
+    padding: 16px 20px;
+    position: relative;
+  }
+  .layer-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    margin-bottom: 12px;
+  }
+  .layer-title {
+    font-weight: 700;
+    font-size: 15px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+  .layer-num {
+    font-size: 12px;
+    color: var(--muted);
+    font-family: ui-monospace, Menlo, monospace;
+  }
+  .layer-desc {
+    color: var(--muted);
+    font-size: 12.5px;
+    margin-bottom: 14px;
+  }
+  .row {
+    display: grid;
+    gap: 12px;
+  }
+  .row.cols-2 { grid-template-columns: repeat(2, 1fr); }
+  .row.cols-3 { grid-template-columns: repeat(3, 1fr); }
+  .row.cols-4 { grid-template-columns: repeat(4, 1fr); }
+  .box {
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-left: 4px solid var(--platform);
+    padding: 12px 14px;
+    border-radius: 6px;
+    font-size: 13px;
+  }
+  .box .name {
+    font-weight: 600;
+    font-family: ui-monospace, Menlo, monospace;
+    font-size: 13px;
+    color: var(--text);
+    margin-bottom: 4px;
+  }
+  .box .meta {
+    color: var(--muted);
+    font-size: 12px;
+  }
+  .box.surface  { border-left-color: var(--surface); }
+  .box.transport{ border-left-color: var(--transport); }
+  .box.core     { border-left-color: var(--core); }
+  .box.service  { border-left-color: var(--service); }
+  .box.module   { border-left-color: var(--module); }
+
+  .arrow {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--flow);
+    font-family: ui-monospace, Menlo, monospace;
+    font-size: 11px;
+    position: relative;
+    height: 22px;
+  }
+  .arrow::before, .arrow::after {
+    content: "";
+    flex: 1;
+    border-top: 1px dashed var(--flow);
+    opacity: 0.55;
+  }
+  .arrow span {
+    padding: 0 12px;
+    background: var(--bg);
+    color: var(--flow);
+    white-space: nowrap;
+  }
+  .note {
+    background: rgba(253, 230, 138, 0.06);
+    border: 1px solid rgba(253, 230, 138, 0.25);
+    color: var(--note);
+    padding: 10px 12px;
+    border-radius: 6px;
+    font-size: 12.5px;
+    margin-top: 10px;
+  }
+  .note b { color: #fef3c7; }
+
+  .flow-section {
+    margin-top: 40px;
+    padding: 20px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+  }
+  .flow-section h2 {
+    margin: 0 0 16px;
+    font-size: 18px;
+  }
+  .steps {
+    counter-reset: step;
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 10px;
+  }
+  .step {
+    counter-increment: step;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    padding: 10px 12px 10px 40px;
+    border-radius: 6px;
+    position: relative;
+    font-size: 13px;
+  }
+  .step::before {
+    content: counter(step);
+    position: absolute;
+    left: 10px;
+    top: 10px;
+    width: 22px;
+    height: 22px;
+    background: var(--accent);
+    color: #1a1a1a;
+    border-radius: 50%;
+    font-weight: 700;
+    font-size: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .step code {
+    background: rgba(255,255,255,0.06);
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 12px;
+  }
+  footer {
+    margin-top: 40px;
+    color: var(--muted);
+    font-size: 12px;
+    text-align: center;
+  }
+  @media (max-width: 760px) {
+    .row.cols-2, .row.cols-3, .row.cols-4 { grid-template-columns: 1fr; }
+    .steps { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<h1>HarnessDevTool <span class="sub">— Arquitectura propuesta</span></h1>
+<p class="lead">
+  Un núcleo en <b>Rust</b> (<code>harness-core</code>) compartido por todas las superficies (UI desktop, CLI, futura web).
+  Expuesto vía un broker <b>JSON-RPC sobre stdio</b> (<code>harness-app-server</code>) inspirado en Codex.
+  Encima, una shell <b>SvelteKit + Tauri</b> con tres módulos verticales: <b>Agentes (Claude CLI)</b>,
+  <b>DB Manager</b> y <b>SSH/SFTP Manager</b>.
+</p>
+
+<div class="legend">
+  <span class="chip"><span class="dot" style="background:var(--surface)"></span> Surface (UI)</span>
+  <span class="chip"><span class="dot" style="background:var(--transport)"></span> Transporte</span>
+  <span class="chip"><span class="dot" style="background:var(--core)"></span> Core (harness)</span>
+  <span class="chip"><span class="dot" style="background:var(--service)"></span> Servicios</span>
+  <span class="chip"><span class="dot" style="background:var(--module)"></span> Módulos verticales</span>
+  <span class="chip"><span class="dot" style="background:var(--platform)"></span> Plataforma</span>
+  <span class="chip"><span class="dot" style="background:var(--flow)"></span> Flujo de datos</span>
+</div>
+
+<div class="arch">
+
+  <!-- LAYER 5: SURFACES -->
+  <div class="layer">
+    <div class="layer-head">
+      <div class="layer-title">Surfaces — Interfaces de usuario</div>
+      <div class="layer-num">capa 5</div>
+    </div>
+    <div class="layer-desc">Lo que el usuario ve. No contienen lógica de agente; solo hablan JSON-RPC.</div>
+    <div class="row cols-2">
+      <div class="box surface">
+        <div class="name">apps/desktop (Tauri + SvelteKit)</div>
+        <div class="meta">Shell principal · sidebar: Agentes / DB / SSH · stores Svelte enlazados a items en vivo</div>
+      </div>
+      <div class="box surface">
+        <div class="name">apps/cli (harness-cli)</div>
+        <div class="meta">TTY render para uso headless, scripting y CI</div>
+      </div>
+    </div>
+    <div class="note">
+      <b>Nota:</b> ambas surfaces lanzan el mismo binario <code>harness-app-server</code> como proceso hijo.
+      Garantiza paridad de comportamiento y permite reusar threads entre surfaces.
+    </div>
+  </div>
+
+  <div class="arrow"><span>JSON-RPC 2.0 · JSONL stdio · bidireccional (requests, responses, notifications)</span></div>
+
+  <!-- LAYER 4: TRANSPORT -->
+  <div class="layer">
+    <div class="layer-head">
+      <div class="layer-title">harness-app-server — Broker</div>
+      <div class="layer-num">capa 4</div>
+    </div>
+    <div class="layer-desc">Proceso largo. Traduce JSON-RPC a operaciones del core. Versiona el protocolo para compatibilidad hacia atrás.</div>
+    <div class="row cols-3">
+      <div class="box transport">
+        <div class="name">stdio transport</div>
+        <div class="meta">Lee/escribe líneas JSON · framing por <code>\n</code></div>
+      </div>
+      <div class="box transport">
+        <div class="name">message processor</div>
+        <div class="meta">Routing por namespace · validación de params</div>
+      </div>
+      <div class="box transport">
+        <div class="name">thread manager</div>
+        <div class="meta">Crea/resume/fork/archive · 1 task Tokio por thread</div>
+      </div>
+    </div>
+    <div class="note">
+      <b>Por qué un proceso aparte y no in-process en Tauri:</b> si la UI crashea o el tab del browser
+      se cierra, el agente sigue trabajando. Mismo patrón usado por Codex App Server.
+    </div>
+  </div>
+
+  <div class="arrow"><span>API in-process (traits Rust)</span></div>
+
+  <!-- LAYER 3: CORE -->
+  <div class="layer">
+    <div class="layer-head">
+      <div class="layer-title">harness-core — Núcleo del harness</div>
+      <div class="layer-num">capa 3</div>
+    </div>
+    <div class="layer-desc">El cerebro. Una sola librería, varias surfaces. Inspirado en "Codex core".</div>
+    <div class="row cols-4">
+      <div class="box core">
+        <div class="name">agent loop</div>
+        <div class="meta">prompt → model → tool calls → repetir</div>
+      </div>
+      <div class="box core">
+        <div class="name">prompt builder</div>
+        <div class="meta">Orden estricto: estático antes que dinámico (prefix cache)</div>
+      </div>
+      <div class="box core">
+        <div class="name">turn / item engine</div>
+        <div class="meta">started → delta* → completed · UI incremental</div>
+      </div>
+      <div class="box core">
+        <div class="name">thread store</div>
+        <div class="meta">events.jsonl append-only · index SQLite</div>
+      </div>
+      <div class="box core">
+        <div class="name">compaction</div>
+        <div class="meta">Reduce historial preservando semántica</div>
+      </div>
+      <div class="box core">
+        <div class="name">approval flow</div>
+        <div class="meta">Pausa, pide allow/deny al cliente</div>
+      </div>
+      <div class="box core">
+        <div class="name">streaming</div>
+        <div class="meta">SSE del provider → notifications JSON-RPC</div>
+      </div>
+      <div class="box core">
+        <div class="name">cancellation</div>
+        <div class="meta">Tokens propagan a tools y al provider</div>
+      </div>
+    </div>
+    <div class="note">
+      <b>Append-only es load-bearing:</b> mutar el historial invalida el prefix cache del provider y
+      multiplica el costo. Cambios "tardíos" se hacen apendizando, nunca insertando atrás.
+    </div>
+  </div>
+
+  <div class="arrow"><span>Capacidades transversales (traits)</span></div>
+
+  <!-- LAYER 2: SERVICES -->
+  <div class="layer">
+    <div class="layer-head">
+      <div class="layer-title">Servicios transversales</div>
+      <div class="layer-num">capa 2</div>
+    </div>
+    <div class="row cols-3">
+      <div class="box service">
+        <div class="name">harness-sandbox</div>
+        <div class="meta">seccomp (Linux) · sandbox-exec (macOS) · AppContainer (Win) · FS jail por turn</div>
+      </div>
+      <div class="box service">
+        <div class="name">harness-mcp</div>
+        <div class="meta">Cliente MCP (stdio + http) · 1 child por server registrado</div>
+      </div>
+      <div class="box service">
+        <div class="name">harness-llm</div>
+        <div class="meta">Adaptadores: Anthropic, OpenAI, locales · stateless por defecto</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="arrow"><span>Cada módulo expone tools al core vía trait <code>HarnessTool</code></span></div>
+
+  <!-- LAYER 1: MODULES -->
+  <div class="layer">
+    <div class="layer-head">
+      <div class="layer-title">Módulos verticales</div>
+      <div class="layer-num">capa 1</div>
+    </div>
+    <div class="layer-desc">Dominios concretos. Cada uno aporta tools al agente y vistas en SvelteKit.</div>
+    <div class="row cols-3">
+      <div class="box module">
+        <div class="name">module-agents</div>
+        <div class="meta">Lanza <code>claude</code> CLI · PTY en Rust (<code>portable-pty</code>) · N sesiones · stream a la UI</div>
+      </div>
+      <div class="box module">
+        <div class="name">module-db</div>
+        <div class="meta">SQLite / Postgres / MySQL vía <code>sqlx</code> · query runner · introspección · pool por conexión guardada</div>
+      </div>
+      <div class="box module">
+        <div class="name">module-ssh</div>
+        <div class="meta">SSH + SFTP vía <code>russh</code> · cola de transferencias resumable · estilo FileZilla</div>
+      </div>
+    </div>
+    <div class="note">
+      <b>Patrón uniforme:</b> cada módulo expone (a) <i>tools</i> que el agente puede invocar y
+      (b) <i>operaciones JSON-RPC</i> que la UI invoca directamente sin pasar por el LLM (p.ej. abrir un panel SFTP).
+      Eso evita gastar tokens en acciones puramente humanas.
+    </div>
+  </div>
+
+  <div class="arrow"><span>Crates base</span></div>
+
+  <!-- LAYER 0: PLATFORM -->
+  <div class="layer">
+    <div class="layer-head">
+      <div class="layer-title">Plataforma</div>
+      <div class="layer-num">capa 0</div>
+    </div>
+    <div class="row cols-4">
+      <div class="box"><div class="name">tokio</div><div class="meta">Runtime async</div></div>
+      <div class="box"><div class="name">serde_json</div><div class="meta">JSON-RPC framing</div></div>
+      <div class="box"><div class="name">tracing</div><div class="meta">Spans por turn/tool</div></div>
+      <div class="box"><div class="name">sqlx</div><div class="meta">DB drivers</div></div>
+      <div class="box"><div class="name">russh / russh-sftp</div><div class="meta">SSH puro Rust</div></div>
+      <div class="box"><div class="name">portable-pty</div><div class="meta">PTY cross-OS</div></div>
+      <div class="box"><div class="name">tauri</div><div class="meta">Desktop shell</div></div>
+      <div class="box"><div class="name">seccompiler / sandbox-exec</div><div class="meta">Aislamiento OS</div></div>
+    </div>
+  </div>
+
+</div>
+
+<!-- FLUJO -->
+<div class="flow-section">
+  <h2>Flujo de un request (de la UI a la respuesta final)</h2>
+  <div class="steps">
+    <div class="step">Usuario escribe en SvelteKit. El store emite <code>thread.send</code> por JSON-RPC al App Server.</div>
+    <div class="step">App Server enruta al <i>thread manager</i> y abre un nuevo <code>turn</code> en el thread activo.</div>
+    <div class="step">El core construye el prompt (orden estricto: dev msg → config → AGENTS.md → env → user).</div>
+    <div class="step">Llama al provider (Anthropic/OpenAI). Streamea SSE.</div>
+    <div class="step">Cada chunk → <code>item.delta</code> notification → la UI lo pinta en vivo (markdown incremental).</div>
+    <div class="step">Si el modelo pide <i>tool call</i>: nativa → sandbox; MCP → cliente MCP; módulo → DB/SSH/Agentes.</div>
+    <div class="step">El resultado se apendiza al historial sin alterar el prefijo (preserva el prefix cache).</div>
+    <div class="step">Loop hasta que el modelo emite mensaje final → <code>turn.completed</code> → UI cierra el spinner.</div>
+    <div class="step">Todo se persiste a <code>events.jsonl</code>. Si la UI se cae, el agente sigue; al reconectar replayea.</div>
+    <div class="step">Acciones riesgosas pausan con <code>approval.request</code> y esperan <code>allow</code>/<code>deny</code> humano.</div>
+  </div>
+</div>
+
+<footer>
+  Ver shards: <code>docs/01-foundations/openai-codex-architecture.md</code> ·
+  <code>docs/02-architecture/system-overview.md</code> ·
+  <code>docs/02-architecture/ipc-protocol.md</code>
+</footer>
+
+</body>
+</html>

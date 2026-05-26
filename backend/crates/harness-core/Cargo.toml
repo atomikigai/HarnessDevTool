@@ -1,0 +1,21 @@
+[package]
+name = "harness-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = []
+# Enables ts-rs derives so `cargo test --features ts-export` writes .ts files
+# into `backend/bindings/`. Off by default to keep the production build slim.
+ts-export = ["dep:ts-rs"]
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+ts-rs = { workspace = true, optional = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }

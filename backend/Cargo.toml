@@ -1,0 +1,27 @@
+[workspace]
+resolver = "2"
+members = ["crates/harness-server", "crates/harness-core"]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2021"
+license = "MIT"
+rust-version = "1.75"
+
+[workspace.dependencies]
+axum = { version = "0.7", features = ["macros"] }
+tokio = { version = "1", features = ["full"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+tower = "0.5"
+tower-http = { version = "0.5", features = ["cors", "trace", "compression-gzip", "timeout", "set-header"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+ts-rs = { version = "9", features = ["chrono-impl", "uuid-impl"] }
+anyhow = "1"
+thiserror = "1"
+futures = "0.3"
+async-stream = "0.3"

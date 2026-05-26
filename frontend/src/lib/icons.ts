@@ -11,5 +11,11 @@ export {
   CircleAlert,
   CircleCheck,
   RefreshCw,
-  Loader2
+  Loader2,
+  Plus,
+  Terminal,
+  X,
+  Square,
+  ChevronLeft,
+  Circle
 } from 'lucide-svelte';

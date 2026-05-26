@@ -85,18 +85,84 @@ export async function apiRequest<T>(
   };
 }
 
-// Typed helpers for the F0 endpoints.
+// Typed helpers for the F0/F1 endpoints.
 
 export interface HealthResponse {
   version: string;
   uptime_s: number;
 }
 
+export interface ThreadSummary {
+  id: string;
+  title?: string | null;
+  created_at?: string;
+  sessions?: SessionMeta[];
+}
+
+export type SessionKind = 'claude' | 'codex';
+export type SessionStatus = 'running' | 'exited' | 'killed';
+
+export interface SessionMeta {
+  id: string;
+  kind: SessionKind;
+  thread_id: string;
+  cwd?: string | null;
+  pid: number;
+  status: SessionStatus;
+  started_at: string;
+  exit_code?: number | null;
+}
+
+export interface CreateSessionRequest {
+  kind: SessionKind;
+  cwd?: string;
+}
+
+export interface CreateSessionResponse {
+  session_id: string;
+}
+
 export const api = {
   health: (signal?: AbortSignal) => apiRequest<HealthResponse>('/health', { signal }),
   threads: {
-    list: (signal?: AbortSignal) => apiRequest<unknown[]>('/threads', { signal }),
-    create: (signal?: AbortSignal) =>
-      apiRequest<{ id: string }>('/threads', { method: 'POST', signal })
+    list: (signal?: AbortSignal) => apiRequest<ThreadSummary[]>('/threads', { signal }),
+    create: (title?: string, signal?: AbortSignal) =>
+      apiRequest<{ id: string }>('/threads', {
+        method: 'POST',
+        body: title ? { title } : undefined,
+        signal
+      })
+  },
+  sessions: {
+    create: (threadId: string, req: CreateSessionRequest, signal?: AbortSignal) =>
+      apiRequest<CreateSessionResponse>(`/threads/${threadId}/sessions`, {
+        method: 'POST',
+        body: req,
+        signal
+      }),
+    get: (sessionId: string, signal?: AbortSignal) =>
+      apiRequest<SessionMeta>(`/sessions/${sessionId}`, { signal }),
+    kill: (sessionId: string, signal?: AbortSignal) =>
+      apiRequest<null>(`/sessions/${sessionId}`, { method: 'DELETE', signal }),
+    resize: (sessionId: string, cols: number, rows: number, signal?: AbortSignal) =>
+      apiRequest<null>(`/sessions/${sessionId}/resize`, {
+        method: 'POST',
+        body: { cols, rows },
+        signal
+      }),
+    // input is sent as raw octet-stream; not typed via apiRequest because of binary body.
+    input: async (sessionId: string, bytes: Uint8Array, signal?: AbortSignal) => {
+      const url = `${API_BASE.endsWith('/') ? API_BASE.slice(0, -1) : API_BASE}/sessions/${sessionId}/input`;
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/octet-stream' },
+        body: bytes as BodyInit,
+        signal
+      });
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        throw new ApiError(res.status, `input failed: ${res.status}`, text);
+      }
+    }
   }
 };

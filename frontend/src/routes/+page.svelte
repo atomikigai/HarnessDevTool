@@ -9,7 +9,18 @@
   } from '$lib/components/ui/card';
   import { Button } from '$lib/components/ui/button';
   import { api, type HealthResponse } from '$lib/api/client';
-  import { Activity, CircleAlert, CircleCheck, RefreshCw, Loader2 } from '$lib/icons';
+  import {
+    Activity,
+    CircleAlert,
+    CircleCheck,
+    RefreshCw,
+    Loader2,
+    Plus,
+    Terminal
+  } from '$lib/icons';
+  import NewSessionDialog from '$lib/components/app/NewSessionDialog.svelte';
+
+  let newSessionOpen = $state(false);
 
   const REFRESH_MS = 10_000;
 
@@ -88,6 +99,22 @@
   <Card>
     <CardHeader>
       <CardTitle class="flex items-center gap-2">
+        <Terminal class="h-4 w-4 text-muted-foreground" />
+        Sessions
+      </CardTitle>
+      <CardDescription>Launch a claude or codex CLI inside a managed PTY.</CardDescription>
+    </CardHeader>
+    <CardContent>
+      <Button onclick={() => (newSessionOpen = true)}>
+        <Plus class="h-4 w-4" />
+        New session
+      </Button>
+    </CardContent>
+  </Card>
+
+  <Card>
+    <CardHeader>
+      <CardTitle class="flex items-center gap-2">
         <Activity class="h-4 w-4 text-muted-foreground" />
         Backend
       </CardTitle>
@@ -132,3 +159,5 @@
     </CardContent>
   </Card>
 </div>
+
+<NewSessionDialog bind:open={newSessionOpen} />

@@ -1,49 +1,31 @@
 ---
 id: harness-core/context-compaction
-title: Compaction y context reset
+title: "[Tombstone] Context compaction"
 shard: 03-harness-core
-tags: [compaction, context-window, reset]
-summary: Dos estrategias para vivir más allá del límite de tokens.
-related: [foundations/anthropic-principles, harness-core/prompt-caching]
-sources: [foundations/openai-codex-architecture, foundations/anthropic-principles]
+tags: [tombstone, deprecated]
+summary: Obsoleto. Compaction es responsabilidad del CLI hijo; nuestro modelo equivalente es spawn fresh + handoff.
+related: [agents/spawn-lifecycle, memory/continuity, foundations/anthropic-principles]
+sources: []
 ---
 
-# Compaction y reset
+# [Tombstone] Context compaction
 
-## Compaction (por defecto)
-Cuando el conteo de tokens excede `auto_compact_limit` (configurable, p.ej. 75% del límite del modelo):
-1. Core llama al endpoint `/responses/compact` del provider.
-2. Recibe una lista de items reducida que incluye un item especial `kind = compaction` con `encrypted_content` (blob opaco).
-3. El blob codifica entendimiento latente — más rico que un resumen textual y privacy-preserving.
-4. El historial in-memory se reemplaza por la lista compactada; el `events.jsonl` registra el evento `compaction.applied`.
+> Este shard cubría auto-compaction y context reset al estilo Codex/Anthropic. **Ya no aplica directamente**: el `claude`/`codex` maneja su propia compaction interna.
 
-Beneficios:
-- Conserva intención y referencias específicas.
-- Reduce tokens drásticamente.
-- ZDR-friendly: el provider solo guarda claves.
+## Equivalente en nuestra arquitectura
 
-Coste:
-- Una llamada extra al provider.
-- Invalida el prefix cache desde ese punto.
+Como los spawns son **efímeros** (uno por task), el "reset" sucede naturalmente:
+- Cada task = nuevo proceso → contexto fresco.
+- El handoff entre tasks es **estructural**: spec.md + task.toml + skills cargadas.
+- No hay "contexto que llenar" del lado nuestro; el CLI hijo es quien podría llenarse y manejarlo.
 
-## Context reset (estrategia adversaria a context anxiety)
-Cuando el modelo muestra signos de "wrap up prematuro":
-1. El harness extrae un **handoff document** estructurado (resumen de spec + lo hecho + próximos pasos).
-2. Crea un thread nuevo (o un sub-thread) inicializado con el handoff.
-3. El generator empieza con contexto fresco; nunca "siente" cercanía al límite.
+Si una task crashea por límite de contexto del CLI:
+1. Se marca `verify_fail` con razón.
+2. El orchestrator re-plana (cap K=2).
+3. El nuevo spawn arranca limpio.
 
-Cuándo usarlo:
-- Tareas largas con generator (no QA).
-- Modelos con anxiety conocida (Sonnet 4.5). Opus 4.6+ rara vez lo necesita.
+## Ver en su lugar
 
-## Política por defecto del proyecto
-- Compaction automática al 75%.
-- Reset manual (operación `thread.reset_with_handoff`) — el agente puede pedirlo via tool.
-- Loggear ratio de tokens ahorrados y caídas de cache hit-rate por compaction.
-
-## Heurísticas para detectar anxiety
-- El modelo emite cierres ("In summary, ..." con tareas a medio terminar).
-- Tasa decreciente de tool calls cerca del límite.
-- "I'll continue this in another session" en texto.
-
-Si se detecta dos veces seguidas → recomendar reset al usuario.
+- [[agents/spawn-lifecycle]] — modelo efímero como "reset implícito"
+- [[memory/continuity]] — handoff vía CONTINUITY.md (entre sesiones humanas, no entre spawns)
+- [[foundations/anthropic-principles]] §"Context anxiety" — lección original, sigue siendo válida conceptualmente

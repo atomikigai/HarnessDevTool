@@ -1,73 +1,128 @@
 ---
 id: architecture/ipc-protocol
-title: Protocolo IPC (JSON-RPC sobre stdio)
+title: Protocolos de comunicación
 shard: 02-architecture
-tags: [ipc, jsonrpc, protocol, jsonl]
-summary: Mensajes line-delimited JSON; namespaces dominio.accion; bidireccional con notifications.
-related: [app-server/jsonrpc-transport, app-server/message-processor, app-server/backward-compat]
+tags: [ipc, http, sse, mcp, protocol]
+summary: HTTP REST + SSE entre browser y backend; MCP stdio JSONL entre backend y CLI hijos.
+related: [architecture/system-overview, app-server/overview, agents/spawn-lifecycle]
 sources: []
 ---
 
-# Protocolo IPC
+# Protocolos de comunicación
 
-## Transporte
-- **JSONL** sobre stdio: cada mensaje en una línea (`\n` terminator).
-- Sin framing binario. Facilita debug con `tee` y `jq`.
-- UTF-8. Tamaño máximo por línea: 16 MiB (configurable).
-- En web: mismo JSON envuelto en SSE (`event: rpc\ndata: {...}\n\n`).
+> Dos canales distintos: **browser ↔ backend** (HTTP+SSE) y **backend ↔ CLI hijo** (MCP JSONL stdio). No confundir.
 
-## Forma del mensaje
-JSON-RPC 2.0 + extensiones:
+## Canal 1 — Browser ↔ harness-server
 
+### Transport
+- **HTTP REST** para CRUD bajo `/api/*`.
+- **SSE** para streaming bajo `/api/events`.
+- JSON body para requests/responses.
+- **CORS** habilitado en backend para `http://localhost:8080` (frontend) y según config para otros orígenes (LAN).
+- Encoding UTF-8 estricto.
+
+### Mensajes REST
+Formas tipadas con `ts-rs` (Rust source-of-truth). Ejemplo:
 ```jsonc
-// request (cliente → server)
-{ "jsonrpc": "2.0", "id": "uuid", "method": "thread.create", "params": { ... } }
+// POST /api/threads/:id/tasks  body
+{ "title": "Paginación en /orders", "domain": "frontend", "spawn_hint": { ... }, "contract_declared": { ... } }
 
-// response (server → cliente)
-{ "jsonrpc": "2.0", "id": "uuid", "result": { ... } }
-// o
-{ "jsonrpc": "2.0", "id": "uuid", "error": { "code": -32000, "message": "...", "data": { ... } } }
-
-// notification (cualquier sentido, sin id)
-{ "jsonrpc": "2.0", "method": "item.delta", "params": { "thread": "...", "turn": "...", "item": "...", "text": "..." } }
+// response 201
+{ "id": "T-0042", "status": "queued", "created_at": "..." }
 ```
 
-## Namespaces
+Errores:
+```jsonc
+// 4xx/5xx body
+{ "error": { "code": "task.touches_conflict", "message": "...", "data": { ... } } }
+```
 
-| Namespace | Métodos clave |
-|---|---|
-| `session` | `initialize`, `shutdown`, `capabilities.get` |
-| `thread` | `create`, `resume`, `fork`, `archive`, `list`, `send` |
-| `turn` | `cancel`, `get` |
-| `item` | `started`, `delta`, `completed` (notifications server→client) |
-| `approval` | `request` (server→cliente), `respond` (cliente→server) |
-| `tool` | `list`, `describe` |
-| `mcp` | `list`, `add`, `remove` |
-| `module.agents` | `session.spawn`, `session.input`, `session.kill` |
-| `module.db` | `connection.add`, `query.run`, `query.cancel`, `schema.tree` |
-| `module.ssh` | `session.open`, `sftp.list`, `transfer.queue`, `transfer.cancel` |
+### SSE format
 
-## Cancelación
-Todo método long-running puede cancelarse con `<namespace>.cancel { id }`. El server emite `<x>.cancelled` y libera recursos.
+```
+event: item
+data: {"thread":"...","turn":"...","kind":"pty.output","seq":42,"data":"..."}
 
-## Versionado
-- `session.initialize` incluye `protocolVersion: "1.0"`.
-- Server responde con `protocolVersion` y `supportedFeatures: [...]`.
-- Cliente nuevo + server viejo: cliente cae a features subset.
-- Server nuevo + cliente viejo: server emite formato legacy si el cliente no anuncia la feature.
+event: task
+data: {"task_id":"T-0042","prev_status":"queued","next_status":"in_progress"}
+
+event: approval
+data: {"id":"req-123","tool":"memory.note","args":{...}}
+
+event: ping
+data: {"at":"2026-05-26T19:30:00Z"}
+```
+
+Cada evento lleva un `event:` (tipo) y `data:` JSON. El cliente filtra por tipo.
+
+### Versionado
+- Header `X-Protocol-Version: 1.0` en todas las requests/responses.
+- Endpoint `/api/capabilities` enumera features soportadas.
 
 Ver [[app-server/backward-compat]].
 
-## Códigos de error
-| Code | Significado |
-|---|---|
-| -32700 | Parse error |
-| -32600 | Invalid request |
-| -32601 | Method not found |
-| -32602 | Invalid params |
-| -32000 | App: tool denied by sandbox |
-| -32001 | App: thread not found |
-| -32002 | App: approval timeout |
-| -32010 | App: provider rate limit |
+### Reconexión SSE
+- El cliente reintenta con backoff exponencial.
+- Header `Last-Event-ID` permite resume desde último evento procesado.
+- Backend mantiene buffer de últimos N eventos por thread (default 1000).
 
-Cuerpo: ver [[cross-cutting/error-model]].
+## Canal 2 — harness-server ↔ CLI hijo (claude/codex)
+
+### Transport
+- **JSONL sobre stdio** del CLI hijo (cada línea = un mensaje JSON-RPC 2.0).
+- Iniciado pasando `--mcp-config <ruta>` al CLI al spawn.
+- El config apunta a `harness-mcp-server` (sub-proceso del backend o instancia in-process).
+
+### Mensajes (MCP spec)
+```jsonc
+// CLI → harness-mcp-server (tool call)
+{ "jsonrpc": "2.0", "id": "1", "method": "tools/call",
+  "params": { "name": "task.claim", "arguments": { "task_id": "T-0042", "agent_id": "...", "ttl_s": 300 } } }
+
+// harness-mcp-server → CLI (response)
+{ "jsonrpc": "2.0", "id": "1", "result": { "ok": true, "lease_until": "..." } }
+
+// errores
+{ "jsonrpc": "2.0", "id": "1",
+  "error": { "code": -32000, "message": "Task already claimed", "data": { "current_holder": "..." } } }
+```
+
+### Tools expuestas
+Catalogadas en [[agents/rust-rails]]:
+- `task.*` — claim/update/release
+- `spec.*` — read/append
+- `memory.*` — search/note/continuity
+- `skills.*` — search/manage (F5+)
+- `agents.*` — list/describe
+- `capability.*` — request/list_loaded
+- `repo.*` — scan/read_file
+- `budget.*` — remaining
+- `contracts.*` — validate/diff
+
+### Vida del canal
+- Se abre al spawn del CLI.
+- Se cierra cuando el CLI termina (graceful o crash).
+- Backend detecta cierre del pipe → marca spawn `finished`.
+
+## Por qué dos canales distintos
+
+| | Canal 1 (HTTP+SSE) | Canal 2 (MCP stdio) |
+|---|---|---|
+| Quién habla | Browser | CLI hijo (claude/codex) |
+| Estándar | Web nativo | MCP spec |
+| Multiplex | SSE multiplexa por thread | 1 canal por CLI hijo |
+| Auth | CORS + (futuro) cookie | Confianza implícita (es child del backend) |
+| Cancelación | DELETE / abort | SIGINT del child |
+| Latencia | ~5–15ms | ~1ms (in-process) |
+
+Mezclar los dos crearía acoplamiento innecesario y duplicación de schemas.
+
+## Anti-patrones
+
+| Mal | Bien |
+|---|---|
+| Browser habla MCP al backend | HTTP+SSE; MCP es solo para CLI hijos |
+| WebSockets en vez de SSE | SSE es suficiente y más simple; WS solo si bidireccional fuerte |
+| JSON-RPC también entre browser y backend | HTTP REST tipado con ts-rs |
+| Tools del MCP visibles al frontend | Frontend usa endpoints REST; tools son del CLI |
+| Buffering grande en proxy SSE | `proxy_buffering off`, `X-Accel-Buffering: no` |

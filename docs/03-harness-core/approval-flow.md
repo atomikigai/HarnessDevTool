@@ -1,66 +1,111 @@
 ---
 id: harness-core/approval-flow
-title: Flujo de aprobación humana
+title: Approval flow (humano in the loop)
 shard: 03-harness-core
 tags: [approval, human-in-the-loop, safety]
-summary: Pausa antes de acciones riesgosas; espera allow/deny vía JSON-RPC.
-related: [harness-core/tool-execution, architecture/ipc-protocol]
-sources: [foundations/openai-codex-architecture]
+summary: Pausa antes de acciones sensibles; espera allow/deny del humano vía SSE/UI.
+related: [agents/overview, harness-core/tool-execution, memory/lifecycle, architecture/ipc-protocol]
+sources: []
 ---
 
 # Approval flow
 
-## Trigger
-Una tool emite `approval.request` cuando:
-- `tool.requires_approval(args)` devuelve true, **y**
-- `cfg.approval_mode != "auto"`.
+> Aplica a **tools del harness-bridge** que mutan estado sensible. Las tools internas del CLI hijo (shell.exec, edits) tienen su propio approval (del propio `claude`/`codex`); el harness no intercepta esos.
 
-Modos:
-- `auto` — todo se ejecuta sin preguntar (CI, headless).
-- `risky-only` — solo acciones destructivas (default).
-- `every-call` — pide para cada tool.
+## Cuándo dispara
+
+Una tool del harness emite `approval.requested` cuando:
+- `tool.requires_approval(args) == true`.
+- Y la `approval_mode` del thread no es `auto`.
+
+Modos por thread:
+- `auto` — todo se ejecuta sin preguntar. CI / batch.
+- `risky-only` — solo tools que el catálogo marca sensibles (default).
+- `every-call` — pide para cada tool del harness-bridge. Solo para debugging.
+
+Tools típicamente con `requires_approval`:
+- `memory.note`, `memory.update` (siempre, salvo orchestrator)
+- `skills.manage(action="create"|"edit")` antes de F5
+- `tasks.create` cuando creada por agente no-orchestrator
+- `contracts.elevate_declared`
+- `budget.set_cap`
 
 ## Protocolo
 
 ```jsonc
-// server → cliente (notification)
-{ "method": "approval.request", "params": {
-    "id": "req-123",
-    "thread": "...", "turn": "...",
-    "tool": "shell.exec",
-    "args": { "cmd": "rm -rf node_modules" },
-    "risk_explanation": "Recursive delete inside workspace",
-    "expires_at": "2026-05-26T12:00:00Z"
-}}
+// SSE event (server → browser)
+event: approval
+data: {
+  "id": "req-01HX...",
+  "thread": "...",
+  "spawn": "...",
+  "tool": "memory.note",
+  "args_preview": { "kind": "decision", "title": "...", ... },
+  "preview_body": "...",          // markdown render del cuerpo propuesto
+  "risk_explanation": "Va a crear una entrada de memoria nueva",
+  "expires_at": "2026-05-26T19:35:00Z"
+}
 
-// cliente → server (request)
-{ "method": "approval.respond", "params": {
-    "id": "req-123",
-    "decision": "allow",       // allow | deny | allow-and-remember
-    "note": "OK, esperado"
-}}
+// HTTP POST (browser → server)
+POST /api/approvals/req-01HX.../respond
+{
+  "decision": "allow" | "deny" | "allow-and-remember" | "edit-and-allow",
+  "edited_args": { ... },            // si edit-and-allow
+  "note": "OK, esperado"
+}
 ```
 
+El CLI hijo, mientras tanto, está bloqueado en la llamada MCP. El backend:
+- Mantiene la llamada pendiente con timeout (5 min default).
+- Al recibir respuesta del humano, completa la llamada.
+- Si timeout → tool falla con `approval_timeout`; el CLI puede re-intentar o reportar.
+
 ## Estados internos
+
 ```
 pending → allowed → executing → completed
         ↘ denied  → cancelled
         ↘ expired → cancelled
+        ↘ edited  → allowed (con args modificados)
 ```
 
-## Timeout
-- Default 5 min. Si expira → `cancelled (reason = approval-expired)`.
-- El modelo recibe el resultado como tool error con causa.
-
 ## "Allow and remember"
-- Persiste una regla en `~/.harness/policy.toml`: `<tool, args-pattern> → allow`.
-- Útil para evitar prompts repetidos en flujos rutinarios.
-- Auditable: cada regla guarda quién/cuándo.
+
+Crea regla en `~/.harness/profiles/<active>/policy.toml`:
+```toml
+[[policies]]
+tool = "memory.note"
+args_match = { kind = "fact", source = "agent:learner-1" }
+action = "allow"
+created_at = "..."
+created_by = "user"
+```
+
+Próxima vez que un call matchee, se aprueba automáticamente. Reglas listables/editables en UI bajo `/settings/approvals`.
 
 ## UI
-- Modal no-bloqueante en SvelteKit: muestra cmd + diff esperado + botones.
-- En CLI: prompt interactivo con `y`/`n`/`d` (details).
 
-## Anti-patrón
-- Pedir aprobación para CADA call por defecto → fatiga, el usuario aprueba todo a ciegas. Mantener `risky-only`.
-- Aprobaciones "silenciosas" sin riesgo explicado → el usuario no aprende qué decir no.
+- **Inbox lateral** muestra aprobaciones pendientes (badge contador en sidebar).
+- Card por aprobación: tool, args preview, risk_explanation, botones (Allow / Edit & Allow / Deny / Allow-and-remember).
+- Si hay > 5 pendientes simultáneas → modal centralizado para batch decision.
+- Notification toast cuando llega nueva approval mientras el usuario está en otra ruta.
+
+## Tools de aplicación del CLI hijo
+
+`claude`/`codex` tienen su **propio** approval flow para `shell.exec`, `edit`, etc. Eso pasa **dentro del PTY** — el usuario lo ve en el terminal de su sesión y responde ahí. **Nosotros no interferimos**.
+
+Distinguir:
+- Approval del **CLI** → en xterm.js, respuesta del usuario tecleando en el terminal.
+- Approval del **harness** → en UI lateral, click de botón, vía HTTP.
+
+Ambos son legítimos; cubren scopes distintos.
+
+## Anti-patrones
+
+| Mal | Bien |
+|---|---|
+| Approval para CADA call (fatiga, usuario aprueba todo a ciegas) | `risky-only` por default |
+| Aprobación silenciosa sin explicar riesgo | `risk_explanation` obligatorio |
+| Reglas allow-and-remember sin args matching | Match específico para no auto-aprobar lo equivocado |
+| Timeout muy corto (< 1 min) | 5 min default; configurable por tool |
+| Interceptar approval del CLI hijo | Es problema del CLI; respeta su flujo |

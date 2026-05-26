@@ -16,7 +16,7 @@ sources: []
 - Definir un término solo una vez; el resto enlaza a [[meta/glossary]].
 
 ## Nombres de código
-- Crates Rust: `harness-core`, `harness-app-server`, `harness-sandbox`, `harness-mcp`, `module-agents`, `module-db`, `module-ssh`.
+- Crates Rust (workspace `backend/`): `harness-server` (único bin), `harness-core`, `harness-session`, `harness-mcp-server`, `harness-sandbox`, `harness-skills`, `module-db`, `module-ssh`.
 - Módulos: `snake_case`. Tipos: `PascalCase`. Funciones: `snake_case`.
 - Eventos JSON-RPC: `dominio.accion` (ej. `thread.create`, `item.delta`).
 - IDs de shard: `grupo/sub-tema` en kebab-case.

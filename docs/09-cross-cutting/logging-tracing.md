@@ -30,7 +30,7 @@ session
 Cada span lleva atributos estables para correlación.
 
 ## Reglas
-- **Stdout es sagrado**: en el App Server, `tracing` va a stderr o file. Stdout es exclusivo para JSON-RPC.
+- **Stdout/stderr**: el `harness-server` (Axum) loggea a stderr en container; `docker compose logs backend` los muestra. El `harness-mcp-server` (sub-process por spawn) **sí** usa stdout para JSON-RPC al CLI hijo — su `tracing` va estrictamente a stderr.
 - **No loggear secretos**: el prompt builder sustituye `{{secret:*}}` antes de loggear el prompt completo.
 - **Spans cortos**: nada de spans abiertos por horas; cerrar al terminar la operación.
 - **Nivel correcto**: `info` para eventos de negocio (turn iniciado), `debug` para detalle interno, `trace` para datos crudos.

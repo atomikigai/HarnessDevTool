@@ -46,26 +46,24 @@
 - [[harness-core/streaming-events]] — SSE / item delta.
 - [[harness-core/auth-and-config]] — `~/.harness/config.toml`, claves.
 
-### 04 · App Server (broker JSON-RPC)
-- [[app-server/overview]] — Por qué un proceso largo dedicado.
-- [[app-server/jsonrpc-transport]] — Stdio bidireccional, JSONL.
-- [[app-server/message-processor]] — Traduce JSON-RPC → core ops.
-- [[app-server/backward-compat]] — Versionado de mensajes.
-- [[app-server/web-deployment]] — HTTP+SSE para clientes web.
+### 04 · harness-server (Axum, HTTP+SSE)
+- [[app-server/overview]] — harness-server: Axum, routes, SSE hub.
+- [[app-server/backward-compat]] — Versionado de API (`X-Protocol-Version`).
+- [[app-server/web-deployment]] — Docker compose, bind-mounts de claude/codex.
+- [[app-server/jsonrpc-transport]] — *[tombstone]* JSON-RPC stdio obsoleto.
+- [[app-server/message-processor]] — *[tombstone]* dispatcher obsoleto.
 
-### 05 · Frontend Shell (SvelteKit)
-- [[frontend-shell/tech-stack]] — SvelteKit + Tauri + Tailwind.
-- [[frontend-shell/sveltekit-integration]] — Cómo habla con el App Server.
-- [[frontend-shell/tauri-vs-app-server]] — Cuándo embebes binario vs lo lanzas como child.
-- [[frontend-shell/event-stream-ui]] — Render incremental de items.
-- [[frontend-shell/state-store]] — Stores Svelte ↔ thread state.
-- [[frontend-shell/routing-shell]] — Sidebar: Agentes / DB / SSH.
+### 05 · Frontend Shell (SvelteKit, sin Tauri)
+- [[frontend-shell/tech-stack]] — SvelteKit + adapter-node + shadcn-svelte + valibot.
+- [[frontend-shell/sveltekit-integration]] — Cliente HTTP+SSE tipado vía ts-rs.
+- [[frontend-shell/event-stream-ui]] — xterm.js + items estructurados.
+- [[frontend-shell/state-store]] — Stores Svelte nativos.
+- [[frontend-shell/routing-shell]] — Sidebar dinámica, command palette, atajos.
+- [[frontend-shell/tauri-vs-app-server]] — *[tombstone]* Tauri descartado.
 
-### 06 · Módulo Agentes (Claude CLI)
-- [[module-agents/overview]] — Qué hace el módulo.
-- [[module-agents/claude-cli-bootstrap]] — Detectar/instalar/lanzar `claude`.
-- [[module-agents/session-pty]] — PTY en Rust (`portable-pty`).
-- [[module-agents/multi-agent]] — Varias sesiones en paralelo.
+### 06 · *(obsoleto)* Módulo Agentes
+Promovido a runtime principal en la sección 13. Los shards en este dir son tombstones:
+- [[module-agents/overview]], [[module-agents/claude-cli-bootstrap]], [[module-agents/session-pty]], [[module-agents/multi-agent]] → ver **[[agents/overview]]** y compañía.
 
 ### 07 · Módulo DB Manager (lite)
 - [[module-db-manager/overview]] — Alcance: SQLite, Postgres, MySQL.

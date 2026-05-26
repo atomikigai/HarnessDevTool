@@ -17,10 +17,10 @@ sources: []
 - Mocks: `mockall` para traits, `wiremock` para HTTP del provider.
 - Cobertura objetivo 70%+ para `harness-core` (core lógico), 50% otros.
 
-### Integration (App Server end-to-end)
-- Carpeta `tests/integration/`.
-- Spawn `harness-app-server` real, hablar JSON-RPC, verificar respuestas.
-- Provider mocked con `wiremock` (responses streaming SSE).
+### Integration (harness-server end-to-end)
+- Carpeta `backend/tests/integration/`.
+- Arranca `harness-server` real (in-process via `axum::serve`), hace requests HTTP + escucha SSE, verifica respuestas y events.
+- CLI hijo (`claude`/`codex`) **stubbed** en tests integración (mock que responde a llamadas MCP del harness-bridge).
 
 ### Golden protocol
 - `tests/golden/` con fixtures `request.json` → `expected_response.json`.

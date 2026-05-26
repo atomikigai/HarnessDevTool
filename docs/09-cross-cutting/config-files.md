@@ -63,6 +63,6 @@ harness config show --resolved      # config tras todas las precedencias
 ```
 
 ## Hot reload
-- Cambios en `config.toml` requieren restart del App Server.
+- Cambios en `config.toml` requieren restart del `harness-server` (`docker compose restart backend`).
 - Cambios en `project.toml` se aplican al siguiente thread (no afectan threads activos).
 - Cambios en `AGENTS.md` se aplican al siguiente turn (re-snapshotea como append).

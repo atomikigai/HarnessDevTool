@@ -1,46 +1,28 @@
 ---
 id: app-server/jsonrpc-transport
-title: Transport JSON-RPC (stdio)
+title: "[Tombstone] JSON-RPC transport"
 shard: 04-app-server
-tags: [transport, stdio, jsonl]
-summary: Implementación del reader/writer JSONL.
-related: [architecture/ipc-protocol, app-server/message-processor]
+tags: [tombstone, deprecated]
+summary: Obsoleto. El transport hoy es HTTP+SSE de Axum, no JSON-RPC stdio.
+related: [architecture/ipc-protocol, app-server/overview]
 sources: []
 ---
 
-# Transport
+# [Tombstone] JSON-RPC transport
 
-## Reader (stdin)
+> El modelo original copiaba a Codex (JSON-RPC bidireccional sobre stdio). El pivote a **WEB UI primary** cambió esto a **HTTP + SSE** directamente con Axum.
 
-```rust
-let stdin = tokio::io::stdin();
-let reader = tokio::io::BufReader::new(stdin);
-let mut lines = reader.lines();
-while let Some(line) = lines.next_line().await? {
-    if line.is_empty() { continue; }
-    match serde_json::from_str::<Message>(&line) {
-        Ok(msg) => tx_to_processor.send(msg).await?,
-        Err(e) => emit_parse_error(e),
-    }
-}
-```
+## Estado actual
 
-## Writer (stdout)
-Canal MPSC: cualquier task del server publica un `Message` → un writer task único lo serializa y escribe con `\n`. **Crítico** que un único writer toque stdout, si no las líneas se entrelazan.
+- **HTTP REST** para CRUD en `/api/*`.
+- **SSE** para streaming en `/api/events`.
+- JSON con tipos generados por `ts-rs`.
+- CORS habilitado para `http://localhost:8080`.
 
-## Logging
-**Nunca** a stdout. `tracing` configurado para escribir a stderr o a un file appender bajo `~/.harness/logs/`.
+Para el MCP **interno** (entre `harness-server` y los CLIs hijos `claude`/`codex`), sí se usa JSON-RPC stdio — pero ese es **otro canal**, no el cliente del browser.
 
-## Flow control
-- MPSC bounded (default 4096).
-- Si el cliente no lee, el writer se bloquea → eventualmente backpressure llega al core via `EventSink` → ver [[harness-core/streaming-events]].
+## Ver en su lugar
 
-## Tamaño de mensaje
-- Default max 16 MiB / línea.
-- Adjuntos grandes (transferencias SFTP, queries con MB de resultado) no van por JSON-RPC sino vía referencias a archivos (`file://`).
-
-## Encoding
-UTF-8 estricto. JSON sin `NaN`/`Infinity` (no son válidos en JSON). Bytes binarios → base64 con prefijo `data:application/octet-stream;base64,`.
-
-## Heartbeat
-Notification `session.ping` cada 30s en ambos sentidos. Si el peer no responde en 90s, se considera muerto.
+- [[architecture/ipc-protocol]] — HTTP + SSE actual
+- [[app-server/overview]] — el `harness-server` Axum
+- [[agents/spawn-lifecycle]] — MCP stdio interno hacia el CLI hijo

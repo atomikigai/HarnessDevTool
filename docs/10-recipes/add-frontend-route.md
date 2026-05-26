@@ -15,7 +15,7 @@ Ejemplo: vista `/threads` para listar y reanudar threads.
 ## 1. Definir tipos del RPC
 Si el namespace ya existe, los tipos están auto-generados. Si añades un método nuevo: regenera con:
 ```bash
-cargo run -p harness-app-server --bin gen-ts-types > apps/desktop/src/lib/rpc/types.ts
+just gen-types
 ```
 
 ## 2. Crear la ruta
@@ -81,7 +81,7 @@ Y en la vista:
 
 ## 5. Test
 - Smoke en dev: `bun run dev`, abrir `/threads`.
-- E2E (opcional v1.1): Playwright contra Tauri.
+- E2E (F2+): Playwright contra el frontend container.
 
 ## Checklist
 - [ ] Tipos TS sincronizados con server

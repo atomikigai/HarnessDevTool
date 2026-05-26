@@ -1,50 +1,35 @@
 ---
 id: frontend-shell/tauri-vs-app-server
-title: Tauri sidecar vs App Server externo
+title: "[Tombstone] Tauri vs App Server"
 shard: 05-frontend-shell
-tags: [tauri, deployment, sidecar]
-summary: Por qué Tauri lanza app-server como sidecar y no embebe el core.
-related: [architecture/process-model, app-server/overview]
+tags: [tombstone, deprecated]
+summary: Tauri descartado tras priorizar WEB UI. App Server renombrado a harness-server.
+related: [build-plan/decisions-locked, build-plan/tech-stack-locked, memory/decisions]
 sources: []
 ---
 
-# Tauri ↔ App Server
+# [Tombstone] Tauri vs App Server
 
-## Opciones
-1. **Sidecar** (elegido) — Tauri bundlea el binario `harness-app-server` y lo lanza como child.
-2. **Embedded core** — el crate Tauri linkea `harness-core` y expone funciones via `#[tauri::command]`.
-3. **Sidecar + embed opcional** — vía feature flag, usable para tests.
+> Esta comparación quedó **resuelta** durante planning: **WEB UI con PWA install** ganó.
 
-## Por qué sidecar
+## Resumen de la decisión
 
-| | Sidecar | Embedded |
-|---|---|---|
-| Crash UI no mata agente | ✅ | ❌ |
-| Paridad con CLI/web | ✅ | ❌ |
-| Update independiente del binario core | ✅ | ❌ |
-| Latencia IPC | un poco más alta (~50µs/msg) | inmediata |
-| Tamaño binario final | mayor (~+15 MiB) | menor |
+Razones para descartar Tauri:
+- No permite acceso desde otra máquina en la LAN.
+- Deploy es un instalador por OS (firmar, distribuir).
+- Imposible self-host headless.
+- xterm.js con WebGL2 cubre el "feel" de terminal sin Tauri.
 
-Para v1 priorizamos resiliencia y paridad.
+Ver entrada de memoria correspondiente cuando exista: `memory/decisions/2026-05-26-tauri-out.md` (template en [[memory/entry-format]]).
 
-## Bundle
-`tauri.conf.json`:
+## Estado actual
 
-```json
-{
-  "bundle": {
-    "externalBin": ["binaries/harness-app-server"],
-    "resources": ["resources/agents.md.template"]
-  }
-}
-```
+- **Frontend**: SvelteKit con `adapter-node` en container `node:alpine`.
+- **Backend**: `harness-server` (Axum) en container distroless.
+- **Wire**: HTTP+SSE directo browser ↔ backend con CORS.
 
-`build.rs` del crate Tauri copia el binario compilado desde `target/release/harness-app-server` al directorio esperado por la plataforma.
+## Ver en su lugar
 
-## Comandos Tauri expuestos
-- `rpc_connect(channel)` — abre stdio al sidecar y empieza a rutear al canal.
-- `rpc_send(line)` — escribe una línea JSON al sidecar.
-- `open_path(path)` — abre con el handler del SO (para "ver en explorador").
-- `pick_file(filters)` — diálogo nativo.
-
-Todo lo demás va por JSON-RPC, no por comandos Tauri. Mantiene el contrato unificado.
+- [[build-plan/decisions-locked]] §"Arquitectura" — decisión bloqueada
+- [[build-plan/tech-stack-locked]] — stack actual
+- [[frontend-shell/tech-stack]] — detalle frontend

@@ -14,8 +14,8 @@ sources: []
 
 ```
 [user] ─trusted──► [UI]
-[UI]   ─trusted──► [App Server]
-[App Server] ─trusted──► [harness-core]
+[UI]   ─trusted──► [harness-server]
+[harness-server] ─trusted──► [harness-core]
 [harness-core] ─UNTRUSTED──► [model output]
 [harness-core] ─UNTRUSTED──► [tool execution]
 [harness-core] ─UNTRUSTED──► [MCP servers]

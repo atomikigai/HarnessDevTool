@@ -3,55 +3,78 @@ id: architecture/system-overview
 title: Vista general del sistema
 shard: 02-architecture
 tags: [architecture, overview, diagram]
-summary: Diagrama de bloques: surfaces ↔ App Server ↔ core ↔ módulos (Agentes, DB, SSH).
-related: [architecture/layered-architecture, architecture/process-model, app-server/overview]
+summary: Browser ↔ harness-server (Axum) ↔ CLIs hijos (claude/codex) + storage local.
+related: [architecture/layered-architecture, architecture/process-model, architecture/ipc-protocol, app-server/overview, agents/overview]
 sources: []
 ---
 
 # Vista general
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                        Surfaces (UI)                            │
-│  ┌──────────────────────┐  ┌──────────────────────────────────┐ │
-│  │ Desktop (Tauri)      │  │ CLI (harness-cli)                │ │
-│  │ SvelteKit shell      │  │ TTY rendering                    │ │
-│  └──────────┬───────────┘  └──────────────┬───────────────────┘ │
-└─────────────┼──────────────────────────────┼─────────────────────┘
-              │  JSON-RPC / JSONL stdio      │
-┌─────────────▼──────────────────────────────▼─────────────────────┐
-│                     harness-app-server                           │
-│  stdio transport · message processor · thread manager            │
-└─────────────────────────────┬────────────────────────────────────┘
-                              │  in-process API
-┌─────────────────────────────▼────────────────────────────────────┐
-│                       harness-core (Rust)                        │
-│  agent loop · prompt builder · cache strategy · compaction       │
-│  thread store · turn/item engine · approval flow · streaming     │
-└──────┬─────────────┬──────────────────┬───────────────────┬──────┘
-       │             │                  │                   │
-┌──────▼────┐  ┌─────▼──────┐  ┌────────▼────────┐  ┌───────▼──────┐
-│ sandbox   │  │ mcp client │  │  module-agents  │  │ module-db /  │
-│ (seccomp, │  │ (stdio +   │  │  (claude CLI    │  │ module-ssh   │
-│  jail FS) │  │  http MCP) │  │   PTY sessions) │  │ (sqlx/russh) │
-└───────────┘  └────────────┘  └─────────────────┘  └──────────────┘
+                          host del usuario
+┌────────────────────────────────────────────────────────────────────────┐
+│                                                                        │
+│  Browser  ────HTTP────►  frontend container (SvelteKit adapter-node)   │
+│  Browser  ────HTTP+SSE──►  backend container (harness-server, Axum)    │
+│                                                                        │
+│  ┌─────────────────────┐         ┌─────────────────────────────────┐   │
+│  │ SvelteKit + Tailwind│         │ harness-server (Axum)           │   │
+│  │ + shadcn-svelte     │         │ ├─ routes/* (REST + SSE)        │   │
+│  │ + xterm.js          │         │ ├─ harness-core (threads,tasks) │   │
+│  │ + valibot           │         │ ├─ harness-session (PTY mgr)    │   │
+│  │ stores reactivos    │         │ ├─ harness-mcp-server (stdio)   │   │
+│  └─────────────────────┘         │ ├─ harness-sandbox              │   │
+│                                  │ ├─ harness-skills    (F5)       │   │
+│                                  │ ├─ module-db, module-ssh (F4)   │   │
+│                                  └────┬────────────────────────────┘   │
+│                                       │ spawn (PTY+stdio MCP)          │
+│                                       ▼                                │
+│                                  claude / codex                        │
+│                                  (binarios del host, bind-mounted)     │
+│                                                                        │
+│  Storage local (montado /data en backend):                             │
+│  ~/.harness/                                                           │
+│   ├─ USER.md                                                           │
+│   ├─ shared/skills/                                                    │
+│   └─ profiles/<active>/{memory, skills, threads, cli-state, .git}      │
+└────────────────────────────────────────────────────────────────────────┘
 ```
 
-## Flujo de un request típico
-1. Usuario escribe en la UI → SvelteKit emite `thread.send` por JSON-RPC.
-2. App Server traduce → core abre un **turn** en el **thread** activo.
-3. Core construye prompt → llama API del modelo (stream SSE).
-4. Cada chunk produce `item/delta` → App Server lo reemite → UI lo renderiza.
-5. Tool call → core decide: nativa (sandbox), MCP (cliente MCP), o módulo (DB/SSH/Agentes).
-6. Resultado se apendiza al prompt → loop continúa.
-7. Mensaje final → `turn.completed`.
+## Flujo de un request humano (end-to-end)
 
-## Persistencia
-- Cada `item` se escribe al event log del thread (append-only).
-- Thread store (SQLite o ficheros) bajo `~/.harness/threads/`.
-- Resume = leer event log + restaurar prompt.
+1. Usuario en browser escribe prompt → POST `/api/threads/:id/sessions` con `{ kind: "claude" }`.
+2. `harness-server` valida, crea spawn record, lanza `claude` child con PTY + `--mcp-config` apuntando al harness-mcp-server local.
+3. Browser abre SSE `/api/events?thread=:id` (multiplex de eventos del thread).
+4. PTY output del `claude` se streamea: `harness-session` lee bytes → SSE → xterm.js en browser.
+5. El `claude` invoca tools MCP (`task.list`, `task.claim`, `skills.search`, `memory.search`, ...) → `harness-mcp-server` responde con datos del store.
+6. Eventos estructurados (task transitions, approvals, etc.) se emiten también vía SSE.
+7. Al cierre del CLI hijo → `spawn.exited` event → status persistido → SSE final.
+
+## Roles del sistema
+
+| Rol | Software |
+|---|---|
+| **UI** | SvelteKit + adapter-node + xterm.js |
+| **Wire** | HTTP REST + SSE |
+| **Backend** | `harness-server` (Axum, Rust) |
+| **State** | `~/.harness/` (filesystem + SQLite FTS5 + git por profile) |
+| **Agentes** | `claude` / `codex` CLIs del usuario (spawn como children) |
+| **Bridge** | `harness-mcp-server` (stdio MCP, expuesto al CLI hijo) |
 
 ## Ejes de extensión
-- **Nuevo modelo / provider** → swap del cliente HTTP en `harness-core/llm-client`.
-- **Nuevo módulo** (DB, SSH, ...) → expone tools al core; UI propia en SvelteKit. Ver [[recipes/bootstrap-new-tool]].
-- **Nueva surface** → habla JSON-RPC contra el App Server.
+
+- **Nuevo agente** (rol/dominio nuevo): nuevo shard en [[agents/overview]] + plantilla TOML.
+- **Nuevo módulo vertical** (DB/SSH/etc): crate `module-X` + routes en `harness-server` + tools MCP. Ver [[recipes/bootstrap-new-tool]].
+- **Nuevo MCP externo** (context7, playwright): config en `~/.harness/config.toml`. Ver [[recipes/add-mcp-server]].
+- **Nueva ruta UI**: SvelteKit route + cliente RPC. Ver [[recipes/add-frontend-route]].
+
+## Lo que NO está
+
+- ❌ Llamadas directas a APIs de Anthropic/OpenAI (el CLI las hace).
+- ❌ Tauri / Electron.
+- ❌ Pool de agentes vivos (efímeros: 1 spawn por task).
+- ❌ JSON-RPC stdio entre browser y backend (HTTP+SSE; JSON-RPC sí entre backend y CLI hijo, pero ese es canal interno).
+- ❌ Multi-tenancy (single-user local).
+- ❌ Cloud por default (todo local; sync opt-in via git remote propio del usuario).
+
+Ver [[build-plan/tech-stack-locked]] para el stack completo y [[build-plan/decisions-locked]] para las decisiones que cierran cada elección.

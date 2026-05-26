@@ -3,8 +3,8 @@ id: architecture/layered-architecture
 title: Arquitectura por capas
 shard: 02-architecture
 tags: [architecture, layers]
-summary: Cinco capas con dependencias unidireccionales (hacia abajo).
-related: [architecture/system-overview, architecture/process-model]
+summary: 5 capas con dependencias estrictamente hacia abajo.
+related: [architecture/system-overview, architecture/process-model, build-plan/repo-layout]
 sources: []
 ---
 
@@ -12,25 +12,34 @@ sources: []
 
 | # | Capa | Crates / paquetes | Responsabilidad |
 |---|---|---|---|
-| 5 | Surface | `apps/desktop` (SvelteKit+Tauri), `apps/cli` | UX, render, atajos |
-| 4 | Transporte | `harness-app-server` | JSON-RPC stdio / HTTP+SSE |
-| 3 | Orquestación | `harness-core` | Agent loop, threads, turns |
-| 2 | Servicios | `harness-sandbox`, `harness-mcp`, `harness-llm` | Capacidades transversales |
-| 1 | Módulos verticales | `module-agents`, `module-db`, `module-ssh` | Dominios concretos |
-| 0 | Plataforma | Tokio, sqlx, russh, seccompiler | Crates externos |
+| 5 | Surface (UI) | `frontend/` (SvelteKit + adapter-node) | UX, render, atajos |
+| 4 | Server (HTTP+SSE) | `harness-server` (Axum) | Routes REST, SSE hub, CORS |
+| 3 | Orquestación | `harness-core` | Threads, tasks (state machine), scheduler |
+| 2 | Servicios | `harness-session`, `harness-mcp-server`, `harness-sandbox`, `harness-skills` | Capacidades transversales |
+| 1 | Módulos verticales | `module-db`, `module-ssh` | Dominios concretos (F4) |
+| 0 | Plataforma | tokio, sqlx, russh, portable-pty, axum, tower-http, ... | Crates externos |
 
 ## Reglas
-- Dependencias **estrictamente hacia abajo**. Nunca un módulo (1) depende de App Server (4).
-- Módulos (1) **exponen** tools al core (3) por un trait `HarnessTool` (un sólo punto de contacto).
-- Surfaces (5) **solo** hablan con (4). Nunca importan core directo.
-- (3) no conoce el transporte: emite eventos a un `EventSink` abstracto que (4) implementa.
+
+- Dependencias **estrictamente hacia abajo**. Nunca un módulo vertical (1) depende de un route handler (4).
+- Módulos (1) **exponen** tools al `harness-mcp-server` (2). El core (3) las descubre vía registry.
+- La UI (5) **solo** habla con HTTP+SSE de (4). Nunca importa core directo.
+- (3) emite eventos a un `EventSink` abstracto que (4) implementa como hub SSE.
+- Cualquier crate en (2/3) es **testeable sin levantar el servidor** (4).
 
 ## Beneficios
-- Probar el core sin levantar App Server.
+
+- Cambiar Axum por otro framework solo toca (4).
+- Probar el scheduler sin tocar HTTP.
 - Añadir un módulo no toca capas superiores.
-- Sustituir transporte (stdio → websocket) sin tocar core.
+- Sustituir SQLite por otro motor solo toca crates de (2/3) según features.
 
 ## Anti-patrones
-- Lógica de negocio en el message processor (capa 4): debe ir al core.
-- UI invocando `module-db` directamente: rompe la capa 4 y la auditoría/seguridad.
-- Sandbox como wrapper opcional: debe ser obligatorio para tools nativas.
+
+| Mal | Bien |
+|---|---|
+| Lógica de negocio en route handlers (capa 4) | Handlers thin; lógica en `harness-core` |
+| UI invocando `module-db` directamente | UI → HTTP REST → harness-server → module |
+| Sandbox como wrapper opcional | Obligatorio para tools que mutan FS o ejecutan código |
+| Crates de la capa 2 importando `axum` | (2) no conoce el transport |
+| Sesiones PTY vivas como singletons | Manejadas por `harness-session` con cleanup determinista |

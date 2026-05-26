@@ -1,50 +1,86 @@
 ---
 id: app-server/backward-compat
-title: Compatibilidad hacia atrás
+title: harness-server — versionado de API
 shard: 04-app-server
-tags: [versioning, compat, protocol]
-summary: Reglas para que clientes y servers desincronizados sigan trabajando.
-related: [architecture/ipc-protocol, app-server/overview]
-sources: [foundations/openai-codex-architecture]
+tags: [server, versioning, api]
+summary: Header `X-Protocol-Version`, reglas aditivas, deprecación gradual.
+related: [app-server/overview, architecture/ipc-protocol]
+sources: []
 ---
 
-# Backward compat
+# Versionado de API
 
 ## Principio
-Un App Server nuevo **debe** servir a clientes viejos. Un cliente nuevo **debe** degradar features faltantes al hablar con un server viejo.
+
+Un `harness-server` nuevo **debe** servir a clientes (frontend) viejos. Un frontend nuevo **debe** degradar features faltantes al hablar con un server viejo.
+
+Esto importa especialmente cuando:
+- Distribuyes binarios pre-compilados de server y frontend independientemente.
+- El usuario hace `docker compose pull` parcial.
+- Tienes dos máquinas con versiones distintas (frontend en LAN remoto).
 
 ## Mecanismos
 
-### Negociación
-`session.initialize` lleva `protocolVersion` y `clientFeatures`. La respuesta lleva `serverFeatures` (intersección publicada).
+### Header `X-Protocol-Version`
+Toda response del backend incluye `X-Protocol-Version: 1.0` (o el actual). Toda request del frontend incluye su propio header.
 
-### Aditivos, no destructivos
-- **Añadir campos opcionales**: OK.
-- **Añadir métodos**: OK (cliente lo detecta por feature flag).
-- **Renombrar/remover métodos**: ❌. Mantener alias por una versión major.
-- **Cambiar semántica de un campo**: ❌. Crear campo nuevo.
+Negociación implícita:
+- Mismo major → compatible.
+- Server major mayor → ofrece compat shim al cliente viejo.
+- Cliente major mayor que server → cliente degrada (skip features 1.x).
 
-### Items y kinds
-- Kinds nuevos de item se ignoran como `unknown` por clientes viejos (UI los oculta).
-- Nunca cambiar el shape de un kind existente; crear `assistant_message.v2` si hace falta.
+### Endpoint `/api/capabilities`
+```jsonc
+GET /api/capabilities
+{
+  "protocol_version": "1.2",
+  "server_version": "0.4.0",
+  "features": [
+    "skills.search",
+    "skills.manage",
+    "memory.note",
+    "module.db",
+    "module.ssh"
+  ],
+  "deprecated": []
+}
+```
 
-### Errores
-Códigos -320xx están reservados, nuevos no rompen clientes (deben mostrar `message` y seguir).
+El frontend lo consulta al `initialize` y oculta UI de features no presentes.
 
-## Matriz de compatibilidad
+### Reglas para evolucionar
+- **Añadir campos opcionales**: OK siempre.
+- **Añadir endpoints**: OK.
+- **Añadir features a `capabilities`**: OK.
+- **Renombrar campos**: ❌. Crear campo nuevo, mantener viejo por una minor.
+- **Cambiar semántica de un campo**: ❌. Crear endpoint nuevo o campo nuevo.
+- **Remover endpoint**: anunciar en `deprecated` por al menos una minor, retirar en major.
 
-| Server / Cliente | v1.0 client | v1.1 client | v2.0 client |
-|---|---|---|---|
-| v1.0 server | OK | OK (sin features 1.1) | reject (major mismatch) |
-| v1.1 server | OK | OK | reject |
-| v2.0 server | OK con shim "v1-compat" | OK con shim | OK |
+## Tipos compartidos (ts-rs)
 
-Major bumps requieren shim explícito en el server por **al menos una versión**.
+Cuando una struct expuesta cambia:
+1. **Aditivo**: campo nuevo opcional. Regenera tipos. Frontend viejo lo ignora.
+2. **Breaking**: rename o cambio de tipo. Bump major, marca el shape viejo como `deprecated`.
 
-## Deprecaciones
-- Anunciar deprecation en `serverFeatures.deprecated = ["thread.foo"]`.
-- Cliente nuevo deja de usarlo, viejo sigue.
-- Tras 2 minor → remover en major bump.
+`just gen-types` debe ejecutarse antes de commit que toca structs expuestas. CI valida que `frontend/src/lib/api/types/` está al día.
 
-## Tests
-Suite de "golden requests/responses" por versión del protocolo. CI corre contra todas las versiones soportadas para detectar regresión.
+## Estrategia de release
+
+- Patch (0.4.0 → 0.4.1): bug fixes, no API changes.
+- Minor (0.4 → 0.5): nuevos endpoints / features. Aditivo.
+- Major (1.x → 2.x): breaking. Requiere shim "v1-compat" en el server por al menos una minor.
+
+## Testing
+
+- Golden requests/responses por versión en `backend/tests/golden/`.
+- CI corre el suite golden contra todas las versiones soportadas.
+- Si el cambio es breaking sin shim → CI falla.
+
+## Anti-patrones
+
+| Mal | Bien |
+|---|---|
+| Cambiar shape de un endpoint sin bump | Bump minor + nuevo campo |
+| Borrar endpoint sin deprecation | Marcar `deprecated`, retirar en major |
+| Cliente asume features sin checkear `capabilities` | Pregunta `capabilities` al `initialize` |
+| Header de versión solo en `/health` | En todas las responses (header) |

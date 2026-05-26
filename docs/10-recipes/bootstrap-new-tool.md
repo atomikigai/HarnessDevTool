@@ -67,36 +67,46 @@ impl NamespaceHandler for GitNamespace {
 }
 ```
 
-## 4. Registrar en App Server
+## 4. Registrar en `harness-server`
 
-`crates/harness-app-server/src/main.rs`:
+`backend/crates/harness-server/src/app.rs`:
 ```rust
-let modules = ModuleRegistry::new()
-    .with(module_agents::register())
-    .with(module_db::register())
-    .with(module_ssh::register())
-    .with(module_git::register());     // ← nuevo
+let app = Router::new()
+    .merge(routes::health::router())
+    .merge(routes::threads::router())
+    .merge(routes::modules::db::router())         // F4
+    .merge(routes::modules::ssh::router())        // F4
+    .merge(routes::modules::git::router())        // ← nuevo
+    .with_state(state);
 ```
 
-`register()` devuelve `{ tools: Vec<Box<dyn HarnessTool>>, namespace: Box<dyn NamespaceHandler>, capabilities: ModuleCapabilities }`.
+Las tools del módulo (para que el CLI hijo las invoque vía MCP) se auto-registran con `inventory::submit!` en `harness-mcp-server/src/tools/`.
 
 ## 5. Schema y validación
-Añadir `schemas/module-git.v1.json` para los params de cada method. CI valida que todos los params estén schematizados.
+Añadir `backend/crates/harness-core/schemas/module-git.v1.json` para los params de cada operación. CI valida que todos los params estén schematizados.
 
 ## 6. Frontend (SvelteKit)
-- Nueva ruta `apps/desktop/src/routes/git/+page.svelte`.
-- Componente `<GitPanel>` que consume `rpc.call("module.git.log", ...)`.
-- Añadir al sidebar:
-  ```ts
-  // se publica via capabilities; sidebar lo recoge automáticamente
+- Nueva ruta `frontend/src/routes/git/+page.svelte`.
+- Componente `<GitPanel>` que consume `api.modules.git.log(...)`.
+- Añadir al sidebar (condicional según `capabilities.features`):
+  ```svelte
+  {#if $capabilities.features.includes("module.git")}
+    <SidebarItem href="/git" icon={iconGit} label="Git" />
+  {/if}
   ```
 
 ## 7. Tests
-- Unit en `crates/module-git/tests/`.
-- Integration: fixture con un repo git temporal, llamada via JSON-RPC.
+- Unit en `backend/crates/module-git/tests/`.
+- Integration: fixture con repo git temporal, hace requests HTTP al `harness-server` en tests E2E.
 
 ## 8. Docs
-Crear `docs/12-module-git/overview.md` (siguiendo formato [[meta/shard-format]]) y enlazar desde [[../README]].
+Crear `docs/15-module-git/overview.md` (siguiendo [[meta/shard-format]]) y enlazar desde [[../README]].
+
+## 9. Regenerar tipos
+```bash
+just gen-types
+```
+Si añadiste structs `pub` con `#[derive(TS)]`, esto las exporta a `frontend/src/lib/api/types/`.
 
 ## Checklist
 - [ ] Crate creado y añadido al workspace

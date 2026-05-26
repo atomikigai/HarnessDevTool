@@ -15,7 +15,12 @@ sources: [references/sources]
 | **Harness** | Capa de software entre el modelo y el mundo: orquesta prompt, tools, sandbox, persistencia y UI. No es el modelo; lo envuelve. |
 | **Surface** | Cliente que consume el harness: CLI, IDE, Web, Desktop. |
 | **Core** | Librería compartida con la lógica del harness. En este proyecto: `harness-core` (Rust). |
-| **App Server** | Proceso largo que aloja threads del core y los expone vía JSON-RPC. Ver [[app-server/overview]]. |
+| **harness-server** | Único binario backend (Axum). Sirve HTTP+SSE a la UI y aloja threads/tasks/sessions. Anteriormente "App Server" en el modelo Codex. Ver [[app-server/overview]]. |
+| **harness-bridge** | MCP server local (uno por spawn) que expone rails Rust al CLI hijo. Ver [[agents/rust-rails]]. |
+| **Spawn** | Proceso `claude`/`codex` lanzado para resolver una task. Efímero. Ver [[agents/spawn-lifecycle]]. |
+| **Profile** | Namespace aislado con threads, memoria, skills, auth propios. Ver [[cross-cutting/profiles]]. |
+| **CONTINUITY.md** | Archivo auto-generado con estado vivo del profile. Ver [[memory/continuity]]. |
+| **Rail (Rust rail)** | Función determinística expuesta como tool MCP al CLI hijo. Ver [[agents/rust-rails]]. |
 | **Thread** | Sesión durable de conversación. Contiene N turns. Estados: active, archived. |
 | **Turn** | Unidad de trabajo iniciada por un mensaje de usuario. Termina cuando el agente emite respuesta final. |
 | **Item** | Unidad atómica de I/O dentro de un turn. Ciclo: `started → delta* → completed`. |

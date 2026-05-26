@@ -14,9 +14,10 @@
     --accent: #f59e0b;
     --surface: #60a5fa;
     --transport: #a78bfa;
-    --core: #34d399;
+    --server: #34d399;
     --service: #f472b6;
     --module: #fbbf24;
+    --agent: #ec4899;
     --platform: #64748b;
     --flow: #fb923c;
     --note: #fde68a;
@@ -31,48 +32,20 @@
     font-size: 14px;
     line-height: 1.5;
   }
-  h1 {
-    margin: 0 0 8px;
-    font-size: 28px;
-    font-weight: 700;
-  }
-  h1 .sub {
-    color: var(--muted);
-    font-weight: 400;
-    font-size: 16px;
-  }
-  .lead {
-    color: var(--muted);
-    max-width: 880px;
-    margin-bottom: 32px;
-  }
+  h1 { margin: 0 0 8px; font-size: 28px; font-weight: 700; }
+  h1 .sub { color: var(--muted); font-weight: 400; font-size: 16px; }
+  .lead { color: var(--muted); max-width: 880px; margin-bottom: 32px; }
   .legend {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 16px;
+    display: flex; flex-wrap: wrap; gap: 16px;
     padding: 12px 16px;
     background: var(--panel);
     border: 1px solid var(--border);
     border-radius: 8px;
     margin-bottom: 24px;
   }
-  .legend .chip {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    font-size: 13px;
-  }
-  .dot {
-    width: 12px;
-    height: 12px;
-    border-radius: 3px;
-    display: inline-block;
-  }
-  .arch {
-    display: flex;
-    flex-direction: column;
-    gap: 22px;
-  }
+  .legend .chip { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; }
+  .dot { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+  .arch { display: flex; flex-direction: column; gap: 22px; }
   .layer {
     border: 1px solid var(--border);
     border-radius: 12px;
@@ -80,32 +53,11 @@
     padding: 16px 20px;
     position: relative;
   }
-  .layer-head {
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    margin-bottom: 12px;
-  }
-  .layer-title {
-    font-weight: 700;
-    font-size: 15px;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-  }
-  .layer-num {
-    font-size: 12px;
-    color: var(--muted);
-    font-family: ui-monospace, Menlo, monospace;
-  }
-  .layer-desc {
-    color: var(--muted);
-    font-size: 12.5px;
-    margin-bottom: 14px;
-  }
-  .row {
-    display: grid;
-    gap: 12px;
-  }
+  .layer-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 12px; }
+  .layer-title { font-weight: 700; font-size: 15px; letter-spacing: 0.04em; text-transform: uppercase; }
+  .layer-num { font-size: 12px; color: var(--muted); font-family: ui-monospace, Menlo, monospace; }
+  .layer-desc { color: var(--muted); font-size: 12.5px; margin-bottom: 14px; }
+  .row { display: grid; gap: 12px; }
   .row.cols-2 { grid-template-columns: repeat(2, 1fr); }
   .row.cols-3 { grid-template-columns: repeat(3, 1fr); }
   .row.cols-4 { grid-template-columns: repeat(4, 1fr); }
@@ -121,40 +73,25 @@
     font-weight: 600;
     font-family: ui-monospace, Menlo, monospace;
     font-size: 13px;
-    color: var(--text);
     margin-bottom: 4px;
   }
-  .box .meta {
-    color: var(--muted);
-    font-size: 12px;
-  }
+  .box .meta { color: var(--muted); font-size: 12px; }
   .box.surface  { border-left-color: var(--surface); }
   .box.transport{ border-left-color: var(--transport); }
-  .box.core     { border-left-color: var(--core); }
+  .box.server   { border-left-color: var(--server); }
   .box.service  { border-left-color: var(--service); }
   .box.module   { border-left-color: var(--module); }
-
+  .box.agent    { border-left-color: var(--agent); }
   .arrow {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    color: var(--flow);
-    font-family: ui-monospace, Menlo, monospace;
-    font-size: 11px;
-    position: relative;
-    height: 22px;
+    display: flex; align-items: center; justify-content: center;
+    color: var(--flow); font-family: ui-monospace, Menlo, monospace; font-size: 11px;
+    position: relative; height: 22px;
   }
   .arrow::before, .arrow::after {
-    content: "";
-    flex: 1;
-    border-top: 1px dashed var(--flow);
-    opacity: 0.55;
+    content: ""; flex: 1; border-top: 1px dashed var(--flow); opacity: 0.55;
   }
   .arrow span {
-    padding: 0 12px;
-    background: var(--bg);
-    color: var(--flow);
-    white-space: nowrap;
+    padding: 0 12px; background: var(--bg); color: var(--flow); white-space: nowrap;
   }
   .note {
     background: rgba(253, 230, 138, 0.06);
@@ -166,7 +103,6 @@
     margin-top: 10px;
   }
   .note b { color: #fef3c7; }
-
   .flow-section {
     margin-top: 40px;
     padding: 20px;
@@ -174,10 +110,7 @@
     border: 1px solid var(--border);
     border-radius: 12px;
   }
-  .flow-section h2 {
-    margin: 0 0 16px;
-    font-size: 18px;
-  }
+  .flow-section h2 { margin: 0 0 16px; font-size: 18px; }
   .steps {
     counter-reset: step;
     display: grid;
@@ -195,19 +128,13 @@
   }
   .step::before {
     content: counter(step);
-    position: absolute;
-    left: 10px;
-    top: 10px;
-    width: 22px;
-    height: 22px;
+    position: absolute; left: 10px; top: 10px;
+    width: 22px; height: 22px;
     background: var(--accent);
     color: #1a1a1a;
     border-radius: 50%;
-    font-weight: 700;
-    font-size: 12px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
+    font-weight: 700; font-size: 12px;
+    display: flex; align-items: center; justify-content: center;
   }
   .step code {
     background: rgba(255,255,255,0.06);
@@ -215,12 +142,7 @@
     border-radius: 3px;
     font-size: 12px;
   }
-  footer {
-    margin-top: 40px;
-    color: var(--muted);
-    font-size: 12px;
-    text-align: center;
-  }
+  footer { margin-top: 40px; color: var(--muted); font-size: 12px; text-align: center; }
   @media (max-width: 760px) {
     .row.cols-2, .row.cols-3, .row.cols-4 { grid-template-columns: 1fr; }
     .steps { grid-template-columns: 1fr; }
@@ -229,182 +151,190 @@
 </head>
 <body>
 
-<h1>HarnessDevTool <span class="sub">— Arquitectura propuesta</span></h1>
+<h1>HarnessDevTool <span class="sub">— Arquitectura (cleanup tras pivote)</span></h1>
 <p class="lead">
-  Un núcleo en <b>Rust</b> (<code>harness-core</code>) compartido por todas las superficies (UI desktop, CLI, futura web).
-  Expuesto vía un broker <b>JSON-RPC sobre stdio</b> (<code>harness-app-server</code>) inspirado en Codex.
-  Encima, una shell <b>SvelteKit + Tauri</b> con tres módulos verticales: <b>Agentes (Claude CLI)</b>,
-  <b>DB Manager</b> y <b>SSH/SFTP Manager</b>.
+  <b>Web UI primario</b> (SvelteKit + adapter-node) hablando HTTP+SSE con un backend Rust
+  (<code>harness-server</code>, Axum). El backend <b>orquesta</b> instancias de <code>claude</code>/<code>codex</code>
+  CLI del host vía PTY, y les expone <b>rails determinísticas</b> mediante un MCP server local
+  (<code>harness-bridge</code>). Tres trabajos en paralelo: orquestación (tasks), módulos
+  verticales (DB, SSH) y auto-mejora (Skills, Curator, Learner).
 </p>
 
 <div class="legend">
   <span class="chip"><span class="dot" style="background:var(--surface)"></span> Surface (UI)</span>
-  <span class="chip"><span class="dot" style="background:var(--transport)"></span> Transporte</span>
-  <span class="chip"><span class="dot" style="background:var(--core)"></span> Core (harness)</span>
-  <span class="chip"><span class="dot" style="background:var(--service)"></span> Servicios</span>
+  <span class="chip"><span class="dot" style="background:var(--transport)"></span> Wire (HTTP/SSE/stdio)</span>
+  <span class="chip"><span class="dot" style="background:var(--server)"></span> harness-server (Axum)</span>
+  <span class="chip"><span class="dot" style="background:var(--service)"></span> Servicios internos</span>
   <span class="chip"><span class="dot" style="background:var(--module)"></span> Módulos verticales</span>
+  <span class="chip"><span class="dot" style="background:var(--agent)"></span> Agentes (CLI hijos)</span>
   <span class="chip"><span class="dot" style="background:var(--platform)"></span> Plataforma</span>
   <span class="chip"><span class="dot" style="background:var(--flow)"></span> Flujo de datos</span>
 </div>
 
 <div class="arch">
 
-  <!-- LAYER 5: SURFACES -->
+  <!-- LAYER 5: UI -->
   <div class="layer">
     <div class="layer-head">
-      <div class="layer-title">Surfaces — Interfaces de usuario</div>
+      <div class="layer-title">Surface — Web UI</div>
       <div class="layer-num">capa 5</div>
     </div>
-    <div class="layer-desc">Lo que el usuario ve. No contienen lógica de agente; solo hablan JSON-RPC.</div>
+    <div class="layer-desc">Single-user local. Browser → frontend container.</div>
     <div class="row cols-2">
       <div class="box surface">
-        <div class="name">apps/desktop (Tauri + SvelteKit)</div>
-        <div class="meta">Shell principal · sidebar: Agentes / DB / SSH · stores Svelte enlazados a items en vivo</div>
+        <div class="name">frontend (SvelteKit + adapter-node)</div>
+        <div class="meta">Tailwind · shadcn-svelte · lucide · xterm.js · valibot · pnpm · Docker node:alpine</div>
       </div>
       <div class="box surface">
-        <div class="name">apps/cli (harness-cli)</div>
-        <div class="meta">TTY render para uso headless, scripting y CI</div>
+        <div class="name">CLI client (pospuesto post-F6)</div>
+        <div class="meta">Mismo backend, otro consumidor de HTTP+SSE. Fuera de scope inmediato.</div>
       </div>
     </div>
     <div class="note">
-      <b>Nota:</b> ambas surfaces lanzan el mismo binario <code>harness-app-server</code> como proceso hijo.
-      Garantiza paridad de comportamiento y permite reusar threads entre surfaces.
+      <b>Tauri descartado.</b> Web UI con PWA install cubre 80% del "feel" nativo y permite
+      acceso remoto/self-host trivial.
     </div>
   </div>
 
-  <div class="arrow"><span>JSON-RPC 2.0 · JSONL stdio · bidireccional (requests, responses, notifications)</span></div>
+  <div class="arrow"><span>HTTP REST + SSE · JSON tipado con ts-rs · CORS</span></div>
 
-  <!-- LAYER 4: TRANSPORT -->
+  <!-- LAYER 4: SERVER -->
   <div class="layer">
     <div class="layer-head">
-      <div class="layer-title">harness-app-server — Broker</div>
-      <div class="layer-num">capa 4</div>
+      <div class="layer-title">harness-server (Axum)</div>
+      <div class="layer-num">capa 4 — único binario backend</div>
     </div>
-    <div class="layer-desc">Proceso largo. Traduce JSON-RPC a operaciones del core. Versiona el protocolo para compatibilidad hacia atrás.</div>
+    <div class="layer-desc">Routes REST + SSE hub + scheduler + sessions. Container distroless.</div>
     <div class="row cols-3">
-      <div class="box transport">
-        <div class="name">stdio transport</div>
-        <div class="meta">Lee/escribe líneas JSON · framing por <code>\n</code></div>
+      <div class="box server">
+        <div class="name">Axum Router</div>
+        <div class="meta">/api/threads, /api/tasks, /api/sessions, /api/events (SSE), /api/memory, /api/skills, /api/profile</div>
       </div>
-      <div class="box transport">
-        <div class="name">message processor</div>
-        <div class="meta">Routing por namespace · validación de params</div>
+      <div class="box server">
+        <div class="name">SSE Hub</div>
+        <div class="meta">Broadcast por thread · Last-Event-ID resume · backpressure · heartbeat</div>
       </div>
-      <div class="box transport">
-        <div class="name">thread manager</div>
-        <div class="meta">Crea/resume/fork/archive · 1 task Tokio por thread</div>
+      <div class="box server">
+        <div class="name">tower-http stack</div>
+        <div class="meta">CORS · trace · compression · timeout</div>
       </div>
-    </div>
-    <div class="note">
-      <b>Por qué un proceso aparte y no in-process en Tauri:</b> si la UI crashea o el tab del browser
-      se cierra, el agente sigue trabajando. Mismo patrón usado por Codex App Server.
     </div>
   </div>
 
-  <div class="arrow"><span>API in-process (traits Rust)</span></div>
+  <div class="arrow"><span>in-process API (traits Rust)</span></div>
 
   <!-- LAYER 3: CORE -->
   <div class="layer">
     <div class="layer-head">
-      <div class="layer-title">harness-core — Núcleo del harness</div>
+      <div class="layer-title">harness-core — Orquestación</div>
       <div class="layer-num">capa 3</div>
     </div>
-    <div class="layer-desc">El cerebro. Una sola librería, varias surfaces. Inspirado en "Codex core".</div>
+    <div class="layer-desc">Pura lógica, sin Axum. Threads, tasks, scheduler, storage.</div>
     <div class="row cols-4">
-      <div class="box core">
-        <div class="name">agent loop</div>
-        <div class="meta">prompt → model → tool calls → repetir</div>
+      <div class="box server">
+        <div class="name">threads</div>
+        <div class="meta">create/resume/fork/archive · events.jsonl append-only</div>
       </div>
-      <div class="box core">
-        <div class="name">prompt builder</div>
-        <div class="meta">Orden estricto: estático antes que dinámico (prefix cache)</div>
+      <div class="box server">
+        <div class="name">tasks (state machine)</div>
+        <div class="meta">claim+lease · 7 estados · auto-unblock · contracts</div>
       </div>
-      <div class="box core">
-        <div class="name">turn / item engine</div>
-        <div class="meta">started → delta* → completed · UI incremental</div>
+      <div class="box server">
+        <div class="name">scheduler</div>
+        <div class="meta">tick 2s · affinity · concurrency cap · cooldown</div>
       </div>
-      <div class="box core">
-        <div class="name">thread store</div>
-        <div class="meta">events.jsonl append-only · index SQLite</div>
+      <div class="box server">
+        <div class="name">store</div>
+        <div class="meta">SQLite + FTS5 (memoria/skills/events) · git por profile</div>
       </div>
-      <div class="box core">
-        <div class="name">compaction</div>
-        <div class="meta">Reduce historial preservando semántica</div>
-      </div>
-      <div class="box core">
-        <div class="name">approval flow</div>
-        <div class="meta">Pausa, pide allow/deny al cliente</div>
-      </div>
-      <div class="box core">
-        <div class="name">streaming</div>
-        <div class="meta">SSE del provider → notifications JSON-RPC</div>
-      </div>
-      <div class="box core">
-        <div class="name">cancellation</div>
-        <div class="meta">Tokens propagan a tools y al provider</div>
-      </div>
-    </div>
-    <div class="note">
-      <b>Append-only es load-bearing:</b> mutar el historial invalida el prefix cache del provider y
-      multiplica el costo. Cambios "tardíos" se hacen apendizando, nunca insertando atrás.
     </div>
   </div>
 
-  <div class="arrow"><span>Capacidades transversales (traits)</span></div>
+  <div class="arrow"><span>Servicios transversales</span></div>
 
   <!-- LAYER 2: SERVICES -->
   <div class="layer">
     <div class="layer-head">
-      <div class="layer-title">Servicios transversales</div>
+      <div class="layer-title">Servicios</div>
       <div class="layer-num">capa 2</div>
     </div>
     <div class="row cols-3">
       <div class="box service">
+        <div class="name">harness-session</div>
+        <div class="meta">PTY manager (portable-pty) · spawn claude/codex · output.log</div>
+      </div>
+      <div class="box service">
+        <div class="name">harness-mcp-server</div>
+        <div class="meta">MCP server stdio expuesto al CLI hijo · 1 por spawn · rails Rust</div>
+      </div>
+      <div class="box service">
+        <div class="name">harness-skills (F5)</div>
+        <div class="meta">Skills CRUD · Learner (proposed/) · Curator determinístico · FTS5</div>
+      </div>
+      <div class="box service">
         <div class="name">harness-sandbox</div>
-        <div class="meta">seccomp (Linux) · sandbox-exec (macOS) · AppContainer (Win) · FS jail por turn</div>
+        <div class="meta">seccomp · sandbox-exec · AppContainer · FS jail</div>
       </div>
       <div class="box service">
-        <div class="name">harness-mcp</div>
-        <div class="meta">Cliente MCP (stdio + http) · 1 child por server registrado</div>
+        <div class="name">memory layer</div>
+        <div class="meta">CONTINUITY.md auto · decisions/pending/in-flight/facts/snapshots</div>
       </div>
       <div class="box service">
-        <div class="name">harness-llm</div>
-        <div class="meta">Adaptadores: Anthropic, OpenAI, locales · stateless por defecto</div>
+        <div class="name">profiles</div>
+        <div class="meta">Aislamiento: 2+ contextos · cli-state · git remote por profile</div>
       </div>
     </div>
   </div>
 
-  <div class="arrow"><span>Cada módulo expone tools al core vía trait <code>HarnessTool</code></span></div>
+  <div class="arrow"><span>Cada módulo expone tools al MCP server + rutas REST</span></div>
 
   <!-- LAYER 1: MODULES -->
   <div class="layer">
     <div class="layer-head">
-      <div class="layer-title">Módulos verticales</div>
+      <div class="layer-title">Módulos verticales (F4)</div>
       <div class="layer-num">capa 1</div>
     </div>
-    <div class="layer-desc">Dominios concretos. Cada uno aporta tools al agente y vistas en SvelteKit.</div>
-    <div class="row cols-3">
-      <div class="box module">
-        <div class="name">module-agents</div>
-        <div class="meta">Lanza <code>claude</code> CLI · PTY en Rust (<code>portable-pty</code>) · N sesiones · stream a la UI</div>
-      </div>
+    <div class="row cols-2">
       <div class="box module">
         <div class="name">module-db</div>
-        <div class="meta">SQLite / Postgres / MySQL vía <code>sqlx</code> · query runner · introspección · pool por conexión guardada</div>
+        <div class="meta">SQLite default (postgres/mysql features) · sqlx · vista SvelteKit con CodeMirror SQL</div>
       </div>
       <div class="box module">
         <div class="name">module-ssh</div>
-        <div class="meta">SSH + SFTP vía <code>russh</code> · cola de transferencias resumable · estilo FileZilla</div>
+        <div class="meta">russh + russh-sftp · FileZilla-style · cola con resume</div>
       </div>
     </div>
     <div class="note">
-      <b>Patrón uniforme:</b> cada módulo expone (a) <i>tools</i> que el agente puede invocar y
-      (b) <i>operaciones JSON-RPC</i> que la UI invoca directamente sin pasar por el LLM (p.ej. abrir un panel SFTP).
-      Eso evita gastar tokens en acciones puramente humanas.
+      <b>Doble entrada:</b> el humano usa estos módulos vía la UI (sin gastar tokens), y el
+      agente puede invocarlos como tools MCP (<code>db.query</code>, <code>ssh.exec</code>, etc.).
     </div>
   </div>
 
-  <div class="arrow"><span>Crates base</span></div>
+  <div class="arrow"><span>spawn (process child) · PTY + stdio MCP</span></div>
+
+  <!-- LAYER 0.5: AGENTS -->
+  <div class="layer">
+    <div class="layer-head">
+      <div class="layer-title">Agentes — CLIs hijos efímeros</div>
+      <div class="layer-num">capa 0.5</div>
+    </div>
+    <div class="layer-desc">Una task = un spawn fresco. El CLI hijo corre el agent loop; nosotros orquestamos.</div>
+    <div class="row cols-4">
+      <div class="box agent"><div class="name">orchestrator (planner)</div><div class="meta">F2 · spec.md + DAG + contratos</div></div>
+      <div class="box agent"><div class="name">frontend (gen)</div><div class="meta">F3 · SvelteKit/Tailwind/shadcn</div></div>
+      <div class="box agent"><div class="name">backend (gen)</div><div class="meta">F3 · Rust/Axum/sqlx</div></div>
+      <div class="box agent"><div class="name">database (gen)</div><div class="meta">F3 · SQL/migrations</div></div>
+      <div class="box agent"><div class="name">devops (gen)</div><div class="meta">F3 · Docker/CI/deploy</div></div>
+      <div class="box agent"><div class="name">qa (eval)</div><div class="meta">F3 · escribe tests; Rust los corre</div></div>
+      <div class="box agent"><div class="name">generic (gen)</div><div class="meta">F3 · fallback</div></div>
+      <div class="box agent"><div class="name">arbitrator</div><div class="meta">F3 · drift_minor (call ligero)</div></div>
+      <div class="box agent"><div class="name">learner (async)</div><div class="meta">F5 · propone skills</div></div>
+      <div class="box agent"><div class="name">curator (background)</div><div class="meta">F5 det · F6 LLM review</div></div>
+      <div class="box agent"><div class="name">psychologist</div><div class="meta">F6 · actualiza USER.md</div></div>
+    </div>
+  </div>
+
+  <div class="arrow"><span>Crates externos</span></div>
 
   <!-- LAYER 0: PLATFORM -->
   <div class="layer">
@@ -413,40 +343,41 @@
       <div class="layer-num">capa 0</div>
     </div>
     <div class="row cols-4">
-      <div class="box"><div class="name">tokio</div><div class="meta">Runtime async</div></div>
-      <div class="box"><div class="name">serde_json</div><div class="meta">JSON-RPC framing</div></div>
-      <div class="box"><div class="name">tracing</div><div class="meta">Spans por turn/tool</div></div>
-      <div class="box"><div class="name">sqlx</div><div class="meta">DB drivers</div></div>
-      <div class="box"><div class="name">russh / russh-sftp</div><div class="meta">SSH puro Rust</div></div>
+      <div class="box"><div class="name">tokio</div><div class="meta">async runtime</div></div>
+      <div class="box"><div class="name">axum + tower-http</div><div class="meta">HTTP server</div></div>
+      <div class="box"><div class="name">ts-rs</div><div class="meta">tipos Rust→TS</div></div>
+      <div class="box"><div class="name">sqlx</div><div class="meta">DBs + FTS5</div></div>
       <div class="box"><div class="name">portable-pty</div><div class="meta">PTY cross-OS</div></div>
-      <div class="box"><div class="name">tauri</div><div class="meta">Desktop shell</div></div>
-      <div class="box"><div class="name">seccompiler / sandbox-exec</div><div class="meta">Aislamiento OS</div></div>
+      <div class="box"><div class="name">russh / russh-sftp</div><div class="meta">SSH puro Rust</div></div>
+      <div class="box"><div class="name">tracing</div><div class="meta">spans + métricas</div></div>
+      <div class="box"><div class="name">git2</div><div class="meta">versionado memoria/skills</div></div>
     </div>
   </div>
 
 </div>
 
-<!-- FLUJO -->
+<!-- FLOW -->
 <div class="flow-section">
   <h2>Flujo de un request (de la UI a la respuesta final)</h2>
   <div class="steps">
-    <div class="step">Usuario escribe en SvelteKit. El store emite <code>thread.send</code> por JSON-RPC al App Server.</div>
-    <div class="step">App Server enruta al <i>thread manager</i> y abre un nuevo <code>turn</code> en el thread activo.</div>
-    <div class="step">El core construye el prompt (orden estricto: dev msg → config → AGENTS.md → env → user).</div>
-    <div class="step">Llama al provider (Anthropic/OpenAI). Streamea SSE.</div>
-    <div class="step">Cada chunk → <code>item.delta</code> notification → la UI lo pinta en vivo (markdown incremental).</div>
-    <div class="step">Si el modelo pide <i>tool call</i>: nativa → sandbox; MCP → cliente MCP; módulo → DB/SSH/Agentes.</div>
-    <div class="step">El resultado se apendiza al historial sin alterar el prefijo (preserva el prefix cache).</div>
-    <div class="step">Loop hasta que el modelo emite mensaje final → <code>turn.completed</code> → UI cierra el spinner.</div>
-    <div class="step">Todo se persiste a <code>events.jsonl</code>. Si la UI se cae, el agente sigue; al reconectar replayea.</div>
-    <div class="step">Acciones riesgosas pausan con <code>approval.request</code> y esperan <code>allow</code>/<code>deny</code> humano.</div>
+    <div class="step">Usuario escribe en SvelteKit. Click "New task" → <code>POST /api/threads/:id/sessions</code> al harness-server.</div>
+    <div class="step">Backend valida, crea spawn record, lanza <code>claude</code> hijo con PTY + <code>--mcp-config</code> apuntando al harness-bridge local.</div>
+    <div class="step">Browser ya tenía abierta <code>GET /api/events</code> (SSE multiplex). Empieza a recibir <code>spawn.output</code> items.</div>
+    <div class="step">PTY bytes → xterm.js en vivo (WebGL2 renderer, 60fps).</div>
+    <div class="step">El CLI hijo invoca rails: <code>task.claim</code>, <code>memory.search</code>, <code>spec.read</code>, <code>skills.search</code>...</div>
+    <div class="step">Rails validan, leen/escriben en disco (events.jsonl, tasks/, memory/, skills/) y devuelven JSON tipado.</div>
+    <div class="step">Tools sensibles (<code>memory.note</code>, <code>skills.manage</code>) disparan <code>approval.request</code> → SSE → modal en UI.</div>
+    <div class="step">Humano click "Allow" → respuesta HTTP → backend completa la llamada MCP pendiente → CLI continúa.</div>
+    <div class="step">Task pasa a <code>pending_verify</code> → scheduler asigna a un QA agent (otro spawn).</div>
+    <div class="step">QA escribe tests, Rust los corre (shell.exec sandboxed), verdict por exit code → <code>task.verified</code> o <code>verify-fail</code>.</div>
+    <div class="step">Contract diff (Rust): si drift_minor → arbitrator (call corto); si major → re-plan al orchestrator (cap K=2).</div>
+    <div class="step">Al cierre del thread, learner observa traces y deja drafts en <code>skills/proposed/</code> para review humano.</div>
   </div>
 </div>
 
 <footer>
-  Ver shards: <code>docs/01-foundations/openai-codex-architecture.md</code> ·
-  <code>docs/02-architecture/system-overview.md</code> ·
-  <code>docs/02-architecture/ipc-protocol.md</code>
+  Doc canónica en <code>docs/12-build-plan/</code>, <code>docs/13-agents/</code>, <code>docs/14-memory/</code>.
+  Diagrama actualizado tras cleanup de inconsistencias pre-pivote.
 </footer>
 
 </body>

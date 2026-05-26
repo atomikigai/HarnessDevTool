@@ -96,8 +96,8 @@
               role="radio"
               aria-checked={kind === opt}
               class="flex-1 rounded-md border px-3 py-2 text-sm transition-colors {kind === opt
-                ? 'border-primary bg-primary text-primary-foreground'
-                : 'border-border bg-background text-muted-foreground hover:bg-accent hover:text-foreground'}"
+                ? 'border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent)] font-medium'
+                : 'border-[var(--border-input)] bg-[var(--surface-titlebar)] text-[var(--fg-muted)] hover:text-[var(--fg-default)]'}"
               onclick={() => (kind = opt)}
             >
               {opt}
@@ -108,11 +108,14 @@
       <div class="flex flex-col gap-2">
         <Label for="cwd">Working directory (optional)</Label>
         <Input id="cwd" bind:value={cwd} placeholder="/path/to/project" autocomplete="off" />
-        <p class="text-xs text-muted-foreground">Defaults to the backend process cwd when empty.</p>
+        <p class="text-xs text-[var(--fg-muted)]">
+          Defaults to the backend process cwd when empty.
+        </p>
       </div>
       {#if error}
         <p
-          class="rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2 text-xs text-destructive-foreground"
+          class="rounded-md border px-3 py-2 text-xs"
+          style="border-color: color-mix(in srgb, var(--dot-danger) 35%, transparent); background: color-mix(in srgb, var(--dot-danger) 10%, transparent); color: var(--dot-danger);"
         >
           {error}
         </p>

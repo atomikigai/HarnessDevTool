@@ -232,28 +232,40 @@
   }
 </script>
 
-<div class="flex h-full w-full flex-col bg-[#0b1220]">
-  <div class="flex items-center justify-between border-b border-border bg-card px-3 py-1.5">
-    <div class="flex items-center gap-2 text-xs text-muted-foreground">
+<div class="flex h-full w-full flex-col" style="background: #0b1220;">
+  <div
+    class="flex items-center justify-between border-b px-3 py-1.5"
+    style="background: var(--surface-panel); border-color: var(--border-subtle);"
+  >
+    <div class="flex items-center gap-2 text-xs" style="color: var(--fg-muted);">
       <span class="font-mono">{sessionId.slice(0, 8)}</span>
-      <span
-        class="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px]"
-        class:bg-emerald-500={connState === 'open'}
-        class:text-emerald-50={connState === 'open'}
-        class:bg-amber-500={connState === 'connecting' || connState === 'reconnecting'}
-        class:text-amber-50={connState === 'connecting' || connState === 'reconnecting'}
-        class:bg-zinc-600={connState === 'closed'}
-        class:text-zinc-100={connState === 'closed'}
-      >
-        {connState}
-      </span>
+      {#if connState === 'open'}
+        <span
+          class="inline-flex items-center gap-1.5 text-[10px]"
+          style="color: var(--dot-success);"
+        >
+          <span class="h-dot h-dot--ok"></span>
+          live
+        </span>
+      {:else if connState === 'connecting' || connState === 'reconnecting'}
+        <span class="inline-flex items-center gap-1.5 text-[10px]" style="color: var(--dot-warn);">
+          <span class="h-dot h-dot--warn"></span>
+          {connState}
+        </span>
+      {:else}
+        <span class="inline-flex items-center gap-1.5 text-[10px]" style="color: var(--fg-muted);">
+          <span class="h-dot"></span>
+          closed
+        </span>
+      {/if}
     </div>
     <Button
-      variant="destructive"
+      variant="outline"
       size="sm"
       onclick={onKill}
       disabled={killed || exited}
       title="Send SIGTERM and remove the session"
+      class="!text-[var(--dot-danger)] !border-[color-mix(in_srgb,var(--dot-danger)_35%,transparent)] hover:!bg-[color-mix(in_srgb,var(--dot-danger)_10%,transparent)]"
     >
       <Square class="h-3.5 w-3.5" />
       Kill

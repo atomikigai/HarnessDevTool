@@ -90,6 +90,7 @@
 - [[cross-cutting/security-model]] — Sandbox, secretos, host keys.
 - [[cross-cutting/testing-strategy]] — Unit, integration, eval.
 - [[cross-cutting/telemetry]] — Métricas opt-in.
+- [[cross-cutting/profiles]] — Aislamiento por contexto (dos trabajos, mismo stack).
 
 ### 10 · Recetas
 - [[recipes/bootstrap-new-tool]] — Cómo añadir un módulo nuevo.
@@ -115,3 +116,35 @@
 - [[build-plan/decisions-locked]] — Decisiones fijadas (no re-abrir sin justificación).
 - [[build-plan/open-questions]] — Preguntas abiertas por fase, lo siguiente a aclarar.
 - [[build-plan/risks]] — Matriz de riesgos con mitigaciones.
+
+### 13 · Agentes (runtime) ⭐
+**Mecanismo**
+- [[agents/overview]] — Roles, mapa de agentes, diagrama del loop.
+- [[agents/spawn-lifecycle]] — Efímero, lease, recovery.
+- [[agents/smart-loading]] — 3 niveles de decisión (declaración, recomendación, runtime).
+- [[agents/capability-registry]] — Catálogo canónico de MCPs, skill-tags, tools.
+- [[agents/rust-rails]] — Funciones determinísticas Rust que el LLM elige (no inventa).
+
+**Agentes — runtime principal**
+- [[agents/orchestrator]] — Planner: analiza, clarifica, descompone, declara contratos.
+- [[agents/frontend]] — Generator SvelteKit/Tailwind/shadcn.
+- [[agents/backend]] — Generator Rust/Axum.
+- [[agents/database]] — Generator SQL/sqlx/migrations.
+- [[agents/devops]] — Generator Docker/CI/deploy.
+- [[agents/qa]] — Evaluator (escribe tests; Rust los corre).
+- [[agents/generic]] — Generator fallback sin dominio.
+- [[agents/arbitrator]] — Resuelve drift_minor (call corto, barato).
+
+**Agentes — auto-mejora (F5/F6)**
+- [[agents/learner]] — Async batch; propone skills en `proposed/`.
+- [[agents/curator]] — Background; mantiene corpus de skills, nunca borra.
+- [[agents/psychologist]] — Actualiza `USER.md` con preferencias persistentes.
+
+### 14 · Memoria (continuidad) ⭐
+- [[memory/overview]] — Las 7 capas, filosofía, decisiones locked.
+- [[memory/layout]] — Layout en disco (profiles + shared + memory + skills + threads).
+- [[memory/entry-format]] — Frontmatter YAML + Markdown body; kinds y status.
+- [[memory/lifecycle]] — Transiciones; approval del humano para escritos de agentes.
+- [[memory/continuity]] — `CONTINUITY.md` auto + UI banner + inyección selectiva al resume.
+- [[memory/search-and-index]] — SQLite FTS5 + tool `memory.search`.
+- [[memory/git]] — Git por profile + shared; commits automáticos; remotes opcionales.

@@ -147,6 +147,35 @@ HarnessDevTool/
 ## Notas
 - `apps/desktop` ya no existe (Tauri descartado).
 - `apps/cli` pospuesto post-F6.
-- `shared/` no es necesario porque `ts-rs` resuelve el contrato.
+- `shared/` no es necesario en el repo del código porque `ts-rs` resuelve el contrato.
 - Cada crate sigue el patrón `Cargo.toml + src/lib.rs` (bin solo `harness-server` por ahora; en F6 puede añadirse un `harness-curator-cli` opcional).
-- Schemas JSON viven con `harness-core` (fuente de verdad lógica); el frontend los puede consumir si quiere validación runtime.
+- Schemas JSON viven con `harness-core` (fuente de verdad lógica); el frontend los puede consumir si quiere validación runtime con valibot.
+
+## Estado del usuario (runtime, no en este repo)
+
+Lo de arriba es el **repo del código del harness**. El **estado del usuario** vive aparte en `~/.harness/` y se mapea al container como volumen `/data`:
+
+```
+~/.harness/                              # estado runtime del usuario (no commit'd al repo del código)
+├── config.toml                          # default profile, telemetry global
+├── USER.md                              # global, capa 5a
+├── shared/                              # skills cross-profile
+│   ├── skills/agent_created/
+│   └── .git/                            # remote opcional del usuario
+├── profiles/
+│   ├── personal/
+│   │   ├── config.toml
+│   │   ├── PROFILE.md
+│   │   ├── memory/                      # decisions/pending/in-flight/facts/snapshots
+│   │   ├── skills/
+│   │   ├── threads/                     # events.jsonl, tasks/, spec.md, artifacts/
+│   │   ├── cli-state/                   # auth de claude/codex (no en git)
+│   │   ├── search.db                    # FTS5 (no en git)
+│   │   └── .git/                        # remote opcional del usuario
+│   └── work-acme/                       # otro profile, estructura idéntica
+├── active_profile -> profiles/personal  # symlink
+├── logs/                                # tracing rotado
+└── .runtime/                            # PIDs, locks (no en git)
+```
+
+Ver [[memory/layout]] para el detalle completo y [[cross-cutting/profiles]] para el concepto de profile.

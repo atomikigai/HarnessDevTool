@@ -83,6 +83,39 @@ sources: []
 | Windows | **F6 (soporte best-effort en F1–F5)** | ConPTY + sandbox espinosos |
 | Engines DB por defecto compilados | **Solo SQLite** | postgres/mysql como features |
 
+## Runtime de agentes
+
+| Decisión | Valor fijo | Razón |
+|---|---|---|
+| Modelo de agentes | **Efímeros con plantillas componibles (opción C)** | Aislamiento entre tasks, sin pool |
+| Roles canónicos | **planner / generator / evaluator / arbitrator / curator / learner** (+ psychologist F6) | Set finito, mapeable a shards |
+| Dominios componibles | **frontend / backend / database / devops / qa / generic** | 7 dominios iniciales en F3 |
+| Smart loading | **3 niveles: declared / recommended / runtime** | Mínimo overhead, defensa en profundidad |
+| `harness-bridge` MCP | **Siempre cargado** en cualquier spawn | Sin esto no hay rails |
+| Re-plan cap | **K = 2** | Tras 3 re-plans → abandoned + alerta humano |
+| user_approval tras planning | **Default ON (confirm)** | Evita corridas largas sobre malas specs |
+| Drift minor | **Rust diff + Arbitrator LLM ligero** | Decisión barata, auditable |
+| Generator ≠ Evaluator | **`verified_by != assignee`** | Anti auto-elogio (Anthropic) |
+
+## Memoria y profiles
+
+| Decisión | Valor fijo | Razón |
+|---|---|---|
+| Profiles | **Existen como primera clase** | Caso real: dos trabajos, mismo stack |
+| Profile activo | **Symlink `active_profile` + `HARNESS_PROFILE` env override** | Inspirado en Hermes |
+| Skills scope default | **Profile-scoped**; `promote` a `shared/` con review | Privacidad por defecto |
+| USER.md | **Global** en `~/.harness/USER.md` + `PROFILE.md` por profile | Una identidad, varios contextos |
+| Auth `claude`/`codex` | **Per profile** vía `cli-state/`; symlink dinámico | Imposible "cuenta equivocada" |
+| Memoria formato | **YAML frontmatter + Markdown body** | Estructura + prosa para el modelo |
+| Memoria kinds | **decision / pending / in_flight / fact / snapshot** | Set finito y enumerable |
+| `memory.note` de agentes | **Approval obligatorio** del humano | Filosofía Rust: nada cambia sin verse |
+| Inyección de continuidad al prompt | **Solo al resume** de thread existente; slice del thread | Evita polución de contexto |
+| `CONTINUITY.md` | **Auto-generado** on-change + 1h fallback, throttle 10s | Banner UI y resume útiles |
+| Índice de búsqueda | **SQLite FTS5** por profile | Rápido, embebido, regenerable |
+| Git por profile | **Default ON, remotes opcionales** | Auditoría + sync cross-machine |
+| Threads bajo git | **Opt-in por thread** (`harness profile track-thread`) | Evitar inflar git con event logs |
+| Push automático | **Off por default**; `auto_sync` opt-in | Control del usuario |
+
 ## Reglas meta
 
 - Cualquier decisión puede **re-abrirse** con justificación escrita en este shard (sección "revisitada" al fondo).

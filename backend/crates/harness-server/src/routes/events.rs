@@ -2,32 +2,133 @@ use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::extract::State;
+use axum::extract::{Query, State};
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::routing::get;
 use axum::Router;
-use futures::stream::Stream;
+use base64::engine::general_purpose::STANDARD as B64;
+use base64::Engine;
+use futures::stream::{self, Stream, StreamExt};
+use harness_session::SessionEvent;
+use serde::Deserialize;
+use serde_json::json;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio_stream::wrappers::BroadcastStream;
-use tokio_stream::StreamExt;
 
 use crate::state::AppState;
+
+#[derive(Debug, Default, Deserialize)]
+pub struct EventsQuery {
+    #[serde(default)]
+    pub thread: Option<String>,
+    #[serde(default)]
+    pub session: Option<String>,
+}
 
 pub fn router() -> Router<Arc<AppState>> {
     Router::new().route("/api/events", get(events))
 }
 
+const PTY_CATCHUP_CHUNK: usize = 4096;
+
 async fn events(
     State(state): State<Arc<AppState>>,
-) -> Sse<impl Stream<Item = Result<SseEvent, Infallible>>> {
-    let rx = state.tick_tx.subscribe();
-    let stream = BroadcastStream::new(rx).filter_map(|res| match res {
-        Ok(payload) => Some(Ok(SseEvent::default().data(payload))),
-        Err(_lag) => None,
-    });
+    Query(q): Query<EventsQuery>,
+) -> Sse<Box<dyn Stream<Item = Result<SseEvent, Infallible>> + Send + Unpin>> {
+    let stream: Box<dyn Stream<Item = Result<SseEvent, Infallible>> + Send + Unpin> =
+        match q.session {
+            Some(sid) => Box::new(Box::pin(session_stream(state, sid))),
+            None => {
+                // Legacy F0 behavior: forward the 5s tick channel as-is.
+                let _ = q.thread;
+                let rx = state.tick_tx.subscribe();
+                let s = BroadcastStream::new(rx).filter_map(|res| async move {
+                    match res {
+                        Ok(payload) => Some(Ok(SseEvent::default().data(payload))),
+                        Err(_lag) => None,
+                    }
+                });
+                Box::new(Box::pin(s))
+            }
+        };
 
     Sse::new(stream).keep_alive(
         KeepAlive::new()
             .interval(Duration::from_secs(15))
             .text("keep-alive"),
     )
+}
+
+/// Stream for `?session=<sid>`:
+///   1. Catch-up: chunk-encode the persisted `output.log` into `session.output`
+///      events with synthetic `seq` starting at 0.
+///   2. Live tail: forward bus events for this session, overriding `seq` so the
+///      sequence is contiguous across catch-up + live.
+fn session_stream(
+    state: Arc<AppState>,
+    sid: String,
+) -> impl Stream<Item = Result<SseEvent, Infallible>> + Send {
+    let manager = state.manager.clone();
+
+    // 1) Catch-up.
+    let history = match manager.read_output(&sid) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            tracing::warn!(error = %e, session = %sid, "no output.log for catch-up");
+            Vec::new()
+        }
+    };
+
+    let mut catchup_events: Vec<Result<SseEvent, Infallible>> = Vec::new();
+    let mut seq: u64 = 0;
+    for chunk in history.chunks(PTY_CATCHUP_CHUNK) {
+        let payload = json!({
+            "type": "session.output",
+            "session_id": sid,
+            "seq": seq,
+            "b64": B64.encode(chunk),
+        });
+        catchup_events.push(Ok(SseEvent::default()
+            .event("session.output")
+            .data(payload.to_string())));
+        seq += 1;
+    }
+    let catchup_stream = stream::iter(catchup_events);
+
+    // 2) Live tail. Wrap `seq` in an atomic so the per-item closure can mutate it.
+    let next_seq = Arc::new(AtomicU64::new(seq));
+    let rx = manager.subscribe();
+    let sid_filter = sid.clone();
+    let live = BroadcastStream::new(rx).filter_map(move |res| {
+        let sid_filter = sid_filter.clone();
+        let next_seq = next_seq.clone();
+        async move {
+            let ev = match res {
+                Ok(ev) => ev,
+                Err(_lag) => return None,
+            };
+            if ev.session_id() != sid_filter {
+                return None;
+            }
+            let event_name = ev.event_name();
+            let payload = match ev {
+                SessionEvent::Output {
+                    session_id, b64, ..
+                } => {
+                    let new_seq = next_seq.fetch_add(1, Ordering::SeqCst);
+                    json!({
+                        "type": "session.output",
+                        "session_id": session_id,
+                        "seq": new_seq,
+                        "b64": b64,
+                    })
+                    .to_string()
+                }
+                other => serde_json::to_string(&other).unwrap_or_else(|_| "{}".to_string()),
+            };
+            Some(Ok(SseEvent::default().event(event_name).data(payload)))
+        }
+    });
+
+    catchup_stream.chain(live)
 }

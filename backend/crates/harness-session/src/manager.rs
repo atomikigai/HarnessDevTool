@@ -116,8 +116,21 @@ impl Manager {
         thread_id: String,
         cwd: PathBuf,
     ) -> Result<Arc<AgentSession>, SessionError> {
+        self.spawn_with_opts(kind, binary, thread_id, cwd, SpawnOpts::default())
+    }
+
+    /// Spawn a new session with extra options (MCP config injection, etc).
+    pub fn spawn_with_opts(
+        &self,
+        kind: AgentKind,
+        binary: PathBuf,
+        thread_id: String,
+        cwd: PathBuf,
+        opts: SpawnOpts,
+    ) -> Result<Arc<AgentSession>, SessionError> {
         let id = uuid::Uuid::new_v4().to_string();
         let dir = self.sessions_root.join(&id);
+        let extra_args = build_extra_args(kind, &opts);
         let session = AgentSession::spawn_with_id(
             id.clone(),
             kind,
@@ -125,6 +138,7 @@ impl Manager {
             thread_id,
             cwd,
             dir,
+            extra_args,
             self.bus.clone(),
         )?;
         self.sessions.insert(id, session.clone());
@@ -135,4 +149,38 @@ impl Manager {
     pub fn remove(&self, sid: &str) {
         self.sessions.remove(sid);
     }
+}
+
+/// Per-spawn options.
+#[derive(Debug, Clone, Default)]
+pub struct SpawnOpts {
+    /// Absolute path to a JSON file consumed by the agent's `--mcp-config`
+    /// flag (or its kind-specific equivalent). `None` disables MCP injection.
+    pub mcp_config_path: Option<PathBuf>,
+}
+
+/// Translate `SpawnOpts` into the CLI flags appended to the agent invocation.
+///
+/// - `Claude`: `--mcp-config <path> --strict-mcp-config` (validated by spike Q7).
+/// - `Codex`:  no equivalent flag exists in this version; skipped. The MCP
+///   config path is recorded but not injected. Codex MCP wiring is deferred to
+///   a later phase (likely via `$CODEX_HOME/config.toml` or `-c` overrides).
+fn build_extra_args(kind: AgentKind, opts: &SpawnOpts) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Some(path) = opts.mcp_config_path.as_ref() {
+        match kind {
+            AgentKind::Claude => {
+                out.push("--mcp-config".to_string());
+                out.push(path.display().to_string());
+                out.push("--strict-mcp-config".to_string());
+            }
+            AgentKind::Codex => {
+                tracing::warn!(
+                    path = %path.display(),
+                    "codex MCP injection not implemented; skipping --mcp-config"
+                );
+            }
+        }
+    }
+    out
 }

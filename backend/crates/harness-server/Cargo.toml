@@ -10,6 +10,7 @@ path = "src/main.rs"
 
 [dependencies]
 harness-core = { path = "../harness-core" }
+harness-session = { path = "../harness-session" }
 
 axum = { workspace = true }
 tokio = { workspace = true }
@@ -26,3 +27,7 @@ anyhow = { workspace = true }
 thiserror = { workspace = true }
 futures = { workspace = true }
 async-stream = { workspace = true }
+which = { workspace = true }
+dirs = { workspace = true }
+base64 = { workspace = true }
+bytes = "1"

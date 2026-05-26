@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/harness-server", "crates/harness-core"]
+members = ["crates/harness-server", "crates/harness-core", "crates/harness-session"]
 
 [workspace.package]
 version = "0.0.1"
@@ -25,3 +25,10 @@ anyhow = "1"
 thiserror = "1"
 futures = "0.3"
 async-stream = "0.3"
+portable-pty = "0.8"
+dashmap = "6"
+tokio-util = { version = "0.7", features = ["io"] }
+base64 = "0.22"
+zstd = "0.13"
+which = "6"
+dirs = "5"

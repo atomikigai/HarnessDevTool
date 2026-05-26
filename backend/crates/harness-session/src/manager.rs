@@ -95,6 +95,11 @@ impl Manager {
         self.sessions.get(sid).map(|e| e.value().clone())
     }
 
+    /// Snapshot of all currently-tracked session handles.
+    pub fn all(&self) -> Vec<Arc<AgentSession>> {
+        self.sessions.iter().map(|e| e.value().clone()).collect()
+    }
+
     /// Read the active `output.log` for a session straight from disk (used for
     /// SSE catch-up before the live bus tail). Available even for sessions
     /// that exited (as long as their dir still exists on disk).

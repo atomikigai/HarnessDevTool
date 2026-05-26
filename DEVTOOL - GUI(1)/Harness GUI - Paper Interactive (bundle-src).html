@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<title>Harness GUI — Paper Interactive</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #e8e4da; }
+  #root { width: 100%; height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; }
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.12); border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: rgba(0,0,0,0.2); }
+  input::placeholder { color: #9e9890; }
+</style>
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<template id="__bundler_thumbnail" data-bg-color="#e8e4da">
+  <svg viewBox="0 0 1200 800" xmlns="http://www.w3.org/2000/svg">
+    <!-- Window -->
+    <rect x="60" y="40" width="1080" height="720" rx="12" fill="#fdfcf8" stroke="#e2ded6" stroke-width="1.5"/>
+    <!-- Title bar -->
+    <rect x="60" y="40" width="1080" height="42" rx="12" fill="#f0ede5"/>
+    <rect x="60" y="70" width="1080" height="12" fill="#f0ede5"/>
+    <circle cx="95" cy="61" r="6" fill="#ed6a5e"/>
+    <circle cx="115" cy="61" r="6" fill="#f4bf4f"/>
+    <circle cx="135" cy="61" r="6" fill="#61c554"/>
+    <rect x="440" y="50" width="320" height="22" rx="5" fill="#ede9df" stroke="#d8d4cc" stroke-width="1"/>
+    <!-- Rail -->
+    <rect x="60" y="82" width="68" height="678" fill="#ede9df"/>
+    <rect x="77" y="102" width="34" height="28" rx="6" fill="rgba(13,122,98,0.12)"/>
+    <rect x="77" y="140" width="34" height="24" rx="4" fill="transparent"/>
+    <rect x="77" y="174" width="34" height="24" rx="4" fill="transparent"/>
+    <!-- Sidebar -->
+    <rect x="128" y="82" width="272" height="678" fill="#f5f3ed" stroke="#e2ded6" stroke-width="1"/>
+    <rect x="142" y="96" width="244" height="42" rx="7" fill="rgba(13,122,98,0.06)" stroke="rgba(13,122,98,0.15)" stroke-width="1"/>
+    <rect x="175" y="111" width="80" height="6" rx="2" fill="#1c1a16" opacity="0.7"/>
+    <rect x="175" y="121" width="55" height="4" rx="2" fill="#9e9890"/>
+    <rect x="142" y="148" width="244" height="26" rx="5" fill="#ede9df" stroke="#d8d4cc" stroke-width="1"/>
+    <rect x="142" y="192" width="90" height="7" rx="2" fill="#0d7a62" opacity="0.7"/>
+    <rect x="156" y="212" width="80" height="6" rx="2" fill="#9e9890"/>
+    <rect x="156" y="226" width="65" height="6" rx="2" fill="#9e9890"/>
+    <rect x="156" y="240" width="90" height="6" rx="2" fill="#9e9890"/>
+    <!-- Active row in sidebar -->
+    <rect x="128" y="254" width="272" height="22" fill="rgba(13,122,98,0.09)"/>
+    <rect x="128" y="254" width="3" height="22" fill="#0d7a62"/>
+    <rect x="168" y="262" width="50" height="6" rx="2" fill="#0d7a62"/>
+    <rect x="156" y="284" width="70" height="6" rx="2" fill="#9e9890"/>
+    <rect x="156" y="298" width="95" height="6" rx="2" fill="#9e9890"/>
+    <!-- Breadcrumb -->
+    <rect x="400" y="82" width="740" height="44" fill="#fdfcf8" stroke="#e2ded6" stroke-width="0.5"/>
+    <rect x="416" y="100" width="160" height="8" rx="2" fill="#1c1a16" opacity="0.5"/>
+    <rect x="978" y="91" width="148" height="26" rx="6" fill="rgba(0,0,0,0.05)"/>
+    <rect x="981" y="94" width="46" height="20" rx="5" fill="#fdfcf8" stroke="#e2ded6" stroke-width="0.5"/>
+    <rect x="988" y="100" width="30" height="7" rx="2" fill="#0d7a62"/>
+    <!-- Toolbar -->
+    <rect x="400" y="126" width="740" height="48" fill="#fdfcf8" stroke="#e2ded6" stroke-width="0.5"/>
+    <!-- Table header -->
+    <rect x="400" y="174" width="500" height="36" fill="#f8f7f2" stroke="#e2ded6" stroke-width="0.5"/>
+    <rect x="416" y="187" width="18" height="7" rx="2" fill="#9e9890"/>
+    <rect x="448" y="187" width="14" height="7" rx="2" fill="#9e9890"/>
+    <rect x="476" y="187" width="28" height="7" rx="2" fill="#1c1a16" opacity="0.65"/>
+    <rect x="518" y="187" width="22" height="7" rx="2" fill="#1c1a16" opacity="0.65"/>
+    <!-- Row 1 (selected) -->
+    <rect x="400" y="210" width="500" height="44" fill="rgba(13,122,98,0.08)"/>
+    <rect x="416" y="228" width="12" height="7" rx="2" fill="#b85c00" opacity="0.9"/>
+    <rect x="444" y="228" width="68" height="7" rx="2" fill="rgba(107,53,184,0.45)"/>
+    <rect x="528" y="228" width="38" height="7" rx="2" fill="#1c1a16" opacity="0.5"/>
+    <rect x="588" y="224" width="38" height="16" rx="8" fill="rgba(22,163,74,0.10)" stroke="rgba(22,163,74,0.25)" stroke-width="1"/>
+    <!-- Row 2 -->
+    <rect x="400" y="254" width="500" height="44" fill="rgba(0,0,0,0.014)"/>
+    <rect x="416" y="272" width="12" height="7" rx="2" fill="#b85c00" opacity="0.9"/>
+    <rect x="444" y="272" width="68" height="7" rx="2" fill="rgba(107,53,184,0.45)"/>
+    <rect x="528" y="272" width="38" height="7" rx="2" fill="#1c1a16" opacity="0.5"/>
+    <rect x="588" y="268" width="38" height="16" rx="8" fill="rgba(22,163,74,0.10)" stroke="rgba(22,163,74,0.25)" stroke-width="1"/>
+    <!-- Row 3 -->
+    <rect x="400" y="298" width="500" height="44" fill="white"/>
+    <rect x="416" y="316" width="12" height="7" rx="2" fill="#b85c00" opacity="0.9"/>
+    <rect x="444" y="316" width="68" height="7" rx="2" fill="rgba(107,53,184,0.45)"/>
+    <rect x="528" y="316" width="38" height="7" rx="2" fill="#1c1a16" opacity="0.5"/>
+    <rect x="588" y="312" width="38" height="16" rx="8" fill="rgba(22,163,74,0.10)" stroke="rgba(22,163,74,0.25)" stroke-width="1"/>
+    <!-- Row 4 -->
+    <rect x="400" y="342" width="500" height="44" fill="rgba(0,0,0,0.014)"/>
+    <rect x="416" y="360" width="12" height="7" rx="2" fill="#b85c00" opacity="0.9"/>
+    <rect x="444" y="360" width="68" height="7" rx="2" fill="rgba(107,53,184,0.45)"/>
+    <rect x="528" y="360" width="38" height="7" rx="2" fill="#1c1a16" opacity="0.5"/>
+    <rect x="588" y="356" width="38" height="16" rx="8" fill="rgba(0,0,0,0.04)" stroke="rgba(0,0,0,0.09)" stroke-width="1"/>
+    <!-- Detail panel -->
+    <rect x="900" y="174" width="240" height="586" fill="#f5f3ed" stroke="#e2ded6" stroke-width="1"/>
+    <rect x="916" y="190" width="70" height="6" rx="2" fill="#9e9890"/>
+    <rect x="916" y="202" width="46" height="8" rx="2" fill="#1c1a16" opacity="0.65"/>
+    <line x1="916" y1="220" x2="1126" y2="220" stroke="#e2ded6" stroke-width="0.8"/>
+    <rect x="916" y="228" width="52" height="5" rx="2" fill="#9e9890"/>
+    <rect x="978" y="228" width="130" height="5" rx="2" fill="#1c1a16" opacity="0.35"/>
+    <line x1="916" y1="244" x2="1126" y2="244" stroke="#e2ded6" stroke-width="0.8"/>
+    <rect x="916" y="252" width="44" height="5" rx="2" fill="#9e9890"/>
+    <rect x="978" y="252" width="100" height="5" rx="2" fill="rgba(107,53,184,0.5)"/>
+    <line x1="916" y1="268" x2="1126" y2="268" stroke="#e2ded6" stroke-width="0.8"/>
+    <rect x="916" y="276" width="60" height="5" rx="2" fill="#9e9890"/>
+    <rect x="978" y="276" width="85" height="5" rx="2" fill="#1c1a16" opacity="0.4"/>
+    <line x1="916" y1="292" x2="1126" y2="292" stroke="#e2ded6" stroke-width="0.8"/>
+    <rect x="916" y="300" width="48" height="5" rx="2" fill="#9e9890"/>
+    <rect x="978" y="300" width="95" height="5" rx="2" fill="#9e9890" opacity="0.6"/>
+    <line x1="916" y1="316" x2="1126" y2="316" stroke="#e2ded6" stroke-width="0.8"/>
+    <rect x="916" y="324" width="38" height="5" rx="2" fill="#9e9890"/>
+    <rect x="978" y="324" width="110" height="5" rx="2" fill="rgba(15,82,200,0.5)"/>
+    <line x1="916" y1="340" x2="1126" y2="340" stroke="#e2ded6" stroke-width="0.8"/>
+    <rect x="916" y="348" width="65" height="5" rx="2" fill="#9e9890"/>
+    <rect x="978" y="348" width="120" height="5" rx="2" fill="rgba(192,104,32,0.5)"/>
+    <line x1="916" y1="364" x2="1126" y2="364" stroke="#e2ded6" stroke-width="0.8"/>
+    <rect x="978" y="374" width="36" height="14" rx="7" fill="rgba(22,163,74,0.10)" stroke="rgba(22,163,74,0.25)" stroke-width="1"/>
+    <!-- Status bar -->
+    <rect x="400" y="730" width="740" height="30" fill="#f0ede5" stroke="#e2ded6" stroke-width="0.5"/>
+    <circle cx="420" cy="745" r="4" fill="#0d7a62"/>
+    <rect x="430" y="741" width="90" height="6" rx="2" fill="#9e9890"/>
+    <circle cx="1118" cy="745" r="4" fill="#2d9d5b"/>
+    <rect x="1050" y="741" width="60" height="6" rx="2" fill="#9e9890"/>
+  </svg>
+</template>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel" src="harness-icons.jsx"></script>
+<script type="text/babel" src="harness-interactive.jsx"></script>
+
+<script type="text/babel">
+function App() {
+  return (
+    <div style={{ width: '100%', maxWidth: 1600, height: '100%', maxHeight: 960 }}>
+      <HarnessPaper />
+    </div>
+  );
+}
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>

@@ -12,7 +12,7 @@
   import { sessionsState } from '$lib/stores/session.svelte';
   import { cn } from '$lib/utils';
 
-  type IconName = 'threads' | 'agents' | 'sql' | 'ssh' | 'memory' | 'settings';
+  type IconName = 'agents' | 'sql' | 'ssh' | 'memory' | 'settings';
 
   type Entry = {
     label: string;
@@ -25,12 +25,11 @@
 
   const entries: Entry[] = [
     {
-      label: 'Threads',
+      label: 'Agents',
       href: '/',
-      icon: 'threads',
+      icon: 'agents',
       badge: () => sessionsState.active.length
     },
-    { label: 'Agents', href: '/agents', icon: 'agents', soon: true },
     { label: 'SQL', href: '/sql', icon: 'sql', soon: true },
     { label: 'SSH', href: '/ssh', icon: 'ssh', soon: true },
     { label: 'Memory', href: '/memory', icon: 'memory', soon: true },

@@ -23,7 +23,7 @@
   <TopBar />
   <div class="flex min-h-0 flex-1">
     <IconRail {currentPath} />
-    <main class="min-w-0 flex-1 overflow-y-auto" style="background: var(--surface-canvas);">
+    <main class="min-w-0 flex-1 overflow-hidden" style="background: var(--surface-canvas);">
       {@render children()}
     </main>
   </div>

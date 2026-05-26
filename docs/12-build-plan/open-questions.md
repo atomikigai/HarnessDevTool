@@ -42,10 +42,10 @@ sources: []
 
 ## F2 — Tasks + MCP
 
-### Q7 · MCP config format para claude/codex `[CRÍTICA, SPIKE PENDIENTE]`
+### Q7 · MCP config format para claude/codex `[CRÍTICA, SPIKE AL INICIO DE F2]`
 - Riesgo R1 — bloquea F2 entero.
 - ¿`claude` acepta `--mcp-config <file.json>` con nuestro formato? ¿`codex` también?
-- **Spike obligatorio en F1**: probar con un MCP "hello world" antes de declarar F1 done.
+- **Spike al arrancar F2** (no antes): F1 es PTY interactivo puro sin MCP, así que descubrir esto al iniciar F2 no añade rework — F2 es donde se introduce el MCP de todos modos.
 
 ### Q8 · Granularidad de tasks `[RESUELTA]`
 → ≤6 `acceptance.checks` por task. Validation warning (no error). Documentado en [[agents/orchestrator]] y [[foundations/lessons-learned]] §D4.
@@ -110,10 +110,15 @@ sources: []
 - **Propuesta**: in-process por default (`feature = "embedded"`); habilitar child como fallback si surgen problemas.
 - **Decidir en F2**.
 
-### N2 · Cómo el harness inyecta el prompt inicial al CLI hijo `[PENDIENTE]`
-- ¿Lo envía como primer mensaje "user input" al CLI? ¿Como parte del system prompt vía un mecanismo del CLI?
-- `claude` admite `--append-system-prompt` y `--system-prompt`. `codex` por confirmar.
-- **Spike en F1** junto con Q7.
+### N2 · Cómo el harness inyecta el prompt inicial al CLI hijo `[RESUELTA]`
+- **Mecanismo**: stdin como primer "user input" al PTY. Portable a cualquier CLI, no depende de flags.
+- **Patrón uniforme**: una sola función `harness::spawn(role, initial_context) → spawn_id`. Quien spawneа siempre es el harness; el contenido del prompt inicial varía por contexto:
+  - **F1 raíz interactivo**: `role=None`, sin inyección — el humano escribe directo en el PTY.
+  - **F3 orchestrator**: `role=Planner`, harness inyecta plantilla + user goal + tools disponibles (`task.create`, `task.list`).
+  - **F3 worker**: `role=Frontend|Backend|...`, harness inyecta plantilla + `task_id` asignada + refs a tasks relacionadas (solo ids, no contenido — el worker usa `task.get` / `memory.search` si los necesita).
+- El orchestrator no spawneа workers directamente; pide al harness vía MCP (`task.spawn_worker` o similar). El scheduler del harness es el único que llama `spawn()`.
+- Fallback futuro si el rol "se olvida" turn-tras-turn: añadir `--append-system-prompt` por CLI (requiere confirmar soporte en `codex`). No bloquea F3.
+- Documentar mecanismo final en [[agents/spawn-lifecycle]] al implementar F3.
 
 ### N3 · Sandbox de las tools que el CLI ejecuta `[PENDIENTE]`
 - `claude` tiene su propio sandbox/approval para `shell.exec`. ¿Necesitamos sandbox adicional desde el harness?
@@ -136,9 +141,9 @@ sources: []
 
 ## Estado de cierre
 
-**Resueltas**: Q1, Q6, Q8, Q10, Q12, Q15, Q16, Q17, Q20 (9 de 20 originales).
+**Resueltas**: Q1, Q6, Q8, Q10, Q12, Q15, Q16, Q17, Q20, N2 (10).
 **Pendientes originales**: Q2, Q3, Q4, Q5, Q7, Q9, Q11, Q13, Q14, Q18, Q19 (11 de 20).
-**Nuevas del cleanup**: N1, N2, N3, N4 (4).
+**Nuevas del cleanup pendientes**: N1, N3, N4 (3).
 
-**Total pendiente**: **15** preguntas.
-**Críticas/bloqueantes**: **Q7 + N2** (spike F1) y **Q9** (antes de F2).
+**Total pendiente**: **14** preguntas.
+**Críticas/bloqueantes**: **Q7** (spike al inicio de F2) y **Q9** (antes de F2). F1 ya no tiene blockers.

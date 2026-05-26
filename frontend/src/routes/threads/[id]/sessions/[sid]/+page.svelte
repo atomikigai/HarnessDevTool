@@ -45,9 +45,9 @@
       >
         <ChevronLeft class="h-4 w-4" />
       </Button>
-      <!-- Breadcrumb: Threads / <thread> / <session> -->
+      <!-- Breadcrumb: Agents / <thread> / <session> -->
       <nav class="flex items-center gap-1.5 text-xs" style="color: var(--fg-breadcrumb);">
-        <a href="/" class="hover:underline">Threads</a>
+        <a href="/" class="hover:underline">Agents</a>
         <span style="color: var(--fg-muted);">/</span>
         <span class="font-mono" style="color: var(--fg-muted);">{threadId.slice(0, 8)}</span>
         <span style="color: var(--fg-muted);">/</span>
@@ -97,4 +97,22 @@
   <div class="min-h-0 flex-1">
     <TerminalView {threadId} {sessionId} />
   </div>
+  <footer
+    class="flex h-7 shrink-0 items-center justify-between border-t px-3 text-[11px]"
+    style="background: var(--surface-statusbar); border-color: var(--border-subtle); color: var(--fg-muted);"
+  >
+    <div class="flex items-center gap-2">
+      <span class="h-dot" class:h-dot--ok={meta?.status === 'running'}></span>
+      <span class="font-mono">{meta?.kind ?? '—'}</span>
+      {#if meta?.pid}
+        <span style="color: var(--fg-muted);">·</span>
+        <span>pid {meta.pid}</span>
+      {/if}
+    </div>
+    <div class="flex items-center gap-2 font-mono">
+      {#if meta?.cwd}
+        <span class="truncate" title={meta.cwd}>{meta.cwd}</span>
+      {/if}
+    </div>
+  </footer>
 </div>

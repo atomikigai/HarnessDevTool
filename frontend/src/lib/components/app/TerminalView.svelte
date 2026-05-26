@@ -271,5 +271,5 @@
       Kill
     </Button>
   </div>
-  <div bind:this={containerEl} class="min-h-0 flex-1 overflow-hidden p-2"></div>
+  <div bind:this={containerEl} class="min-h-0 flex-1 overflow-hidden"></div>
 </div>

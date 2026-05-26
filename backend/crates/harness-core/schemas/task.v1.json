@@ -1,0 +1,105 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://harness.dev/schemas/task.v1.json",
+  "title": "harness.task.v1",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "id",
+    "title",
+    "status",
+    "created_at",
+    "created_by",
+    "updated_at",
+    "updated_by"
+  ],
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "id": { "type": "string", "pattern": "^T-[0-9]{4,}$" },
+    "title": { "type": "string", "minLength": 1 },
+    "status": {
+      "type": "string",
+      "enum": [
+        "queued",
+        "in_progress",
+        "pending_verify",
+        "done",
+        "paused",
+        "blocked",
+        "abandoned"
+      ]
+    },
+    "created_at": { "type": "string", "format": "date-time" },
+    "created_by": { "type": "string" },
+    "updated_at": { "type": "string", "format": "date-time" },
+    "updated_by": { "type": "string" },
+    "parent": { "type": ["string", "null"] },
+    "children": { "type": "array", "items": { "type": "string" } },
+    "blocked_by": { "type": "array", "items": { "type": "string" } },
+    "unblocks": { "type": "array", "items": { "type": "string" } },
+    "assignee": { "type": ["string", "null"] },
+    "claim_lease": {
+      "type": ["object", "null"],
+      "required": ["holder", "until"],
+      "properties": {
+        "holder": { "type": "string" },
+        "until": { "type": "string", "format": "date-time" }
+      }
+    },
+    "previous_assignees": { "type": "array", "items": { "type": "string" } },
+    "labels": { "type": "array", "items": { "type": "string" } },
+    "acceptance": {
+      "type": "object",
+      "properties": {
+        "checks": {
+          "type": "array",
+          "maxItems": 6,
+          "items": {
+            "type": "object",
+            "required": ["id", "text"],
+            "properties": {
+              "id": { "type": "string" },
+              "text": { "type": "string" },
+              "verified": { "type": "boolean" },
+              "verified_by": { "type": ["string", "null"] }
+            }
+          }
+        }
+      }
+    },
+    "artifacts": {
+      "type": "object",
+      "properties": {
+        "files": { "type": "array", "items": { "type": "string" } },
+        "turns": { "type": "array", "items": { "type": "string" } },
+        "diff": { "type": ["string", "null"] }
+      }
+    },
+    "notes": {
+      "type": "object",
+      "properties": {
+        "why_paused": { "type": "string" },
+        "why_abandoned": { "type": "string" },
+        "feedback": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "history": {
+      "type": "object",
+      "properties": {
+        "events": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["at", "by", "from", "to"],
+            "properties": {
+              "at": { "type": "string", "format": "date-time" },
+              "by": { "type": "string" },
+              "from": { "type": "string" },
+              "to": { "type": "string" }
+            }
+          }
+        }
+      }
+    }
+  }
+}

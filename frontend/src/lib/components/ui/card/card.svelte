@@ -12,7 +12,12 @@
 </script>
 
 <div
-  class={cn('rounded-lg border border-border bg-card text-card-foreground shadow-sm', className)}
+  class={cn(
+    'rounded-lg border text-[var(--fg-default)]',
+    'border-[var(--border-subtle)] bg-[var(--surface-panel)]',
+    'shadow-[var(--shadow-card)]',
+    className
+  )}
   {...rest}
 >
   {@render children?.()}

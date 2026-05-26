@@ -19,7 +19,9 @@
   <DialogPrimitive.Content
     class={cn(
       'fixed left-1/2 top-1/2 z-50 w-full max-w-lg -translate-x-1/2 -translate-y-1/2',
-      'rounded-lg border border-border bg-background p-6 shadow-lg',
+      'rounded-xl border p-6',
+      'border-[var(--border-subtle)] bg-[var(--surface-window)] text-[var(--fg-default)]',
+      'shadow-[var(--shadow-pop)]',
       'data-[state=open]:animate-in data-[state=closed]:animate-out',
       className
     )}

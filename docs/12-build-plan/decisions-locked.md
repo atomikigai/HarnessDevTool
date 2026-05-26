@@ -124,4 +124,5 @@ sources: []
 
 - Cualquier decisión puede **re-abrirse** con justificación escrita en este shard (sección "revisitada" al fondo).
 - Si una decisión cambia, **migrar antes de invertir más código** en la asunción vieja.
+- **Re-evaluación durante ejecución** ⚠️: al implementar una fase, si aparece duda o algo no está claro, parar y revisar si la decisión sigue siendo la mejor. Esto aplica **solo en puntos confusos** — lo que esté locked y sólido no se re-litiga. Ver regla 7 en [[build-plan/overview]].
 - Estado de revisitas: ninguna al cierre de planning.

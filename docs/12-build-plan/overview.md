@@ -43,6 +43,7 @@ F4 puede paralelizarse con F3 si hay manos suficientes; F5 requiere F3 (necesita
 4. **Backward compat del protocolo**: versionado desde F0 (`X-Protocol-Version: 1.0`). Ver [[app-server/backward-compat]].
 5. **Tipos**: `ts-rs` regenera `frontend/src/lib/api/types/` antes de cada commit que toca structs expuestas.
 6. **Observabilidad**: cada fase añade spans `tracing` para sus operaciones nuevas.
+7. **Re-evaluar al ejecutar** ⚠️: el plan es una guía, no un contrato. Al ejecutar cada fase, **solo donde haya dudas o el camino no esté claro**, parar y replantear si la decisión documentada sigue siendo la mejor a la luz de lo aprendido. Lo que ya esté en [[build-plan/decisions-locked]] y se sienta sólido se ejecuta tal cual — no re-litigar lo zanjado. Si se cambia algo, **dejar registro** en `decisions-locked.md` (sección "revisitada") antes de invertir más código en la nueva dirección.
 
 ## Lo que **no** está en F0–F6
 

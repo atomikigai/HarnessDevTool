@@ -37,6 +37,7 @@ impl AgentSession {
     /// Returns a handle wrapped in `Arc`. Two background tasks are also spawned:
     /// one drains the PTY master into the output log + broadcast channel, and
     /// another waits for the child to exit to update the persisted status.
+    #[allow(clippy::too_many_arguments)]
     pub fn spawn_with_id(
         id: String,
         kind: AgentKind,
@@ -44,6 +45,7 @@ impl AgentSession {
         thread_id: String,
         cwd: PathBuf,
         dir: PathBuf,
+        extra_args: Vec<String>,
         bus: broadcast::Sender<SessionEvent>,
     ) -> Result<Arc<Self>, SessionError> {
         std::fs::create_dir_all(&dir)?;
@@ -60,10 +62,20 @@ impl AgentSession {
 
         let mut cmd = CommandBuilder::new(&binary);
         cmd.cwd(&cwd);
+        for a in &extra_args {
+            cmd.arg(a);
+        }
         // Inherit env: portable-pty inherits parent env when not overridden.
         // Ensure TERM is reasonable for TUIs.
         if std::env::var_os("TERM").is_none() {
             cmd.env("TERM", "xterm-256color");
+        }
+        if !extra_args.is_empty() {
+            tracing::info!(
+                kind = %kind,
+                args = ?extra_args,
+                "spawning agent with extra args"
+            );
         }
 
         let mut child = pty_pair

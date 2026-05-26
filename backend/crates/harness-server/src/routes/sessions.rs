@@ -6,8 +6,9 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
-use harness_session::{AgentKind, SessionError, SessionMeta};
+use harness_session::{AgentKind, SessionError, SessionMeta, SpawnOpts};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 
 use crate::error::ApiError;
 use crate::state::AppState;
@@ -69,13 +70,99 @@ async fn create_session(
         )));
     }
 
-    let session = state.manager.spawn(req.kind, binary, tid, cwd)?;
+    // 4) Build MCP injection opts (one MCP server per session) and spawn.
+    //    The config file is initially named by a tmp id; once the Manager
+    //    issues the real session id we rename it to `<sid>.json` so cleanup
+    //    on kill is trivial.
+    let (opts, tmp_config_path) = build_spawn_opts(&state, req.kind, &tid)?;
+    let session = state
+        .manager
+        .spawn_with_opts(req.kind, binary, tid, cwd, opts)?;
     let meta = session.meta().await;
+    if let Some(tmp) = tmp_config_path {
+        let final_path = tmp
+            .parent()
+            .map(|d| d.join(format!("{}.json", meta.id)))
+            .unwrap_or_else(|| tmp.clone());
+        if final_path != tmp {
+            if let Err(e) = std::fs::rename(&tmp, &final_path) {
+                tracing::warn!(
+                    from = %tmp.display(),
+                    to = %final_path.display(),
+                    error = %e,
+                    "could not rename mcp config to session id; cleanup will use tmp path"
+                );
+            }
+        }
+    }
     Ok((
         StatusCode::CREATED,
         Json(CreateSessionResponse {
             session_id: meta.id,
         }),
+    ))
+}
+
+/// Build `SpawnOpts` carrying the per-session MCP config path. Returns
+/// `Ok(SpawnOpts::default())` if MCP injection is disabled (no binary, or
+/// the kind doesn't support it yet).
+fn build_spawn_opts(
+    state: &AppState,
+    kind: AgentKind,
+    thread_id: &str,
+) -> Result<(SpawnOpts, Option<PathBuf>), ApiError> {
+    // Codex has no per-invocation MCP flag; skip.
+    if matches!(kind, AgentKind::Codex) {
+        return Ok((SpawnOpts::default(), None));
+    }
+    let mcp_bin = match state.mcp_server_binary.as_ref() {
+        Some(p) => p.clone(),
+        None => {
+            tracing::warn!(
+                "spawning {kind} without MCP injection (no harness-mcp-server binary)"
+            );
+            return Ok((SpawnOpts::default(), None));
+        }
+    };
+
+    // Pre-issue a stable id we can use both for the config filename and for
+    // the `--agent-id` arg passed to the MCP server. We can't read the sid
+    // the Manager picks until after spawn, but a UUID per spawn request is
+    // sufficient — the MCP server identity only needs to be unique enough to
+    // distinguish concurrent agents inside a thread.
+    let mcp_id = uuid::Uuid::new_v4().to_string();
+    let agent_id = format!("agent:{}-{}", kind.as_str(), &mcp_id[..8]);
+
+    let configs_dir = state.harness_home.join(".runtime").join("mcp-configs");
+    std::fs::create_dir_all(&configs_dir)
+        .map_err(|e| ApiError::Internal(format!("create mcp-configs dir: {e}")))?;
+    let config_path = configs_dir.join(format!("{mcp_id}.json"));
+
+    let config = json!({
+        "mcpServers": {
+            "harness": {
+                "command": mcp_bin.display().to_string(),
+                "args": [
+                    "--thread", thread_id,
+                    "--agent-id", agent_id,
+                    "--harness-home", state.harness_home.display().to_string(),
+                ]
+            }
+        }
+    });
+    std::fs::write(&config_path, serde_json::to_vec_pretty(&config).unwrap())
+        .map_err(|e| ApiError::Internal(format!("write mcp config: {e}")))?;
+    tracing::info!(
+        path = %config_path.display(),
+        agent_id = %agent_id,
+        "wrote per-session MCP config"
+    );
+
+    Ok((
+        SpawnOpts {
+            mcp_config_path: Some(config_path.clone()),
+        },
+        Some(config_path),
     ))
 }
 
@@ -140,5 +227,18 @@ async fn kill_session(
         .get(&sid)
         .ok_or_else(|| ApiError::SessionNotFound(sid.clone()))?;
     session.kill().await?;
+    // Best-effort: remove the per-session MCP config file. The MCP server
+    // child dies on stdio close when claude exits, so there's nothing else to
+    // clean up.
+    let config = state
+        .harness_home
+        .join(".runtime")
+        .join("mcp-configs")
+        .join(format!("{sid}.json"));
+    if config.exists() {
+        if let Err(e) = std::fs::remove_file(&config) {
+            tracing::warn!(path = %config.display(), error = %e, "could not remove mcp config");
+        }
+    }
     Ok(StatusCode::NO_CONTENT)
 }

@@ -43,5 +43,9 @@ export {
   ChevronDown,
   ChevronUp,
   MoreHorizontal,
-  PlusCircle
+  PlusCircle,
+  Download,
+  FileJson,
+  FileText,
+  FileCode2
 } from 'lucide-svelte';

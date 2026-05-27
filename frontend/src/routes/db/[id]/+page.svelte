@@ -13,7 +13,12 @@
   import { Button } from '$lib/components/ui/button';
   import { dbStore, type DbTab } from '$lib/stores/db.svelte';
   import { engineLabel, type Column, type TableMeta } from '$lib/api/db';
-  import SchemaTree from '$lib/components/db/SchemaTree.svelte';
+  import SchemaTree, {
+    type SchemaTreeExportTarget
+  } from '$lib/components/db/SchemaTree.svelte';
+  import ExportDialog, {
+    type ExportDialogTarget
+  } from '$lib/components/db/ExportDialog.svelte';
   import SqlEditor from '$lib/components/db/SqlEditor.svelte';
   import ResultGrid from '$lib/components/db/ResultGrid.svelte';
   import RowEditorPanel from '$lib/components/db/RowEditorPanel.svelte';
@@ -43,6 +48,24 @@
   const activePkCols = $derived<string[]>(
     activeMeta ? activeMeta.columns.filter((c) => c.pk).map((c) => c.name) : []
   );
+
+  // Export dialog state (driven by SchemaTree right-click).
+  let exportOpen = $state(false);
+  let exportTarget = $state<ExportDialogTarget | null>(null);
+
+  function onSchemaTreeExport(t: SchemaTreeExportTarget) {
+    if (t.kind === 'table') {
+      exportTarget = {
+        kind: 'table',
+        schema: t.schema,
+        name: t.table.name,
+        columns: t.table.columns
+      };
+    } else {
+      exportTarget = { kind: 'schema', name: t.name, tables: t.tables };
+    }
+    exportOpen = true;
+  }
 
   // Row editor state
   let editorOpen = $state(false);
@@ -586,6 +609,7 @@
         loading={ws.schemaLoading}
         error={ws.schemaError}
         {onOpenTable}
+        onExport={onSchemaTreeExport}
         activeTable={activeTab?.kind === 'table'
           ? { schema: activeTab.schema ?? '', name: activeTab.table ?? '' }
           : null}
@@ -810,6 +834,13 @@
         </div>
       {/if}
     </section>
+
+    <ExportDialog
+      bind:open={exportOpen}
+      connectionId={connId}
+      database={ws.database}
+      target={exportTarget}
+    />
 
     {#if activeMeta}
       <RowEditorPanel

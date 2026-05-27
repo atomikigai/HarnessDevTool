@@ -7,7 +7,7 @@
  * callers should `try { await ... } catch (e) { ... }`.
  */
 
-import { apiRequest } from './client';
+import { apiRequest, API_BASE, ApiError } from './client';
 
 // ────────────────────────────────────────────────────────────────────────────
 // Types
@@ -106,6 +106,27 @@ export interface QueryRequest {
   page?: number;
 }
 
+// ── Export (F4) ──────────────────────────────────────────────────────────────
+
+export type ExportFormat = 'Json' | 'SqlInsert' | 'Csv';
+export type ExportScope = 'SchemaOnly' | 'SchemaAndData' | 'DataOnly';
+
+export type ExportTarget =
+  | { type: 'Table'; schema?: string; name: string; columns?: string[] }
+  | { type: 'Schema'; name: string };
+
+export interface ExportRequest {
+  database?: string;
+  target: ExportTarget;
+  format: ExportFormat;
+  scope: ExportScope;
+}
+
+export interface ExportResponse {
+  blob: Blob;
+  filename: string;
+}
+
 export interface RowMutation {
   database?: string;
   schema?: string;
@@ -146,6 +167,34 @@ export const dbApi = {
       body: req,
       signal
     }),
+  /**
+   * Export a single table or an entire schema as JSON / SQL INSERTs / CSV.
+   * Returns the raw blob + parsed `filename` from `Content-Disposition`.
+   * Backend rejects CSV for `target.type === 'Schema'` (400) — callers gate UI.
+   */
+  export: async (
+    id: string,
+    body: ExportRequest,
+    signal?: AbortSignal
+  ): Promise<ExportResponse> => {
+    const base = API_BASE.endsWith('/') ? API_BASE.slice(0, -1) : API_BASE;
+    const url = `${base}/db/connections/${id}/export`;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: '*/*' },
+      body: JSON.stringify(body),
+      signal
+    });
+    if (!res.ok) {
+      const t = await res.text().catch(() => '');
+      throw new ApiError(res.status, t || res.statusText, t);
+    }
+    const blob = await res.blob();
+    const cd = res.headers.get('content-disposition') ?? '';
+    const m = cd.match(/filename\*?="?([^";]+)"?/i);
+    const filename = m?.[1] ?? `export-${Date.now()}.bin`;
+    return { blob, filename };
+  },
   cancel: (id: string, queryId: string, signal?: AbortSignal) =>
     apiRequest<null>(`${base}/connections/${id}/query/${queryId}/cancel`, {
       method: 'POST',

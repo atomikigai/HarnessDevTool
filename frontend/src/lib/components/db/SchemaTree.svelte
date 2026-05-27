@@ -3,9 +3,21 @@
   Click a table to open it as a tab via the supplied callback.
   Style ported from `harness-table-v2.jsx` TreeItem.
 -->
+<script lang="ts" module>
+  import type { TableMeta as _TableMeta } from '$lib/api/db';
+  /**
+   * Public target shape for the export menu — keeps the consumer free
+   * to mount whatever dialog it wants without depending on this file.
+   */
+  export type SchemaTreeExportTarget =
+    | { kind: 'table'; schema: string; table: _TableMeta }
+    | { kind: 'schema'; name: string; tables: _TableMeta[] };
+</script>
+
 <script lang="ts">
-  import { ChevronRight, ChevronLeft } from '$lib/icons';
+  import { ChevronRight, ChevronLeft, Download } from '$lib/icons';
   import type { SchemaTree, TableMeta } from '$lib/api/db';
+  import { ContextMenu, type ContextMenuItem } from '$lib/components/ui/context-menu';
 
   interface Props {
     tree: SchemaTree | null;
@@ -13,9 +25,52 @@
     error?: string | null;
     onOpenTable?: (schema: string, table: TableMeta) => void;
     activeTable?: { schema: string; name: string } | null;
+    /** Called when the user picks Export… on a table or schema row. */
+    onExport?: (target: SchemaTreeExportTarget) => void;
   }
 
-  let { tree, loading = false, error = null, onOpenTable, activeTable }: Props = $props();
+  let {
+    tree,
+    loading = false,
+    error = null,
+    onOpenTable,
+    activeTable,
+    onExport
+  }: Props = $props();
+
+  // ── Context menu state ────────────────────────────────────────────────────
+  let menuOpen = $state(false);
+  let menuX = $state(0);
+  let menuY = $state(0);
+  let menuItems = $state<ContextMenuItem[]>([]);
+
+  function openSchemaMenu(e: MouseEvent, schemaName: string, tables: TableMeta[]) {
+    e.preventDefault();
+    menuX = e.clientX;
+    menuY = e.clientY;
+    menuItems = [
+      {
+        label: 'Export schema…',
+        icon: Download,
+        onSelect: () => onExport?.({ kind: 'schema', name: schemaName, tables })
+      }
+    ];
+    menuOpen = true;
+  }
+
+  function openTableMenu(e: MouseEvent, schemaName: string, table: TableMeta) {
+    e.preventDefault();
+    menuX = e.clientX;
+    menuY = e.clientY;
+    menuItems = [
+      {
+        label: 'Export table…',
+        icon: Download,
+        onSelect: () => onExport?.({ kind: 'table', schema: schemaName, table })
+      }
+    ];
+    menuOpen = true;
+  }
 
   let expanded = $state<Record<string, boolean>>({});
   let filter = $state('');
@@ -91,6 +146,7 @@
           class="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[13px]"
           style="color: var(--fg-default);"
           onclick={() => toggle(schema.name)}
+          oncontextmenu={(e) => openSchemaMenu(e, schema.name, schema.tables)}
         >
           <span class="inline-flex w-3" style="color: var(--fg-muted);">
             {#if open}
@@ -127,6 +183,7 @@
                   ? 'background: var(--accent-soft); color: var(--accent); font-weight: 600; border-left: 2px solid var(--accent); padding-left: calc(1.75rem - 2px);'
                   : 'color: var(--fg-default);'}
                 onclick={() => onOpenTable?.(schema.name, t)}
+                oncontextmenu={(e) => openTableMenu(e, schema.name, t)}
               >
                 <span style="color: {active ? 'var(--accent)' : 'var(--fg-muted)'};">
                   {t.kind === 'view' ? 'ʌ' : '⊞'}
@@ -145,3 +202,11 @@
     {/if}
   </div>
 </div>
+
+<ContextMenu
+  x={menuX}
+  y={menuY}
+  open={menuOpen}
+  items={menuItems}
+  onClose={() => (menuOpen = false)}
+/>

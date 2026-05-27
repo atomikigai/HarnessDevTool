@@ -26,12 +26,19 @@ struct CliArgs {
     thread_id: String,
     agent_id: String,
     harness_home: PathBuf,
+    /// Optional base URL of the harness HTTP server (e.g. `http://127.0.0.1:8787`).
+    /// When set, `task_create` delegates to `POST /api/threads/:tid/tasks` so the
+    /// in-process broadcast bus emits `task.created` and SSE consumers see the
+    /// new task. Without it, `task_create` falls back to a direct filesystem
+    /// write but cannot notify the HTTP server (sessions panel will lag).
+    server_url: Option<String>,
 }
 
 fn parse_args() -> Result<CliArgs, String> {
     let mut thread_id: Option<String> = None;
     let mut agent_id: Option<String> = None;
     let mut harness_home: Option<PathBuf> = None;
+    let mut server_url: Option<String> = std::env::var("HARNESS_SERVER_URL").ok();
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
@@ -54,9 +61,13 @@ fn parse_args() -> Result<CliArgs, String> {
                 harness_home = Some(PathBuf::from(next(i)?));
                 i += 2;
             }
+            "--server-url" => {
+                server_url = Some(next(i)?.clone());
+                i += 2;
+            }
             "-h" | "--help" => {
                 eprintln!(
-                    "usage: harness-mcp-server --thread <tid> --agent-id <aid> --harness-home <path>"
+                    "usage: harness-mcp-server --thread <tid> --agent-id <aid> --harness-home <path> [--server-url <url>]"
                 );
                 std::process::exit(0);
             }
@@ -67,6 +78,7 @@ fn parse_args() -> Result<CliArgs, String> {
         thread_id: thread_id.ok_or_else(|| "missing --thread".to_string())?,
         agent_id: agent_id.ok_or_else(|| "missing --agent-id".to_string())?,
         harness_home: harness_home.ok_or_else(|| "missing --harness-home".to_string())?,
+        server_url,
     })
 }
 
@@ -94,10 +106,11 @@ fn main() -> ExitCode {
         "harness-mcp-server starting"
     );
 
-    let dispatcher = match Dispatcher::new(
+    let dispatcher = match Dispatcher::new_with_server(
         args.harness_home.clone(),
         args.thread_id.clone(),
         args.agent_id.clone(),
+        args.server_url.clone(),
     ) {
         Ok(d) => d,
         Err(e) => {

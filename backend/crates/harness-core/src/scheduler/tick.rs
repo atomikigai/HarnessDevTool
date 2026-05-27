@@ -12,6 +12,7 @@ use crate::budget::{
 use crate::pause::PauseFlag;
 use crate::tasks::{ClaimResult, ListFilters, TaskEvent, TaskStatus, TaskStore};
 
+use super::spawner::{NoopSpawner, SessionSpawner, SpawnRequest, SpawnResult};
 use super::MAX_CONCURRENT_DEFAULT;
 
 /// Threshold bands used by [`run_budget_pass`]. We only re-emit
@@ -88,6 +89,29 @@ impl Scheduler {
         max_concurrent: Option<usize>,
         budget: Option<BudgetWiring>,
     ) -> Self {
+        Self::spawn_full(
+            store,
+            agents,
+            pause,
+            max_concurrent,
+            budget,
+            Arc::new(NoopSpawner) as Arc<dyn SessionSpawner>,
+        )
+    }
+
+    /// Full constructor taking a [`SessionSpawner`]. When the scheduler claims
+    /// or reassigns a task it asks the spawner to materialize the agent as a
+    /// live PTY session (no-op if one already exists for the `(thread,agent)`
+    /// pair). The default [`spawn_with_budget`] wires a [`NoopSpawner`] which
+    /// is fine for non-binary contexts (tests, library use).
+    pub fn spawn_full(
+        store: TaskStore,
+        agents: Arc<AgentsRegistry>,
+        pause: Arc<PauseFlag>,
+        max_concurrent: Option<usize>,
+        budget: Option<BudgetWiring>,
+        spawner: Arc<dyn SessionSpawner>,
+    ) -> Self {
         let stop = Arc::new(Mutex::new(false));
         let stop2 = stop.clone();
         let max_concurrent = max_concurrent.unwrap_or(MAX_CONCURRENT_DEFAULT);
@@ -119,6 +143,7 @@ impl Scheduler {
                             max_concurrent,
                             &mut prev_status,
                             &cooldown,
+                            spawner.as_ref(),
                         ) {
                             tracing::warn!(?e, "scheduler assign pass failed");
                         }
@@ -218,6 +243,54 @@ fn run_ready_pass(
     Ok(())
 }
 
+/// Ask the [`SessionSpawner`] to materialize `agent` as a live PTY session
+/// attached to `tid`. The spawner is expected to de-dupe — re-issuing the
+/// request for an agent that already has a live session is cheap and turns
+/// into [`SpawnResult::AlreadyRunning`]. We log structured results so the
+/// "claimed but no PTY" failure mode is obvious in the scheduler logs.
+fn request_spawn(spawner: &dyn SessionSpawner, tid: &str, agent: &Agent) {
+    let req = SpawnRequest {
+        agent_id: agent.id.clone(),
+        role: agent_role(agent).to_string(),
+        kind: agent.kind.as_str().to_string(),
+        thread_id: tid.to_string(),
+        cwd: None,
+    };
+    match spawner.spawn(req) {
+        SpawnResult::Launched { session_id } => {
+            tracing::info!(
+                target: "scheduling",
+                thread = %tid,
+                agent = %agent.id,
+                role = %agent_role(agent),
+                session = %session_id,
+                "scheduling.spawn_launched"
+            );
+        }
+        SpawnResult::AlreadyRunning { session_id } => {
+            tracing::debug!(
+                target: "scheduling",
+                thread = %tid,
+                agent = %agent.id,
+                session = %session_id,
+                "scheduling.spawn_already_running"
+            );
+        }
+        SpawnResult::Failed(why) => {
+            // CRITICAL — without this log line the "claimed but no PTY" bug
+            // is invisible. Keep at warn so it shows up in default logs.
+            tracing::warn!(
+                target: "scheduling",
+                thread = %tid,
+                agent = %agent.id,
+                role = %agent_role(agent),
+                why = %why,
+                "scheduling.spawn_failed"
+            );
+        }
+    }
+}
+
 /// Pick the first idle generator that is not under cooldown for `(tid,task_id)`.
 ///
 /// Pure helper so it can be unit-tested without touching the store. `now` is
@@ -251,6 +324,7 @@ fn run_assign_pass(
     max_concurrent: usize,
     prev_status: &mut StatusSnapshot,
     cooldown: &Mutex<HashMap<CooldownKey, Instant>>,
+    spawner: &dyn SessionSpawner,
 ) -> Result<(), crate::Error> {
     if pause.is_paused() {
         return Ok(());
@@ -374,6 +448,7 @@ fn run_assign_pass(
                     );
                     busy_ids.insert(agent.id.clone());
                     current += 1;
+                    request_spawn(spawner, &tid, agent);
                 }
                 Ok(ClaimResult::Busy { holder, .. }) => {
                     busy_ids.insert(holder);
@@ -424,6 +499,7 @@ fn run_assign_pass(
                         "scheduling.route_evaluator"
                     );
                     busy_ids.insert(evaluator.id.clone());
+                    request_spawn(spawner, &tid, evaluator);
                 }
                 Err(e) => {
                     tracing::warn!(?e, task = %t.id, "scheduler evaluator reassign failed");
@@ -671,7 +747,7 @@ mod tests {
 
         let mut prev = StatusSnapshot::new();
         let cd = Mutex::new(HashMap::new());
-        run_assign_pass(&store, &agents, &pause, 3, &mut prev, &cd).unwrap();
+        run_assign_pass(&store, &agents, &pause, 3, &mut prev, &cd, &NoopSpawner).unwrap();
 
         let t = store.get("thr-1", "T-0001").unwrap();
         assert_eq!(t.assignee.as_deref(), Some(gen.id.as_str()));
@@ -729,7 +805,7 @@ mod tests {
         let cd = Mutex::new(HashMap::new());
 
         // Tick 1: assign queued -> g1 (lowest id picked first).
-        run_assign_pass(&store, &agents, &pause, 3, &mut prev, &cd).unwrap();
+        run_assign_pass(&store, &agents, &pause, 3, &mut prev, &cd, &NoopSpawner).unwrap();
         let t = store.get("thr", "T-0001").unwrap();
         let first_gen = t.assignee.clone().unwrap();
         assert!(first_gen == g1.id || first_gen == g2.id);
@@ -764,7 +840,7 @@ mod tests {
 
         // Tick 2: should route pending_verify -> evaluator e1, push first_gen
         // onto previous_assignees.
-        run_assign_pass(&store, &agents, &pause, 3, &mut prev, &cd).unwrap();
+        run_assign_pass(&store, &agents, &pause, 3, &mut prev, &cd, &NoopSpawner).unwrap();
         let t = store.get("thr", "T-0001").unwrap();
         assert_eq!(t.assignee.as_deref(), Some(e1.id.as_str()));
         assert_eq!(t.previous_assignees.last().map(|s| s.as_str()), Some(first_gen.as_str()));
@@ -784,7 +860,7 @@ mod tests {
 
         // Tick 3: must observe the verify-fail transition and record cooldown
         // for first_gen on this task.
-        run_assign_pass(&store, &agents, &pause, 3, &mut prev, &cd).unwrap();
+        run_assign_pass(&store, &agents, &pause, 3, &mut prev, &cd, &NoopSpawner).unwrap();
         let key = ("thr".to_string(), "T-0001".to_string(), first_gen.clone());
         assert!(cd.lock().unwrap().contains_key(&key), "cooldown not recorded");
 
@@ -799,7 +875,7 @@ mod tests {
             })
             .unwrap();
 
-        run_assign_pass(&store, &agents, &pause, 3, &mut prev, &cd).unwrap();
+        run_assign_pass(&store, &agents, &pause, 3, &mut prev, &cd, &NoopSpawner).unwrap();
         let t = store.get("thr", "T-0001").unwrap();
         let second_gen = t.assignee.clone().unwrap();
         let other = if first_gen == g1.id { g2.id.clone() } else { g1.id.clone() };
@@ -943,5 +1019,156 @@ mod tests {
         let cd = HashMap::new();
         let pick = pick_idle_generator(&agents, &busy, &cd, "thr", "T-1", Instant::now());
         assert_eq!(pick.map(|a| a.id.as_str()), Some("agent:g2"));
+    }
+
+    // ----- spawner wiring -----
+
+    /// Records every spawn request the scheduler issues so we can assert on
+    /// `(agent_id, role, thread_id)` from the test body.
+    #[derive(Default)]
+    struct RecordingSpawner(StdMutex<Vec<SpawnRequest>>);
+    impl SessionSpawner for RecordingSpawner {
+        fn spawn(&self, req: SpawnRequest) -> SpawnResult {
+            let session_id = format!("sess-{}", req.agent_id);
+            self.0.lock().unwrap().push(req);
+            SpawnResult::Launched { session_id }
+        }
+    }
+
+    /// When the scheduler claims a queued task for a generator, the spawner
+    /// must be asked to materialize a PTY session for that agent. Before this
+    /// wiring landed, `run_assign_pass` only set the assignee in the task
+    /// store, leaving the agent as a phantom (no PTY ever started). Regression
+    /// guard for that bug.
+    #[test]
+    fn assign_pass_asks_spawner_to_launch_claimed_agent() {
+        use crate::agents::{AgentDraft, AgentsRegistry};
+        use crate::pause::PauseFlag;
+        use crate::tasks::{TaskDraft, TaskStore};
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let store = TaskStore::new(dir.path()).unwrap();
+        let agents = AgentsRegistry::new(dir.path()).unwrap();
+        let pause = PauseFlag::load(dir.path()).unwrap();
+        let gen = agents
+            .create(AgentDraft {
+                kind: AgentKind::Claude,
+                label: "g".into(),
+                role: Some("generator".into()),
+            })
+            .unwrap();
+
+        store
+            .create(
+                "thr-spawn",
+                TaskDraft {
+                    title: "t".into(),
+                    parent: None,
+                    depends_on: vec![],
+                    acceptance: vec![],
+                    labels: vec![],
+                    created_by: "human".into(),
+                },
+            )
+            .unwrap();
+
+        let spawner = RecordingSpawner::default();
+        let mut prev = StatusSnapshot::new();
+        let cd = Mutex::new(HashMap::new());
+        run_assign_pass(&store, &agents, &pause, 3, &mut prev, &cd, &spawner).unwrap();
+
+        let calls = spawner.0.lock().unwrap();
+        assert_eq!(calls.len(), 1, "spawner should be called exactly once");
+        assert_eq!(calls[0].agent_id, gen.id);
+        assert_eq!(calls[0].role, "generator");
+        assert_eq!(calls[0].thread_id, "thr-spawn");
+    }
+
+    /// Routing `pending_verify` to an evaluator must also request a spawn —
+    /// otherwise the evaluator has nothing to review with.
+    #[test]
+    fn assign_pass_spawns_evaluator_on_pending_verify_route() {
+        use crate::agents::{AgentDraft, AgentsRegistry};
+        use crate::pause::PauseFlag;
+        use crate::tasks::{Artifacts, TaskDraft, TaskPatch, TaskStore};
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let store = TaskStore::new(dir.path()).unwrap();
+        let agents = AgentsRegistry::new(dir.path()).unwrap();
+        let pause = PauseFlag::load(dir.path()).unwrap();
+        let gen = agents
+            .create(AgentDraft {
+                kind: AgentKind::Claude,
+                label: "g".into(),
+                role: Some("generator".into()),
+            })
+            .unwrap();
+        let evaluator = agents
+            .create(AgentDraft {
+                kind: AgentKind::Claude,
+                label: "e".into(),
+                role: Some("evaluator".into()),
+            })
+            .unwrap();
+
+        store
+            .create(
+                "thr-eval",
+                TaskDraft {
+                    title: "t".into(),
+                    parent: None,
+                    depends_on: vec![],
+                    acceptance: vec![],
+                    labels: vec![],
+                    created_by: "human".into(),
+                },
+            )
+            .unwrap();
+
+        let spawner = RecordingSpawner::default();
+        let mut prev = StatusSnapshot::new();
+        let cd = Mutex::new(HashMap::new());
+
+        // Tick 1: queued -> claim by generator (1 spawn).
+        run_assign_pass(&store, &agents, &pause, 3, &mut prev, &cd, &spawner).unwrap();
+        // Generator submits.
+        store
+            .patch(
+                "thr-eval",
+                "T-0001",
+                TaskPatch {
+                    status: Some(TaskStatus::InProgress),
+                    ..Default::default()
+                },
+                &gen.id,
+            )
+            .unwrap();
+        store
+            .patch(
+                "thr-eval",
+                "T-0001",
+                TaskPatch {
+                    artifacts: Some(Artifacts {
+                        files: vec!["x.txt".into()],
+                        ..Default::default()
+                    }),
+                    status: Some(TaskStatus::PendingVerify),
+                    ..Default::default()
+                },
+                &gen.id,
+            )
+            .unwrap();
+        // Tick 2: should route to evaluator AND request a spawn for them.
+        run_assign_pass(&store, &agents, &pause, 3, &mut prev, &cd, &spawner).unwrap();
+
+        let calls = spawner.0.lock().unwrap();
+        let roles: Vec<&str> = calls.iter().map(|c| c.role.as_str()).collect();
+        assert!(roles.contains(&"generator"), "generator spawn missing: {roles:?}");
+        assert!(roles.contains(&"evaluator"), "evaluator spawn missing: {roles:?}");
+        let eval_call = calls.iter().find(|c| c.role == "evaluator").unwrap();
+        assert_eq!(eval_call.agent_id, evaluator.id);
+        assert_eq!(eval_call.thread_id, "thr-eval");
     }
 }

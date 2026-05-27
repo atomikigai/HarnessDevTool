@@ -142,6 +142,9 @@ fn build_spawn_opts(
         .map_err(|e| ApiError::Internal(format!("create mcp-configs dir: {e}")))?;
     let config_path = configs_dir.join(format!("{mcp_id}.json"));
 
+    // `--server-url` lets the MCP child delegate `task_create` back to the
+    // harness HTTP server so the in-process broadcast bus emits the SSE
+    // `task.created` event the right-panel relies on.
     let config = json!({
         "mcpServers": {
             "harness": {
@@ -150,6 +153,7 @@ fn build_spawn_opts(
                     "--thread", thread_id,
                     "--agent-id", agent_id,
                     "--harness-home", state.harness_home.display().to_string(),
+                    "--server-url", state.server_url,
                 ]
             }
         }
@@ -223,15 +227,27 @@ async fn post_resize(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// `DELETE /api/sessions/:sid` — kill the PTY (if live) AND forget the session
+/// from the Manager so it no longer shows up in `GET /api/threads` listings.
+///
+/// Idempotent for the "missing from manager" case: if the session is already
+/// gone (e.g. exited earlier) we still 204 instead of 404 so the UI's delete
+/// affordance can prune stale cards without races.
 async fn kill_session(
     State(state): State<Arc<AppState>>,
     Path(sid): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    let session = state
-        .manager
-        .get(&sid)
-        .ok_or_else(|| ApiError::SessionNotFound(sid.clone()))?;
-    session.kill().await?;
+    if let Some(session) = state.manager.get(&sid) {
+        // Best-effort kill; ignore "already exited" but surface real PTY errors.
+        if let Err(e) = session.kill().await {
+            tracing::warn!(session = %sid, error = %e, "kill returned error (continuing with delete)");
+        }
+    }
+    // Drop from the in-memory registry so subsequent `all()` snapshots and
+    // `GET /api/threads` no longer surface this session. The on-disk
+    // `meta.json` is intentionally left behind for forensic inspection.
+    state.manager.remove(&sid);
+
     // Best-effort: remove the per-session MCP config file via the registry
     // we populated at spawn time. The MCP server child dies on stdio close
     // when claude exits, so there's nothing else to clean up.

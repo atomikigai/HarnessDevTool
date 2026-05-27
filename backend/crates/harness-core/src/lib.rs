@@ -20,7 +20,10 @@ pub use budget::{
 pub use events::Event;
 pub use pause::PauseFlag;
 pub use roles::{Role, RolesRegistry};
-pub use scheduler::{run_budget_pass, BudgetWiring, Scheduler, MAX_CONCURRENT_DEFAULT};
+pub use scheduler::{
+    run_budget_pass, BudgetWiring, NoopSpawner, Scheduler, SessionSpawner, SpawnRequest,
+    SpawnResult, MAX_CONCURRENT_DEFAULT,
+};
 pub use store::{Store, StoreError};
 pub use tasks::{
     AcceptanceCheck, Artifacts, ClaimResult, HistoryEvent, Lease, ListFilters, Task, TaskDraft,

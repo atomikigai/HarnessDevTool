@@ -16,7 +16,7 @@
   import SchemaTree from '$lib/components/db/SchemaTree.svelte';
   import SqlEditor from '$lib/components/db/SqlEditor.svelte';
   import ResultGrid from '$lib/components/db/ResultGrid.svelte';
-  import RowEditorDialog from '$lib/components/db/RowEditorDialog.svelte';
+  import RowEditorPanel from '$lib/components/db/RowEditorPanel.svelte';
   import { Play, Plus, X, RefreshCw, Loader2, ChevronLeft, ChevronRight } from '$lib/icons';
   import { dbApi } from '$lib/api/db';
   import { toast } from 'svelte-sonner';
@@ -376,7 +376,7 @@
 </div>
 
 {#if activeMeta}
-  <RowEditorDialog
+  <RowEditorPanel
     bind:open={editorOpen}
     mode={editorMode}
     connectionId={connId}

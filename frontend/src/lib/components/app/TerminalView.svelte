@@ -46,6 +46,9 @@
 
   function openContextMenu(ev: MouseEvent) {
     if (!term) return;
+    // When the running TUI app (htop, vim, tmux, lazygit) has enabled mouse
+    // tracking, the right-click belongs to the app — not our copy menu.
+    if (term.hasMouseTracking()) return;
     ev.preventDefault();
     // Prefer the live selection if the renderer hasn't cleared it yet; fall
     // back to the cached one.
@@ -146,6 +149,7 @@
 
   let reconnectAttempts = 0;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  const MAX_RECONNECT_ATTEMPTS = 30;
   const encoder = new TextEncoder();
 
   // Reconnection policy: when SSE errors out, we close the current EventSource and
@@ -184,6 +188,13 @@
         onError: () => {
           if (exited || killed) {
             connState = 'closed';
+            return;
+          }
+          if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+            connState = 'closed';
+            sse?.close();
+            sse = null;
+            toast.error('Lost connection to session after multiple retries');
             return;
           }
           // Schedule reconnect with backoff.
@@ -225,6 +236,7 @@
   }
 
   async function fitAndResize(): Promise<boolean> {
+    if (exited || killed) return false;
     if (!fitAddon || !term) return false;
     try {
       fitAddon.fit();
@@ -363,7 +375,6 @@
       await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
       await fitAndResize();
       if (cancelled) return;
-      term.reset();
 
       // Char-at-a-time input forwarding — best UX for typical TTY apps.
       term.onData(async (data) => {
@@ -386,6 +397,14 @@
       openSSE();
 
       window.addEventListener('keydown', onWindowKey, true);
+
+      // Re-assert focus after the async boot finishes. `term.open()` calls
+      // focus() internally, but the WASM init + initial resize await chain
+      // gives the user time to click elsewhere (sidebar item, header, etc.),
+      // and the focus we set during open() is long lost by the time we get
+      // here. Without this the terminal renders output but `onData` never
+      // fires — the keystrokes go to whatever was focused last.
+      term.focus();
     }
 
     void boot().catch((err) => {

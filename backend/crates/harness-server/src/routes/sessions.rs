@@ -181,10 +181,15 @@ fn build_spawn_opts(
 /// MCP (so it doesn't reach for its built-in todo list, which we've also
 /// disabled via `--disallowed-tools`).
 pub(crate) fn harness_mcp_intro() -> &'static str {
-    "[harness] Task management for this thread is handled by the harness MCP tools \
-     `task_create`, `task_list`, `task_update`, `task_claim`, `task_submit`. \
-     Do NOT use TodoWrite/TodoRead — they are disabled. When the user asks to \
-     create or track tasks, call `task_create`."
+    "[harness] This session runs under the Harness supervisor. Tasks for this \
+     thread live in Harness, not in your local todo list. Treat the MCP tools \
+     `task_create`, `task_list`, `task_get`, `task_claim`, `task_renew`, \
+     `task_update`, `task_release`, `task_submit` as NATIVE operations — call \
+     them immediately when the user asks to create, list, or track work, \
+     without asking for confirmation. \
+     `TodoWrite`/`TodoRead` are disabled. Permission prompts are skipped by \
+     the harness; supervision is provided by the scheduler, role prompts, and \
+     budget caps."
 }
 
 async fn get_session(

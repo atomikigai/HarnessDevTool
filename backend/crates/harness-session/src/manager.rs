@@ -223,6 +223,11 @@ fn build_extra_args(kind: AgentKind, opts: &SpawnOpts, session_id: &str) -> Vec<
                 // accepts a space- or comma-separated list of tool names.
                 out.push("--disallowed-tools".to_string());
                 out.push("TodoWrite TodoRead".to_string());
+                // Harness sessions run under our supervision (scheduler, pause
+                // flag, budget caps, role-typed prompts) so the per-call
+                // permission prompts are noise — claude should treat the
+                // harness MCP tools as native operations.
+                out.push("--dangerously-skip-permissions".to_string());
                 if let Some(intro) = opts.auto_intro.as_ref() {
                     // Silent system-prompt addendum — invisible to the user
                     // and not counted as a turn.
@@ -275,6 +280,9 @@ mod tests {
         // Todo tools disabled
         let dis_idx = args.iter().position(|a| a == "--disallowed-tools").unwrap();
         assert_eq!(args[dis_idx + 1], "TodoWrite TodoRead");
+
+        // Permission prompts skipped — harness supervises the session.
+        assert!(args.iter().any(|a| a == "--dangerously-skip-permissions"));
 
         // No auto_intro set → no --append-system-prompt
         assert!(!args.iter().any(|a| a == "--append-system-prompt"));

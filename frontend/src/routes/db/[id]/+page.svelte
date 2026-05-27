@@ -17,6 +17,7 @@
   import SqlEditor from '$lib/components/db/SqlEditor.svelte';
   import ResultGrid from '$lib/components/db/ResultGrid.svelte';
   import RowEditorPanel from '$lib/components/db/RowEditorPanel.svelte';
+  import TableSchemaView from '$lib/components/db/TableSchemaView.svelte';
   import { Play, Plus, X, RefreshCw, Loader2, ChevronLeft, ChevronRight } from '$lib/icons';
   import { dbApi } from '$lib/api/db';
   import { toast } from 'svelte-sonner';
@@ -36,6 +37,16 @@
   let editorOpen = $state(false);
   let editorMode = $state<'insert' | 'update' | 'duplicate'>('insert');
   let editorInitial = $state<Record<string, unknown> | undefined>(undefined);
+
+  // Inner sub-tab per table tab (Data / Schema). Keyed by tab id.
+  let tableSubTab = $state<Record<string, 'data' | 'schema'>>({});
+  const activeSubTab = $derived<'data' | 'schema'>(
+    activeTab?.kind === 'table' ? (tableSubTab[activeTab.id] ?? 'data') : 'data'
+  );
+  function setSubTab(kind: 'data' | 'schema') {
+    if (!activeTab || activeTab.kind !== 'table') return;
+    tableSubTab = { ...tableSubTab, [activeTab.id]: kind };
+  }
 
   onMount(async () => {
     if (dbStore.connections.length === 0) await dbStore.refresh();
@@ -265,66 +276,94 @@
         </div>
       {:else}
         <div class="flex min-h-0 flex-1 flex-col">
-          <!-- Toolbar -->
-          <div
-            class="flex h-11 shrink-0 items-center justify-between gap-3 border-b px-4"
-            style="border-color: var(--border-subtle); background: var(--surface-window);"
-          >
-            <div class="flex items-center gap-2">
-              <Button size="sm" onclick={runActive} disabled={activeTab.loading}>
-                {#if activeTab.loading}
-                  <Loader2 class="h-3.5 w-3.5 animate-spin" />
-                {:else}
-                  <Play class="h-3.5 w-3.5" />
-                {/if}
-                Run
-              </Button>
-              {#if activeTab.kind === 'table'}
-                <Button size="sm" variant="outline" onclick={onInsertRow}>
-                  <Plus class="h-3.5 w-3.5" /> Insert row
+          <!-- Toolbar (hidden on table tabs while viewing Schema sub-tab) -->
+          {#if !(activeTab.kind === 'table' && activeSubTab === 'schema')}
+            <div
+              class="flex h-11 shrink-0 items-center justify-between gap-3 border-b px-4"
+              style="border-color: var(--border-subtle); background: var(--surface-window);"
+            >
+              <div class="flex items-center gap-2">
+                <Button size="sm" onclick={runActive} disabled={activeTab.loading}>
+                  {#if activeTab.loading}
+                    <Loader2 class="h-3.5 w-3.5 animate-spin" />
+                  {:else}
+                    <Play class="h-3.5 w-3.5" />
+                  {/if}
+                  Run
                 </Button>
-              {/if}
-              <label
-                class="ml-2 inline-flex items-center gap-1.5 text-[11px]"
+                {#if activeTab.kind === 'table'}
+                  <Button size="sm" variant="outline" onclick={onInsertRow}>
+                    <Plus class="h-3.5 w-3.5" /> Insert row
+                  </Button>
+                {/if}
+                <label
+                  class="ml-2 inline-flex items-center gap-1.5 text-[11px]"
+                  style="color: var(--fg-muted);"
+                >
+                  Page size
+                  <select
+                    value={activeTab.pageSize}
+                    onchange={(e) =>
+                      setPageSize(Number((e.currentTarget as HTMLSelectElement).value))}
+                    class="h-7 rounded border px-1.5 text-[11px]"
+                    style="border-color: var(--border-input); background: var(--surface-titlebar);"
+                  >
+                    {#each [50, 100, 200, 500, 1000] as n (n)}
+                      <option value={n}>{n}</option>
+                    {/each}
+                  </select>
+                </label>
+              </div>
+
+              <div
+                class="flex items-center gap-2 font-mono text-[11px]"
                 style="color: var(--fg-muted);"
               >
-                Page size
-                <select
-                  value={activeTab.pageSize}
-                  onchange={(e) =>
-                    setPageSize(Number((e.currentTarget as HTMLSelectElement).value))}
-                  class="h-7 rounded border px-1.5 text-[11px]"
-                  style="border-color: var(--border-input); background: var(--surface-titlebar);"
+                <button
+                  type="button"
+                  class="rounded p-1 hover:bg-[var(--accent-soft)]"
+                  onclick={() => gotoPage(-1)}
+                  disabled={activeTab.page === 0}
                 >
-                  {#each [50, 100, 200, 500, 1000] as n (n)}
-                    <option value={n}>{n}</option>
-                  {/each}
-                </select>
-              </label>
+                  <ChevronLeft class="h-3.5 w-3.5" />
+                </button>
+                <span>page {activeTab.page + 1}</span>
+                <button
+                  type="button"
+                  class="rounded p-1 hover:bg-[var(--accent-soft)]"
+                  onclick={() => gotoPage(1)}
+                >
+                  <ChevronRight class="h-3.5 w-3.5" />
+                </button>
+              </div>
             </div>
+          {/if}
 
+          <!-- Data / Schema sub-tabs (table tabs only) -->
+          {#if activeTab.kind === 'table'}
             <div
-              class="flex items-center gap-2 font-mono text-[11px]"
-              style="color: var(--fg-muted);"
+              class="flex h-9 shrink-0 items-center gap-1 border-b px-3"
+              style="border-color: var(--border-subtle); background: var(--surface-titlebar);"
+              role="tablist"
+              aria-label="Table view"
             >
-              <button
-                type="button"
-                class="rounded p-1 hover:bg-[var(--accent-soft)]"
-                onclick={() => gotoPage(-1)}
-                disabled={activeTab.page === 0}
-              >
-                <ChevronLeft class="h-3.5 w-3.5" />
-              </button>
-              <span>page {activeTab.page + 1}</span>
-              <button
-                type="button"
-                class="rounded p-1 hover:bg-[var(--accent-soft)]"
-                onclick={() => gotoPage(1)}
-              >
-                <ChevronRight class="h-3.5 w-3.5" />
-              </button>
+              {#each [{ k: 'data', label: 'Data' }, { k: 'schema', label: 'Schema' }] as t (t.k)}
+                {@const sel = activeSubTab === t.k}
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={sel}
+                  onclick={() => setSubTab(t.k as 'data' | 'schema')}
+                  class="h-7 rounded-md px-3 text-[11px] font-medium transition-colors"
+                  style={sel
+                    ? 'background: var(--surface-canvas); color: var(--accent); border: 1px solid var(--border-subtle);'
+                    : 'background: transparent; color: var(--fg-muted); border: 1px solid transparent;'}
+                >
+                  {t.label}
+                </button>
+              {/each}
             </div>
-          </div>
+          {/if}
 
           <!-- Editor / table -->
           {#if activeTab.kind === 'sql'}
@@ -348,6 +387,10 @@
                   <ResultGrid result={activeTab.result} />
                 {/if}
               </div>
+            </div>
+          {:else if activeSubTab === 'schema' && activeMeta}
+            <div class="min-h-0 flex-1">
+              <TableSchemaView table={activeMeta} />
             </div>
           {:else}
             <div class="min-h-0 flex-1">

@@ -17,7 +17,7 @@
 <script lang="ts">
   import type { SessionMeta } from '$lib/api/client';
   import HarnessIcons from './HarnessIcons.svelte';
-  import { Plus, ChevronRight, ChevronLeft, Bot } from '$lib/icons';
+  import { Plus, ChevronRight, ChevronLeft, Bot, Trash2 } from '$lib/icons';
   import {
     kindChip,
     relTime,
@@ -34,6 +34,9 @@
     selectedSessionId: string | null;
     onSelect: (sessionId: string) => void;
     onNew: () => void;
+    /** Caller deletes the session (kill PTY + drop from manager). Awaited so
+     *  the column can clear local hover/menu state synchronously. */
+    onDelete: (sessionId: string) => Promise<void> | void;
     collapsed: boolean;
     onToggleCollapsed: () => void;
     /** Optional per-thread task progress. F2: caller supplies only for the
@@ -47,10 +50,33 @@
     selectedSessionId,
     onSelect,
     onNew,
+    onDelete,
     collapsed,
     onToggleCollapsed,
     progressByThread = {}
   }: Props = $props();
+
+  /// Per-card "deleting" guard so a slow DELETE can't be re-issued by an
+  /// impatient user.
+  let deleting = $state<string | null>(null);
+
+  async function handleDelete(ev: MouseEvent, s: SessionMeta) {
+    ev.stopPropagation();
+    ev.preventDefault();
+    if (deleting === s.id) return;
+    const label = s.kind + ' · ' + s.id.slice(0, 8);
+    // Native confirm keeps the diff small; swap for a shadcn AlertDialog if
+    // the design system grows one.
+    if (!window.confirm(`Delete session ${label}?\n\nThe PTY is killed and the card removed.`)) {
+      return;
+    }
+    deleting = s.id;
+    try {
+      await onDelete(s.id);
+    } finally {
+      deleting = null;
+    }
+  }
 
   const activeCount = $derived(sessions.filter((s) => uiStatus(s) === 'active').length);
   const idleCount = $derived(
@@ -195,7 +221,22 @@
             {@const k = kindChip(s.kind)}
             {@const selected = s.id === selectedSessionId}
             {@const prog = progressFor(s)}
-            <li>
+            <li class="group relative">
+              <!-- Destructive affordance — hidden until row hover/selection so
+                   it doesn't compete with the primary "select session" tap
+                   target. Stops propagation so clicking it doesn't also
+                   re-select the card we're about to delete. -->
+              <button
+                type="button"
+                onclick={(e) => handleDelete(e, s)}
+                disabled={deleting === s.id}
+                aria-label={'Delete session ' + s.id.slice(0, 8)}
+                title="Delete session"
+                class="absolute right-2 top-2 z-10 flex h-6 w-6 items-center justify-center rounded-md border opacity-0 transition-opacity hover:bg-[color-mix(in_srgb,var(--dot-danger)_15%,transparent)] focus-visible:opacity-100 group-hover:opacity-100 disabled:opacity-50"
+                style="border-color: var(--border-subtle); color: var(--dot-danger); background: var(--surface-window);"
+              >
+                <Trash2 class="h-3 w-3" />
+              </button>
               <button
                 type="button"
                 onclick={() => onSelect(s.id)}

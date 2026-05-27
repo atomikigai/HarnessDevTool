@@ -23,7 +23,8 @@
   import { sessionsState } from '$lib/stores/session.svelte';
   import { tasksState } from '$lib/stores/tasks.svelte';
   import { taskProgress } from '$lib/sessionDisplay';
-  import type { SessionMeta } from '$lib/api/client';
+  import { api, ApiError, type SessionMeta } from '$lib/api/client';
+  import { toast } from 'svelte-sonner';
 
   // ── Local UI state ────────────────────────────────────────────────────────
   let selectedSessionId = $state<string | null>(null);
@@ -141,6 +142,29 @@
     refreshSessions();
   }
 
+  /// Hard-delete a session from the Agents panel (kebab → Delete).
+  /// Calls DELETE /api/sessions/:id which kills the PTY and forgets the
+  /// session in the Manager so subsequent polls see it gone. We optimistically
+  /// drop the local selection so the right panel doesn't flash stale meta
+  /// while waiting for the next poll.
+  async function onSessionDelete(sid: string) {
+    try {
+      await api.sessions.kill(sid);
+      if (selectedSessionId === sid) {
+        selectedSessionId = null;
+      }
+      refreshSessions();
+    } catch (err) {
+      const msg =
+        err instanceof ApiError
+          ? ((err.body as { error?: string } | undefined)?.error ?? err.message)
+          : err instanceof Error
+            ? err.message
+            : String(err);
+      toast.error(`Delete failed: ${msg}`);
+    }
+  }
+
   async function onSessionReplaced(newId: string) {
     refreshSessions();
     selectedSessionId = newId;
@@ -211,6 +235,7 @@
       {selectedSessionId}
       {onSelect}
       {onNew}
+      onDelete={onSessionDelete}
       {collapsed}
       {onToggleCollapsed}
       {progressByThread}

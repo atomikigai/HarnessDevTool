@@ -115,6 +115,8 @@ pub enum TableKind {
 #[cfg_attr(feature = "ts-export", ts(export, export_to = "../../../bindings/"))]
 pub struct Column {
     pub name: String,
+    #[serde(rename = "data_type")]
+    #[cfg_attr(feature = "ts-export", ts(rename = "data_type"))]
     pub r#type: String,
     pub nullable: bool,
     pub pk: bool,
@@ -127,6 +129,8 @@ pub struct Column {
 #[cfg_attr(feature = "ts-export", ts(export, export_to = "../../../bindings/"))]
 pub struct Index {
     pub name: String,
+    #[serde(rename = "columns")]
+    #[cfg_attr(feature = "ts-export", ts(rename = "columns"))]
     pub cols: Vec<String>,
     pub unique: bool,
 }
@@ -136,8 +140,12 @@ pub struct Index {
 #[cfg_attr(feature = "ts-export", ts(export, export_to = "../../../bindings/"))]
 pub struct ForeignKey {
     pub name: String,
+    #[serde(rename = "columns")]
+    #[cfg_attr(feature = "ts-export", ts(rename = "columns"))]
     pub cols: Vec<String>,
     pub ref_table: String,
+    #[serde(rename = "ref_columns")]
+    #[cfg_attr(feature = "ts-export", ts(rename = "ref_columns"))]
     pub ref_cols: Vec<String>,
 }
 

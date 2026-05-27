@@ -11,6 +11,7 @@
 //! `harness:db:<connection_id>`.
 
 pub mod error;
+pub mod export;
 pub mod manager;
 pub mod pool;
 pub mod query;
@@ -21,6 +22,7 @@ pub mod types;
 pub mod value;
 
 pub use error::{DbError, DbResult};
+pub use export::{ExportFormat, ExportRequest, ExportResult, ExportScope, ExportTarget};
 pub use manager::Manager;
 pub use types::{
     Column, Connection, ConnectionInput, Engine, ForeignKey, Index, QueryResult, Row,

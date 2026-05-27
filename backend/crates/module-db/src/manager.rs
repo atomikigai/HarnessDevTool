@@ -1,12 +1,11 @@
 //! Public facade — orchestrates storage + pool cache + execution.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 
 use sqlx::Row as _;
-use tokio::io::AsyncWriteExt;
 
 use crate::error::{DbError, DbResult};
 use crate::pool::{build_pool_for_input, DbPool, PoolCache};
@@ -257,52 +256,20 @@ impl Manager {
 
     // ---- Export ------------------------------------------------------------
 
-    /// Re-runs the query identified by `query_id` is not feasible (we don't
-    /// keep the SQL). This slice exports a fresh result given the SQL.
-    /// `query_id` is accepted for API compatibility but ignored — callers
-    /// pass the SQL via `sql`.
+    /// Export a table or schema to JSON / SQL INSERT / CSV. See
+    /// `module_db::export` for the request/response shapes and the
+    /// per-format rules (CSV refuses schema targets, SQL batches 500
+    /// rows/statement, hard 5M-row safety cap on the data path).
     pub async fn export(
         &self,
         connection_id: &str,
-        sql: &str,
-        format: ExportFormat,
-        path: PathBuf,
-    ) -> DbResult<u64> {
-        let res = self
-            .query_run(connection_id, None, sql, None, 1_000_000, 0)
+        req: crate::export::ExportRequest,
+    ) -> DbResult<crate::export::ExportResult> {
+        let pool = self
+            .pools
+            .get_or_init_for(&self.store, connection_id, req.database.as_deref())
             .await?;
-        let mut file = tokio::fs::File::create(&path).await?;
-        match format {
-            ExportFormat::Csv => {
-                let header = res
-                    .columns
-                    .iter()
-                    .map(|c| csv_escape(&c.name))
-                    .collect::<Vec<_>>()
-                    .join(",");
-                file.write_all(header.as_bytes()).await?;
-                file.write_all(b"\n").await?;
-                for r in &res.rows {
-                    let line = r
-                        .iter()
-                        .map(|v| csv_escape(&value_to_csv(v)))
-                        .collect::<Vec<_>>()
-                        .join(",");
-                    file.write_all(line.as_bytes()).await?;
-                    file.write_all(b"\n").await?;
-                }
-            }
-            ExportFormat::Json => {
-                let json = serde_json::json!({
-                    "columns": res.columns,
-                    "rows": res.rows,
-                });
-                let s = serde_json::to_string(&json).unwrap_or_else(|_| "[]".to_string());
-                file.write_all(s.as_bytes()).await?;
-            }
-        }
-        file.flush().await?;
-        Ok(res.rows.len() as u64)
+        crate::export::run_export(&pool, req.database.as_deref(), &req).await
     }
 
     /// Run an `EXPLAIN`-style query. Engine-specific prefix.
@@ -320,22 +287,6 @@ impl Manager {
         let wrapped = format!("{prefix} {sql}");
         self.query_run(connection_id, None, &wrapped, None, 1000, 0)
             .await
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum ExportFormat {
-    Csv,
-    Json,
-}
-
-impl ExportFormat {
-    pub fn parse(s: &str) -> DbResult<Self> {
-        match s.to_ascii_lowercase().as_str() {
-            "csv" => Ok(ExportFormat::Csv),
-            "json" => Ok(ExportFormat::Json),
-            other => Err(DbError::Validation(format!("unknown format: {other}"))),
-        }
     }
 }
 
@@ -359,23 +310,4 @@ async fn probe_server_version(pool: &DbPool) -> Option<String> {
     }
 }
 
-fn csv_escape(s: &str) -> String {
-    if s.contains(',') || s.contains('"') || s.contains('\n') {
-        let escaped = s.replace('"', "\"\"");
-        format!("\"{escaped}\"")
-    } else {
-        s.to_string()
-    }
-}
-
-fn value_to_csv(v: &Value) -> String {
-    match v {
-        Value::Null => String::new(),
-        Value::Bool(b) => b.to_string(),
-        Value::Int(i) => i.to_string(),
-        Value::Float(f) => f.to_string(),
-        Value::Text(s) => s.clone(),
-        Value::Tagged(t) => serde_json::to_string(t).unwrap_or_default(),
-    }
-}
 

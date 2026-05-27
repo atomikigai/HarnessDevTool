@@ -3,12 +3,14 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use axum::body::Body;
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{header, HeaderValue, StatusCode};
+use axum::response::Response;
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use module_db::{
-    Connection, ConnectionInput, QueryResult, Row, SchemaTree, TestResult, Value,
+    Connection, ConnectionInput, ExportRequest, QueryResult, Row, SchemaTree, TestResult, Value,
 };
 use serde::Deserialize;
 
@@ -42,6 +44,31 @@ pub fn router() -> Router<Arc<AppState>> {
             "/api/db/connections/:id/tables/:table/rows/duplicate",
             post(duplicate_row),
         )
+        .route("/api/db/connections/:id/export", post(export_data))
+}
+
+async fn export_data(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(req): Json<ExportRequest>,
+) -> ApiResult<Response> {
+    let result = s.db.export(&id, req).await.map_err(map_db_err)?;
+    let disposition = format!("attachment; filename=\"{}\"", result.filename);
+    let resp = Response::builder()
+        .status(StatusCode::OK)
+        .header(
+            header::CONTENT_TYPE,
+            HeaderValue::from_str(&result.content_type)
+                .unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream")),
+        )
+        .header(
+            header::CONTENT_DISPOSITION,
+            HeaderValue::from_str(&disposition)
+                .unwrap_or_else(|_| HeaderValue::from_static("attachment")),
+        )
+        .body(Body::from(result.body))
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    Ok(resp)
 }
 
 fn map_db_err(e: module_db::DbError) -> ApiError {

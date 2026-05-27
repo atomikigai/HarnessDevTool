@@ -11,6 +11,7 @@
   import { dbStore } from '$lib/stores/db.svelte';
   import { Plus, Loader2, RefreshCw, Edit3, Trash2, Activity } from '$lib/icons';
   import ConnectionFormDialog from '$lib/components/db/ConnectionFormDialog.svelte';
+  import { confirmDialog } from '$lib/components/ui/confirm-dialog';
   import { toast } from 'svelte-sonner';
   import { ApiError } from '$lib/api/client';
 
@@ -77,7 +78,14 @@
   }
 
   async function onDelete(c: Connection) {
-    if (!confirm(`Delete connection "${c.name}"?`)) return;
+    const ok = await confirmDialog({
+      title: `Delete connection "${c.name}"?`,
+      description:
+        'This removes the saved connection from the harness. It does not touch the database itself.',
+      confirmLabel: 'Delete',
+      destructive: true
+    });
+    if (!ok) return;
     try {
       await dbApi.connections.remove(c.id);
       await dbStore.refresh();

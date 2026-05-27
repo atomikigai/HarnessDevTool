@@ -80,8 +80,16 @@
   const VIRT_THRESHOLD = 200;
 
   let scrollEl = $state<HTMLDivElement | null>(null);
+  /** The inline-insert band tbody (above the virtualized rows). We measure its
+   *  height so the virtualizer can offset its visible-window math by it —
+   *  otherwise virtualizer.scrollOffset (relative to scrollEl) and the rows'
+   *  absolute-positioned coordinate space (relative to the data tbody, which
+   *  sits BELOW the band) get out of sync and the wrong rows are shown. */
+  let insertBandEl = $state<HTMLTableSectionElement | null>(null);
+  let scrollMargin = $state(0);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let virtualizer: Virtualizer<HTMLDivElement, any> | null = null;
+  let virtCleanup: (() => void) | null = null;
   type VItem = { index: number; start: number; size: number; key: number | string | bigint };
   let virtItems = $state<VItem[]>([]);
   let totalSize = $state(0);
@@ -105,7 +113,9 @@
 
   // Kept as $derived bridges so existing helpers below need only minimal change.
   const editingRow = $derived(editing.kind === 'row' ? editing.rowIndex : -1);
-  const editingCol = $derived(editing.kind === 'row' || editing.kind === 'insert' ? editing.colIndex : -1);
+  const editingCol = $derived(
+    editing.kind === 'row' || editing.kind === 'insert' ? editing.colIndex : -1
+  );
 
   function isPkCell(colIndex: number): boolean {
     const col = cols[colIndex];
@@ -205,8 +215,7 @@
   function coerce(raw: string, rowIndex: number, colIndex: number): unknown {
     const colName = cols[colIndex]?.name;
     if (!colName) return raw;
-    const original =
-      pendingByRow[rowIndex]?.original?.[colName] ?? rows[rowIndex]?.[colIndex];
+    const original = pendingByRow[rowIndex]?.original?.[colName] ?? rows[rowIndex]?.[colIndex];
     if (original === null || original === undefined) {
       return raw === '' ? null : raw;
     }
@@ -276,18 +285,27 @@
     }
   }
 
-  function setupVirtual() {
-    virtualizer?._didMount?.()?.();
-    if (!scrollEl || !useVirtual) {
-      virtualizer = null;
-      virtItems = [];
-      return;
+  function teardownVirtual() {
+    try {
+      virtCleanup?.();
+    } catch {
+      /* no-op */
     }
+    virtCleanup = null;
+    virtualizer = null;
+    virtItems = [];
+    totalSize = 0;
+  }
+
+  function setupVirtual() {
+    teardownVirtual();
+    if (!scrollEl || !useVirtual) return;
     virtualizer = new Virtualizer({
       count: rows.length,
       getScrollElement: () => scrollEl,
       estimateSize: () => ROW_HEIGHT,
       overscan: 8,
+      scrollMargin,
       observeElementRect,
       observeElementOffset,
       scrollToFn: elementScroll,
@@ -296,27 +314,66 @@
         totalSize = instance.getTotalSize();
       }
     });
-    const cleanup = virtualizer._didMount();
+    virtCleanup = virtualizer._didMount() ?? null;
     virtualizer._willUpdate();
     virtItems = virtualizer.getVirtualItems();
     totalSize = virtualizer.getTotalSize();
-    return cleanup;
   }
 
+  /** Re-init only when the underlying data shape changes (NEW result, NEW
+   *  virtualization mode, NEW scrollEl). Critically does NOT depend on
+   *  `pendingByRow` / `pendingInserts` — those only retint cells, they
+   *  must not blow away the virtualizer (which would reset scrollTop). */
   $effect(() => {
-    // Re-init when underlying data shape changes.
-    void rows.length;
+    void result; // identity change → new query result
     void useVirtual;
+    void scrollEl;
     untrack(() => {
       // Editing state is bound to a row index from the previous result; drop
       // it whenever the data changes underneath us.
       if (editingRow >= 0) cancelEdit();
       setupVirtual();
     });
+    return () => teardownVirtual();
+  });
+
+  /** Keep the virtualizer's scrollMargin in sync with the insert-band height
+   *  WITHOUT recreating it (preserves scrollOffset). */
+  $effect(() => {
+    void scrollMargin;
+    untrack(() => {
+      if (!virtualizer) return;
+      virtualizer.setOptions({
+        ...virtualizer.options,
+        scrollMargin
+      });
+      virtualizer._willUpdate();
+      virtItems = virtualizer.getVirtualItems();
+      totalSize = virtualizer.getTotalSize();
+    });
+  });
+
+  /** Observe the insert-band's actual rendered height. Falls back to 0 when
+   *  there's no band. */
+  $effect(() => {
+    void pendingInserts.length;
+    void columnsMeta;
+    const el = insertBandEl;
+    if (!el) {
+      scrollMargin = 0;
+      return;
+    }
+    const update = () => {
+      scrollMargin = el.getBoundingClientRect().height;
+    };
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
   });
 
   onDestroy(() => {
-    virtualizer = null;
+    teardownVirtual();
   });
 
   function fmt(v: unknown): string {
@@ -430,13 +487,16 @@
         {/snippet}
         {#snippet insertCells(ins: PendingInsert)}
           {#each columnsMeta ?? [] as col, ci (col.name)}
-            {@const editingThis = editing.kind === 'insert' && editing.tempId === ins.tempId && editing.colIndex === ci}
+            {@const editingThis =
+              editing.kind === 'insert' && editing.tempId === ins.tempId && editing.colIndex === ci}
             {@const auto = isAutoIncrement?.(col) ?? false}
             {@const val = ins.values?.[col.name]}
             {@const hasError = !!ins.errors?.[col.name]}
             {@const cellEditable = !auto}
             <td
-              class="px-3 py-2 whitespace-nowrap {cellEditable && !editingThis ? 'cell-editable' : ''}"
+              class="px-3 py-2 whitespace-nowrap {cellEditable && !editingThis
+                ? 'cell-editable'
+                : ''}"
               style="border-bottom: 1px solid var(--row-divider); {hasError
                 ? `background: ${ERROR_BG}; box-shadow: inset 2px 0 0 0 ${ERROR_BORDER};`
                 : ''} {cellEditable && !editingThis ? 'cursor: text;' : 'cursor: default;'}"
@@ -460,7 +520,9 @@
                 <span style="color: var(--fg-muted); font-style: italic; opacity: 0.55;">auto</span>
               {:else if val === undefined || val === null || val === ''}
                 <span style="color: var(--fg-muted); font-style: italic; opacity: 0.5;">
-                  {col.nullable || (col.default != null && col.default !== '') ? '(empty)' : '(required)'}
+                  {col.nullable || (col.default != null && col.default !== '')
+                    ? '(empty)'
+                    : '(required)'}
                 </span>
               {:else}
                 <span style="color: var(--fg-default);">{fmt(val)}</span>
@@ -500,7 +562,7 @@
         {/snippet}
 
         {#if pendingInserts.length > 0 && columnsMeta && columnsMeta.length > 0}
-          <tbody>
+          <tbody bind:this={insertBandEl}>
             {#each pendingInserts as ins (ins.tempId)}
               <tr
                 class="group"
@@ -533,14 +595,13 @@
           </tbody>
         {/if}
         {#if useVirtual}
-          <tbody style="position: relative; height: {totalSize}px;">
+          <tbody style="position: relative; height: {Math.max(0, totalSize - scrollMargin)}px;">
             {#each virtItems as v (v.key)}
               {@const row = rows[v.index]}
               <tr
                 class="group"
-                style="position: absolute; top: 0; left: 0; right: 0; transform: translateY({v.start}px); height: {v.size}px; background: {v.index %
-                  2 ===
-                1
+                style="position: absolute; top: 0; left: 0; right: 0; transform: translateY({v.start -
+                  scrollMargin}px); height: {v.size}px; background: {v.index % 2 === 1
                   ? 'var(--row-stripe)'
                   : 'transparent'};"
               >

@@ -30,6 +30,7 @@
     AlertTriangle
   } from '$lib/icons';
   import { dbApi } from '$lib/api/db';
+  import { confirmDialog } from '$lib/components/ui/confirm-dialog';
   import { toast } from 'svelte-sonner';
 
   const connId = $derived(($page.params.id ?? '') as string);
@@ -125,13 +126,7 @@
         continue;
       }
       if (t.includes('bool')) {
-        if (
-          typeof raw !== 'boolean' &&
-          raw !== 'true' &&
-          raw !== 'false' &&
-          raw !== 0 &&
-          raw !== 1
-        )
+        if (typeof raw !== 'boolean' && raw !== 'true' && raw !== 'false' && raw !== 0 && raw !== 1)
           errors[col.name] = 'Use true/false';
       }
     }
@@ -165,8 +160,15 @@
     dbStore.removeInsert(connId, activeTab.id, tempId);
   }
 
-  function discardPending() {
-    if (!confirm('Discard all pending edits and new rows?')) return;
+  async function discardPending() {
+    const ok = await confirmDialog({
+      title: 'Discard all pending changes?',
+      description:
+        'All pending cell edits and unsaved new rows across every tab in this connection will be dropped.',
+      confirmLabel: 'Discard all',
+      destructive: true
+    });
+    if (!ok) return;
     dbStore.clearPendingAll(connId);
     toast.success('Discarded pending changes');
   }
@@ -315,7 +317,7 @@
     for (const tabId of tabsTouched) await dbStore.runTab(connId, tabId);
   }
 
-  function closeTabSafe(tabId: string) {
+  async function closeTabSafe(tabId: string) {
     const bucket = ws.pendingEdits[tabId];
     let cellCount = 0;
     let insertCount = 0;
@@ -327,7 +329,13 @@
       const parts: string[] = [];
       if (cellCount > 0) parts.push(`${cellCount} pending edit${cellCount === 1 ? '' : 's'}`);
       if (insertCount > 0) parts.push(`${insertCount} new row${insertCount === 1 ? '' : 's'}`);
-      if (!confirm(`Discard ${parts.join(' and ')} in this tab?`)) return;
+      const ok = await confirmDialog({
+        title: 'Discard pending changes in this tab?',
+        description: `${parts.join(' and ')} will be dropped when the tab closes.`,
+        confirmLabel: 'Discard',
+        destructive: true
+      });
+      if (!ok) return;
     }
     dbStore.closeTab(connId, tabId);
   }
@@ -362,7 +370,7 @@
   }
 
   function closeTab(id: string) {
-    closeTabSafe(id);
+    void closeTabSafe(id);
   }
 
   async function runActive() {
@@ -412,7 +420,13 @@
     const pkStr = Object.entries(pk)
       .map(([k, v]) => `${k}=${v}`)
       .join(', ');
-    if (!confirm(`Delete row where ${pkStr}?`)) return;
+    const ok = await confirmDialog({
+      title: 'Delete row?',
+      description: `Row matching ${pkStr} will be permanently deleted.`,
+      confirmLabel: 'Delete row',
+      destructive: true
+    });
+    if (!ok) return;
     try {
       await dbApi.rows.remove(connId, activeMeta.name, {
         schema: activeTab.schema,
@@ -782,13 +796,13 @@
                   pendingByRow={pendingForActiveTab}
                   pendingInserts={pendingInsertsForActiveTab}
                   columnsMeta={activeMeta?.columns}
-                  isAutoIncrement={isAutoIncrement}
+                  {isAutoIncrement}
                   onEdit={(row) => onEditRow(row)}
                   onDuplicate={(row) => onDuplicateRow(row)}
                   onDelete={(row) => onDeleteRow(row)}
-                  onCellCommit={onCellCommit}
-                  onInsertCellCommit={onInsertCellCommit}
-                  onInsertDiscardRow={onInsertDiscardRow}
+                  {onCellCommit}
+                  {onInsertCellCommit}
+                  {onInsertDiscardRow}
                 />
               {/if}
             </div>

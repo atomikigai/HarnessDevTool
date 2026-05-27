@@ -93,6 +93,21 @@ impl AgentSession {
         if std::env::var_os("TERM").is_none() {
             cmd.env("TERM", "xterm-256color");
         }
+        // Force a UTF-8 locale so accented characters round-trip in the PTY.
+        // C.UTF-8 is universally available without locale-gen. Only set if the
+        // parent didn't already provide an explicit UTF-8 locale.
+        let lang_ok = std::env::var("LANG")
+            .map(|v| v.to_ascii_uppercase().contains("UTF-8") || v.to_ascii_uppercase().contains("UTF8"))
+            .unwrap_or(false);
+        if !lang_ok {
+            cmd.env("LANG", "C.UTF-8");
+        }
+        let lc_all_ok = std::env::var("LC_ALL")
+            .map(|v| v.to_ascii_uppercase().contains("UTF-8") || v.to_ascii_uppercase().contains("UTF8"))
+            .unwrap_or(false);
+        if !lc_all_ok {
+            cmd.env("LC_ALL", "C.UTF-8");
+        }
         if !extra_args.is_empty() {
             tracing::info!(
                 kind = %kind,

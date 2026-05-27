@@ -260,6 +260,13 @@ pub fn build_dsn(
                 url.push('=');
                 url.push_str(&urlencoded(v));
             }
+            // Force UTF-8 client encoding unless the user set it explicitly,
+            // so accented values round-trip in the result grid / exports.
+            if !conn.params.keys().any(|k| k.eq_ignore_ascii_case("client_encoding")) {
+                url.push(sep);
+                sep = '&';
+                url.push_str("client_encoding=UTF8");
+            }
             let _ = sep;
             Ok(url)
         }
@@ -288,6 +295,12 @@ pub fn build_dsn(
                 url.push_str(&urlencoded(k));
                 url.push('=');
                 url.push_str(&urlencoded(v));
+            }
+            // Force utf8mb4 unless the user set charset explicitly.
+            if !conn.params.keys().any(|k| k.eq_ignore_ascii_case("charset")) {
+                url.push(sep);
+                sep = '&';
+                url.push_str("charset=utf8mb4");
             }
             let _ = sep;
             Ok(url)
@@ -396,10 +409,11 @@ mod tests {
     fn postgres_dsn_uses_saved_database_without_override() {
         let c = base(Engine::Postgres, "appdb");
         let dsn = build_dsn(&c, Some("s3cret"), None).unwrap();
-        assert_eq!(
-            dsn,
-            "postgres://alice:s3cret@db.example.com:5432/appdb"
+        assert!(
+            dsn.starts_with("postgres://alice:s3cret@db.example.com:5432/appdb"),
+            "got: {dsn}"
         );
+        assert!(dsn.contains("client_encoding=UTF8"), "got: {dsn}");
     }
 
     #[test]
@@ -420,14 +434,22 @@ mod tests {
     fn mysql_dsn_honors_database_override() {
         let c = base(Engine::Mysql, "appdb");
         let dsn = build_dsn(&c, Some("pw"), Some("reports")).unwrap();
-        assert_eq!(dsn, "mysql://alice:pw@db.example.com:3306/reports");
+        assert!(
+            dsn.starts_with("mysql://alice:pw@db.example.com:3306/reports"),
+            "got: {dsn}"
+        );
+        assert!(dsn.contains("charset=utf8mb4"), "got: {dsn}");
     }
 
     #[test]
     fn mysql_dsn_uses_saved_when_override_is_empty() {
         let c = base(Engine::Mysql, "appdb");
         let dsn = build_dsn(&c, None, Some("")).unwrap();
-        assert_eq!(dsn, "mysql://alice@db.example.com:3306/appdb");
+        assert!(
+            dsn.starts_with("mysql://alice@db.example.com:3306/appdb"),
+            "got: {dsn}"
+        );
+        assert!(dsn.contains("charset=utf8mb4"), "got: {dsn}");
     }
 
     #[test]

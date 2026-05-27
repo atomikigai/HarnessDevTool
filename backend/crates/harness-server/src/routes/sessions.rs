@@ -169,10 +169,22 @@ fn build_spawn_opts(
     Ok((
         SpawnOpts {
             mcp_config_path: Some(config_path.clone()),
+            auto_intro: Some(harness_mcp_intro().to_string()),
             ..SpawnOpts::default()
         },
         Some(config_path),
     ))
+}
+
+/// Brief one-shot message we type into the PTY after spawn whenever the
+/// harness MCP is wired. Tells the agent the canonical task tools live in
+/// MCP (so it doesn't reach for its built-in todo list, which we've also
+/// disabled via `--disallowed-tools`).
+pub(crate) fn harness_mcp_intro() -> &'static str {
+    "[harness] Task management for this thread is handled by the harness MCP tools \
+     `task_create`, `task_list`, `task_update`, `task_claim`, `task_submit`. \
+     Do NOT use TodoWrite/TodoRead — they are disabled. When the user asks to \
+     create or track tasks, call `task_create`."
 }
 
 async fn get_session(

@@ -381,6 +381,7 @@ impl SessionSpawner for ManagerSpawner {
                     return SpawnResult::Failed(format!("write mcp config: {e}"));
                 }
                 opts.mcp_config_path = Some(path.clone());
+                opts.auto_intro = Some(crate::routes::sessions::harness_mcp_intro().to_string());
                 config_path = Some(path);
             }
         }

@@ -149,18 +149,25 @@ impl Manager {
         )?;
         self.sessions.insert(id, session.clone());
 
-        // If a role prompt was supplied, fire-and-forget a tiny async task to
-        // write it once the CLI banner has settled. Keeping spawn_with_opts
-        // sync avoids cascading API changes to every caller; the 200ms grace
-        // gives the agent time to draw its prompt before we feed input.
-        if let Some(prompt) = opts.role_prompt {
+        // If an auto-intro and/or role prompt was supplied, fire-and-forget
+        // a tiny async task to write them once the CLI banner has settled.
+        // Keeping spawn_with_opts sync avoids cascading API changes to every
+        // caller; the 200ms grace gives the agent time to draw its prompt
+        // before we feed input. Intro is written first so the agent knows
+        // about the harness MCP tools BEFORE interpreting the role prompt.
+        let initial_payload = match (opts.auto_intro, opts.role_prompt) {
+            (Some(intro), Some(prompt)) => Some(format!("{intro}\n\n{prompt}")),
+            (Some(intro), None) => Some(intro),
+            (None, Some(prompt)) => Some(prompt),
+            (None, None) => None,
+        };
+        if let Some(mut payload) = initial_payload {
             let s = session.clone();
             tokio::spawn(async move {
                 tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-                let mut payload = prompt;
                 payload.push('\n');
                 if let Err(e) = s.write_input(payload.as_bytes()).await {
-                    tracing::warn!(error = %e, "failed to inject role prompt");
+                    tracing::warn!(error = %e, "failed to inject initial prompt");
                 }
             });
         }
@@ -186,6 +193,12 @@ pub struct SpawnOpts {
     /// Optional role name to record in [`SessionMeta`] for inspection. Does
     /// NOT affect runtime behavior on its own; pair with `role_prompt`.
     pub role: Option<String>,
+    /// Optional auto-intro string injected into the PTY shortly after spawn,
+    /// BEFORE `role_prompt`. Used to brief the agent about the harness MCP
+    /// task tools (so it doesn't fall back to its built-in todo list). When
+    /// both `auto_intro` and `role_prompt` are present, they are concatenated
+    /// with a blank line between them and written as a single payload.
+    pub auto_intro: Option<String>,
 }
 
 /// Translate `SpawnOpts` into the CLI flags appended to the agent invocation.
@@ -193,7 +206,10 @@ pub struct SpawnOpts {
 /// - `Claude`: pins `--session-id <id>` so the harness UUID matches the on-disk
 ///   transcript filename (`~/.claude/projects/{cwd-slug}/{id}.jsonl`); the
 ///   budget reporter relies on this mapping. Also adds
-///   `--mcp-config <path> --strict-mcp-config` when MCP injection is on.
+///   `--mcp-config <path> --strict-mcp-config` when MCP injection is on, plus
+///   `--disallowed-tools TodoWrite TodoRead` so claude can't satisfy task-
+///   shaped requests with its in-process todo list (which never reaches the
+///   harness TaskStore and so leaves the right-side Tasks panel empty).
 /// - `Codex`: no equivalent flags exist in this version; skipped. Codex
 ///   integration is deferred (likely via `$CODEX_HOME/config.toml` or `-c`).
 fn build_extra_args(kind: AgentKind, opts: &SpawnOpts, session_id: &str) -> Vec<String> {
@@ -208,6 +224,13 @@ fn build_extra_args(kind: AgentKind, opts: &SpawnOpts, session_id: &str) -> Vec<
                 out.push("--mcp-config".to_string());
                 out.push(path.display().to_string());
                 out.push("--strict-mcp-config".to_string());
+                // Disable claude's built-in todo tools so it routes task-
+                // shaped requests through the harness MCP `task_*` tools
+                // (which fire the `task.created` SSE the UI listens for).
+                // Flag confirmed via `claude --help`: `--disallowed-tools`
+                // accepts a space- or comma-separated list of tool names.
+                out.push("--disallowed-tools".to_string());
+                out.push("TodoWrite TodoRead".to_string());
             }
             AgentKind::Codex => {
                 tracing::warn!(
@@ -218,4 +241,51 @@ fn build_extra_args(kind: AgentKind, opts: &SpawnOpts, session_id: &str) -> Vec<
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn claude_without_mcp_only_pins_session_id() {
+        let opts = SpawnOpts::default();
+        let args = build_extra_args(AgentKind::Claude, &opts, "sid-123");
+        assert_eq!(args, vec!["--session-id".to_string(), "sid-123".to_string()]);
+        assert!(!args.iter().any(|a| a == "--disallowed-tools"));
+        assert!(!args.iter().any(|a| a == "--mcp-config"));
+    }
+
+    #[test]
+    fn claude_with_mcp_disables_todo_tools() {
+        let opts = SpawnOpts {
+            mcp_config_path: Some(PathBuf::from("/tmp/cfg.json")),
+            ..SpawnOpts::default()
+        };
+        let args = build_extra_args(AgentKind::Claude, &opts, "sid-xyz");
+
+        // session-id is always present for claude
+        let sid_idx = args.iter().position(|a| a == "--session-id").unwrap();
+        assert_eq!(args[sid_idx + 1], "sid-xyz");
+
+        // MCP wiring
+        let mcp_idx = args.iter().position(|a| a == "--mcp-config").unwrap();
+        assert_eq!(args[mcp_idx + 1], "/tmp/cfg.json");
+        assert!(args.iter().any(|a| a == "--strict-mcp-config"));
+
+        // Todo tools disabled
+        let dis_idx = args.iter().position(|a| a == "--disallowed-tools").unwrap();
+        assert_eq!(args[dis_idx + 1], "TodoWrite TodoRead");
+    }
+
+    #[test]
+    fn codex_never_gets_disallowed_tools() {
+        let opts = SpawnOpts {
+            mcp_config_path: Some(PathBuf::from("/tmp/cfg.json")),
+            ..SpawnOpts::default()
+        };
+        let args = build_extra_args(AgentKind::Codex, &opts, "sid-c");
+        assert!(args.is_empty(), "codex must not get any extra flags yet, got {args:?}");
+    }
 }

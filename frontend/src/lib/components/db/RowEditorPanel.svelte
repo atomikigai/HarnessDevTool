@@ -1,8 +1,10 @@
 <!--
-  Right-side slide-out panel for insert/update/duplicate of a row.
-  Sticky header + footer, scrollable body — works for tables with many
-  columns. Form-field types are inferred from the column data_type.
-  Backend remains the source of truth for coercion.
+  In-place right-side panel for insert/update/duplicate of a row.
+  Sibling flex column of the main grid section — when `open` it takes
+  its width slot and the main area auto-shrinks; when closed it
+  renders nothing (parent gets full width back).
+  Form-field types are inferred from data_type; backend remains the
+  source of truth for coercion.
 -->
 <script lang="ts">
   import { Button } from '$lib/components/ui/button';
@@ -144,24 +146,8 @@
 </script>
 
 {#if open}
-  <!-- Backdrop -->
-  <div
-    class="fixed inset-0 z-40 bg-black/40 transition-opacity"
-    role="button"
-    tabindex="-1"
-    aria-label="Close panel"
-    onclick={() => (open = false)}
-    onkeydown={(e) => {
-      if (e.key === 'Enter' || e.key === ' ') {
-        e.preventDefault();
-        open = false;
-      }
-    }}
-  ></div>
-
-  <!-- Panel -->
   <aside
-    class="panel fixed top-0 right-0 z-50 flex h-full w-full flex-col shadow-2xl sm:w-[480px]"
+    class="flex h-full w-full shrink-0 flex-col sm:w-[480px]"
     style="background: var(--surface-panel); border-left: 1px solid var(--border-subtle);"
     aria-label={title}
   >
@@ -306,16 +292,3 @@
   </aside>
 {/if}
 
-<style>
-  .panel {
-    animation: slide-in 200ms ease-out;
-  }
-  @keyframes slide-in {
-    from {
-      transform: translateX(100%);
-    }
-    to {
-      transform: translateX(0);
-    }
-  }
-</style>

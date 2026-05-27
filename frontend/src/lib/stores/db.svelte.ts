@@ -41,6 +41,35 @@ export interface DbTab {
   lastQueryId: string | null;
 }
 
+export interface PendingRowEdit {
+  pk: Record<string, unknown>;
+  changes: Record<string, unknown>;
+  original: Record<string, unknown>;
+}
+
+export interface PendingRowInsert {
+  tempId: string;
+  values: Record<string, unknown>;
+  errors?: Record<string, string>;
+}
+
+/** Per-tab pending state: cell edits keyed by row index, plus inline inserts. */
+export interface TabPending {
+  edits: Record<number, PendingRowEdit>;
+  inserts: PendingRowInsert[];
+}
+
+/** Per-workspace pending state, keyed by tabId. */
+export type WorkspacePendingEdits = Record<string, TabPending>;
+
+function emptyTabPending(): TabPending {
+  return { edits: {}, inserts: [] };
+}
+
+function isTabBucketEmpty(b: TabPending): boolean {
+  return Object.keys(b.edits).length === 0 && b.inserts.length === 0;
+}
+
 interface ConnectionWorkspace {
   databases: string[];
   database: string | null;
@@ -49,6 +78,7 @@ interface ConnectionWorkspace {
   schemaError: string | null;
   tabs: DbTab[];
   activeTabId: string | null;
+  pendingEdits: WorkspacePendingEdits;
 }
 
 function emptyWorkspace(): ConnectionWorkspace {
@@ -59,7 +89,8 @@ function emptyWorkspace(): ConnectionWorkspace {
     schemaLoading: false,
     schemaError: null,
     tabs: [],
-    activeTabId: null
+    activeTabId: null,
+    pendingEdits: {}
   };
 }
 
@@ -195,7 +226,156 @@ class DbStore {
     const remaining = ws.tabs.filter((t) => t.id !== tabId);
     const active =
       ws.activeTabId === tabId ? (remaining[remaining.length - 1]?.id ?? null) : ws.activeTabId;
-    this.#patchWorkspace(connId, { tabs: remaining, activeTabId: active });
+    // Drop any pending edits attached to the closed tab.
+    const { [tabId]: _drop, ...restEdits } = ws.pendingEdits;
+    void _drop;
+    this.#patchWorkspace(connId, {
+      tabs: remaining,
+      activeTabId: active,
+      pendingEdits: restEdits
+    });
+  }
+
+  // ── pending cell edits ───────────────────────────────────────────────────
+  /** Read-only helper. Returns an empty bucket if the tab has none. */
+  pendingFor(connId: string, tabId: string): TabPending {
+    return this.workspace(connId).pendingEdits[tabId] ?? emptyTabPending();
+  }
+
+  #writeBucket(connId: string, tabId: string, next: TabPending): void {
+    const ws = this.workspace(connId);
+    const pendingEdits: WorkspacePendingEdits = { ...ws.pendingEdits };
+    if (isTabBucketEmpty(next)) {
+      delete pendingEdits[tabId];
+    } else {
+      pendingEdits[tabId] = next;
+    }
+    this.#patchWorkspace(connId, { pendingEdits });
+  }
+
+  #cloneBucket(connId: string, tabId: string): TabPending {
+    const cur = this.workspace(connId).pendingEdits[tabId] ?? emptyTabPending();
+    return {
+      edits: { ...cur.edits },
+      inserts: cur.inserts.map((i) => ({ ...i, values: { ...i.values }, errors: i.errors }))
+    };
+  }
+
+  /**
+   * Stage a single cell change for (tabId, rowIndex). If `newValue` equals the
+   * original, that column's entry is removed; if `changes` becomes empty the
+   * whole row entry is dropped.
+   */
+  stageCellEdit(
+    connId: string,
+    tabId: string,
+    rowIndex: number,
+    column: string,
+    newValue: unknown,
+    original: Record<string, unknown>,
+    pk: Record<string, unknown>
+  ): void {
+    const bucket = this.#cloneBucket(connId, tabId);
+    const rowEntry: PendingRowEdit = bucket.edits[rowIndex]
+      ? {
+          pk: bucket.edits[rowIndex].pk,
+          original: bucket.edits[rowIndex].original,
+          changes: { ...bucket.edits[rowIndex].changes }
+        }
+      : { pk, original, changes: {} };
+
+    const originalValue = rowEntry.original[column];
+    // Strict equality is good enough here — values are scalars or stringified blobs.
+    if (newValue === originalValue) {
+      delete rowEntry.changes[column];
+    } else {
+      rowEntry.changes[column] = newValue;
+    }
+
+    if (Object.keys(rowEntry.changes).length === 0) {
+      delete bucket.edits[rowIndex];
+    } else {
+      bucket.edits[rowIndex] = rowEntry;
+    }
+    this.#writeBucket(connId, tabId, bucket);
+  }
+
+  // ── pending inline inserts ───────────────────────────────────────────────
+  /** Append a new blank insert row to the top of the grid. Returns its tempId. */
+  startInsert(
+    connId: string,
+    tabId: string,
+    initialValues: Record<string, unknown> = {}
+  ): string {
+    const tempId =
+      typeof crypto !== 'undefined' && 'randomUUID' in crypto
+        ? crypto.randomUUID()
+        : `ins-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const bucket = this.#cloneBucket(connId, tabId);
+    bucket.inserts = [{ tempId, values: { ...initialValues } }, ...bucket.inserts];
+    this.#writeBucket(connId, tabId, bucket);
+    return tempId;
+  }
+
+  /** Update one cell on an in-progress insert row. */
+  updateInsertCell(
+    connId: string,
+    tabId: string,
+    tempId: string,
+    column: string,
+    value: unknown
+  ): void {
+    const bucket = this.#cloneBucket(connId, tabId);
+    bucket.inserts = bucket.inserts.map((ins) => {
+      if (ins.tempId !== tempId) return ins;
+      const next: PendingRowInsert = {
+        tempId: ins.tempId,
+        values: { ...ins.values, [column]: value },
+        errors: ins.errors ? { ...ins.errors } : undefined
+      };
+      // Clear a per-column error if user typed something new.
+      if (next.errors && column in next.errors) {
+        delete next.errors[column];
+        if (Object.keys(next.errors).length === 0) next.errors = undefined;
+      }
+      return next;
+    });
+    this.#writeBucket(connId, tabId, bucket);
+  }
+
+  /** Remove an inline insert row. */
+  removeInsert(connId: string, tabId: string, tempId: string): void {
+    const bucket = this.#cloneBucket(connId, tabId);
+    bucket.inserts = bucket.inserts.filter((i) => i.tempId !== tempId);
+    this.#writeBucket(connId, tabId, bucket);
+  }
+
+  /** Attach validation errors to one insert (overwrites). */
+  setInsertErrors(
+    connId: string,
+    tabId: string,
+    tempId: string,
+    errors: Record<string, string> | undefined
+  ): void {
+    const bucket = this.#cloneBucket(connId, tabId);
+    bucket.inserts = bucket.inserts.map((i) =>
+      i.tempId === tempId
+        ? { ...i, errors: errors && Object.keys(errors).length > 0 ? errors : undefined }
+        : i
+    );
+    this.#writeBucket(connId, tabId, bucket);
+  }
+
+  clearPendingForTab(connId: string, tabId: string): void {
+    const ws = this.workspace(connId);
+    if (!ws.pendingEdits[tabId]) return;
+    const { [tabId]: _drop, ...rest } = ws.pendingEdits;
+    void _drop;
+    this.#patchWorkspace(connId, { pendingEdits: rest });
+  }
+
+  clearPendingAll(connId: string): void {
+    this.#patchWorkspace(connId, { pendingEdits: {} });
   }
 
   setActiveTab(connId: string, tabId: string): void {

@@ -6,9 +6,15 @@
   on the right (kebab → Edit / Duplicate / Delete). Uses @tanstack/
   virtual-core for row virtualization whenever row count exceeds a
   threshold; otherwise renders directly for simplicity.
+
+  F4 inline-edit slice: when `editable` is true (table-browser tabs with
+  a known PK), double-click on a non-PK cell swaps it for an <input>.
+  ESC cancels, Enter commits to the parent pending buffer, Tab commits
+  and advances to the next editable cell in the row. Cells with a
+  pending change get a tinted left-border treatment.
 -->
 <script lang="ts">
-  import { onDestroy, untrack } from 'svelte';
+  import { onDestroy, tick, untrack } from 'svelte';
   import type { QueryResult } from '$lib/api/db';
   import {
     Virtualizer,
@@ -16,17 +22,59 @@
     observeElementRect,
     elementScroll
   } from '@tanstack/virtual-core';
-  import { Edit3, Trash2, Copy } from '$lib/icons';
+  import { Edit3, Trash2, Copy, X } from '$lib/icons';
+  import type { Column } from '$lib/api/db';
+
+  type PendingRowMap = Record<
+    number,
+    { changes: Record<string, unknown>; original: Record<string, unknown> }
+  >;
+
+  interface PendingInsert {
+    tempId: string;
+    values: Record<string, unknown>;
+    errors?: Record<string, string>;
+  }
 
   interface Props {
     result: QueryResult | null;
     pkColumns?: string[];
+    /** When true, double-click on a non-PK cell enters inline edit mode. */
+    editable?: boolean;
+    /** Pending edits for this grid's tab, keyed by row index. */
+    pendingByRow?: PendingRowMap;
+    /** Pending inline-insert rows, rendered as a band above the data. */
+    pendingInserts?: PendingInsert[];
+    /** Full Column[] metadata (nullability, default, pk) for insert validation. */
+    columnsMeta?: Column[];
+    /** Caller-supplied auto-increment heuristic (read-only insert cell). */
+    isAutoIncrement?: (col: Column) => boolean;
     onEdit?: (row: unknown[], idx: number) => void;
     onDuplicate?: (row: unknown[], idx: number) => void;
     onDelete?: (row: unknown[], idx: number) => void;
+    /** Commit a cell edit into the parent's pending buffer. */
+    onCellCommit?: (rowIndex: number, columnName: string, newValue: unknown) => void;
+    /** Commit an inline-insert cell edit (per tempId, per column). */
+    onInsertCellCommit?: (tempId: string, columnName: string, newValue: unknown) => void;
+    /** Drop an inline-insert row entirely. */
+    onInsertDiscardRow?: (tempId: string) => void;
   }
 
-  let { result, pkColumns = [], onEdit, onDuplicate, onDelete }: Props = $props();
+  let {
+    result,
+    pkColumns = [],
+    editable = false,
+    pendingByRow = {},
+    pendingInserts = [],
+    columnsMeta,
+    isAutoIncrement,
+    onEdit,
+    onDuplicate,
+    onDelete,
+    onCellCommit,
+    onInsertCellCommit,
+    onInsertDiscardRow
+  }: Props = $props();
 
   const ROW_HEIGHT = 36;
   const VIRT_THRESHOLD = 200;
@@ -41,6 +89,192 @@
   const rows = $derived(result?.rows ?? []);
   const cols = $derived(result?.columns ?? []);
   const useVirtual = $derived(rows.length > VIRT_THRESHOLD);
+
+  // ── inline-edit state ──────────────────────────────────────────────────
+  /**
+   * Active edit target. `kind: 'row'` edits a real result row; `kind: 'insert'`
+   * edits a pending insert row keyed by tempId. `kind: 'none'` means idle.
+   */
+  type EditTarget =
+    | { kind: 'none' }
+    | { kind: 'row'; rowIndex: number; colIndex: number }
+    | { kind: 'insert'; tempId: string; colIndex: number };
+  let editing = $state<EditTarget>({ kind: 'none' });
+  let editingValue = $state('');
+  let editingInputEl = $state<HTMLInputElement | HTMLTextAreaElement | null>(null);
+
+  // Kept as $derived bridges so existing helpers below need only minimal change.
+  const editingRow = $derived(editing.kind === 'row' ? editing.rowIndex : -1);
+  const editingCol = $derived(editing.kind === 'row' || editing.kind === 'insert' ? editing.colIndex : -1);
+
+  function isPkCell(colIndex: number): boolean {
+    const col = cols[colIndex];
+    return !!col && pkColumns.includes(col.name);
+  }
+
+  function isCellEditable(colIndex: number): boolean {
+    return editable && pkColumns.length > 0 && !isPkCell(colIndex);
+  }
+
+  function cellDisplay(rowIndex: number, colIndex: number, fallback: unknown): unknown {
+    const colName = cols[colIndex]?.name;
+    if (!colName) return fallback;
+    const pend = pendingByRow[rowIndex];
+    if (pend && colName in pend.changes) return pend.changes[colName];
+    return fallback;
+  }
+
+  function isCellPending(rowIndex: number, colIndex: number): boolean {
+    const colName = cols[colIndex]?.name;
+    if (!colName) return false;
+    const pend = pendingByRow[rowIndex];
+    return !!pend && colName in pend.changes;
+  }
+
+  function originalFor(rowIndex: number, colIndex: number): unknown {
+    const colName = cols[colIndex]?.name;
+    if (!colName) return undefined;
+    return pendingByRow[rowIndex]?.original?.[colName];
+  }
+
+  async function startEdit(rowIndex: number, colIndex: number) {
+    if (!isCellEditable(colIndex)) return;
+    const current = cellDisplay(rowIndex, colIndex, rows[rowIndex]?.[colIndex]);
+    editingValue = current === null || current === undefined ? '' : String(current);
+    editing = { kind: 'row', rowIndex, colIndex };
+    await tick();
+    editingInputEl?.focus();
+    editingInputEl?.select?.();
+  }
+
+  function cancelEdit() {
+    editing = { kind: 'none' };
+    editingValue = '';
+    editingInputEl = null;
+  }
+
+  /** Heuristic — auto-increment columns are read-only on inserts. */
+  function isInsertCellEditable(col: Column): boolean {
+    if (isAutoIncrement?.(col)) return false;
+    return true;
+  }
+
+  async function startInsertEdit(tempId: string, colIndex: number) {
+    const col = columnsMeta?.[colIndex];
+    if (!col || !isInsertCellEditable(col)) return;
+    const ins = pendingInserts.find((p) => p.tempId === tempId);
+    const current = ins?.values?.[col.name];
+    editingValue = current === null || current === undefined ? '' : String(current);
+    editing = { kind: 'insert', tempId, colIndex };
+    await tick();
+    editingInputEl?.focus();
+    editingInputEl?.select?.();
+  }
+
+  /** Best-effort coercion using the column's declared type. */
+  function coerceForColumn(raw: string, col: Column): unknown {
+    if (raw === '') return null;
+    const t = col.data_type.toLowerCase();
+    if (t.includes('bool')) {
+      if (raw === 'true' || raw === '1') return true;
+      if (raw === 'false' || raw === '0') return false;
+      return raw;
+    }
+    if (
+      t.includes('int') ||
+      t.includes('float') ||
+      t.includes('numeric') ||
+      t.includes('decimal') ||
+      t.includes('double') ||
+      t.includes('real') ||
+      t.includes('serial')
+    ) {
+      const n = Number(raw);
+      return Number.isFinite(n) ? n : raw;
+    }
+    return raw;
+  }
+
+  /**
+   * Coerce a string from the input back to a sensible JS value:
+   *   • empty string when the original was null → null
+   *   • numeric original → Number(...) if parseable
+   *   • boolean original → "true"/"false" → boolean
+   *   • everything else → string
+   */
+  function coerce(raw: string, rowIndex: number, colIndex: number): unknown {
+    const colName = cols[colIndex]?.name;
+    if (!colName) return raw;
+    const original =
+      pendingByRow[rowIndex]?.original?.[colName] ?? rows[rowIndex]?.[colIndex];
+    if (original === null || original === undefined) {
+      return raw === '' ? null : raw;
+    }
+    if (typeof original === 'number') {
+      if (raw === '') return null;
+      const n = Number(raw);
+      return Number.isFinite(n) ? n : raw;
+    }
+    if (typeof original === 'boolean') {
+      if (raw === 'true') return true;
+      if (raw === 'false') return false;
+      return raw;
+    }
+    return raw;
+  }
+
+  function commitEdit(advance = false) {
+    if (editing.kind === 'none') return;
+    const colIndex = editing.colIndex;
+    if (editing.kind === 'row') {
+      const colName = cols[colIndex]?.name;
+      if (colName && onCellCommit) {
+        const value = coerce(editingValue, editing.rowIndex, colIndex);
+        onCellCommit(editing.rowIndex, colName, value);
+      }
+      const r = editing.rowIndex;
+      cancelEdit();
+      if (advance) {
+        for (let next = colIndex + 1; next < cols.length; next++) {
+          if (isCellEditable(next)) {
+            void startEdit(r, next);
+            return;
+          }
+        }
+      }
+    } else {
+      // insert
+      const col = columnsMeta?.[colIndex];
+      if (col && onInsertCellCommit) {
+        const value = coerceForColumn(editingValue, col);
+        onInsertCellCommit(editing.tempId, col.name, value);
+      }
+      const tempId = editing.tempId;
+      cancelEdit();
+      if (advance && columnsMeta) {
+        for (let next = colIndex + 1; next < columnsMeta.length; next++) {
+          const ncol = columnsMeta[next];
+          if (ncol && isInsertCellEditable(ncol)) {
+            void startInsertEdit(tempId, next);
+            return;
+          }
+        }
+      }
+    }
+  }
+
+  function onCellKey(e: KeyboardEvent) {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      cancelEdit();
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      commitEdit(false);
+    } else if (e.key === 'Tab') {
+      e.preventDefault();
+      commitEdit(true);
+    }
+  }
 
   function setupVirtual() {
     virtualizer?._didMount?.()?.();
@@ -74,6 +308,9 @@
     void rows.length;
     void useVirtual;
     untrack(() => {
+      // Editing state is bound to a row index from the previous result; drop
+      // it whenever the data changes underneath us.
+      if (editingRow >= 0) cancelEdit();
       setupVirtual();
     });
   });
@@ -95,6 +332,15 @@
   const TYPE_COLOR = 'var(--fg-muted)';
 
   const hasPk = $derived(pkColumns.length > 0);
+  const PENDING_BG = 'color-mix(in srgb, var(--dot-warn) 18%, transparent)';
+  const PENDING_BORDER = 'var(--dot-warn)';
+  const INSERT_BG = 'color-mix(in srgb, var(--dot-success) 10%, transparent)';
+  const INSERT_BORDER = 'var(--dot-success)';
+  const ERROR_BORDER = 'var(--dot-danger)';
+  const ERROR_BG = 'color-mix(in srgb, var(--dot-danger) 10%, transparent)';
+
+  /** True when there's a table to render (rows OR pending inserts). */
+  const hasAnything = $derived(rows.length > 0 || pendingInserts.length > 0);
 </script>
 
 <div class="flex h-full min-h-0 flex-col" style="background: var(--surface-canvas);">
@@ -102,7 +348,7 @@
     <div class="flex flex-1 items-center justify-center text-sm" style="color: var(--fg-muted);">
       Run a query to see results.
     </div>
-  {:else if rows.length === 0}
+  {:else if !hasAnything}
     <div class="flex flex-1 items-center justify-center text-sm" style="color: var(--fg-muted);">
       Query returned no rows ({result.elapsed_ms}ms).
     </div>
@@ -145,6 +391,147 @@
             ></th>
           </tr>
         </thead>
+        {#snippet rowCells(row: unknown[], ri: number)}
+          {#each row as cell, ci (ci)}
+            {@const pending = isCellPending(ri, ci)}
+            {@const displayed = cellDisplay(ri, ci, cell)}
+            {@const editingThis = editingRow === ri && editingCol === ci}
+            {@const cellEditable = isCellEditable(ci)}
+            <td
+              class="px-3 py-2 whitespace-nowrap {cellEditable && !editingThis
+                ? 'cell-editable'
+                : ''}"
+              style="border-bottom: 1px solid var(--row-divider); {pending
+                ? `background: ${PENDING_BG}; box-shadow: inset 2px 0 0 0 ${PENDING_BORDER};`
+                : ''} {cellEditable && !editingThis ? 'cursor: text;' : ''}"
+              title={pending
+                ? `was: ${fmt(originalFor(ri, ci))}`
+                : cellEditable && !editingThis
+                  ? 'Click to edit'
+                  : ''}
+              onclick={() => cellEditable && !editingThis && startEdit(ri, ci)}
+            >
+              {#if editingThis}
+                <input
+                  bind:this={editingInputEl}
+                  bind:value={editingValue}
+                  onkeydown={onCellKey}
+                  onblur={() => commitEdit(false)}
+                  class="w-full rounded-sm border px-1 py-0.5 text-[13px] outline-none"
+                  style="background: var(--surface-titlebar); border-color: var(--accent); color: var(--fg-default); font-family: var(--font-mono);"
+                />
+              {:else if isNull(displayed)}
+                <span style="color: var(--fg-muted); font-style: italic; opacity: 0.6;">NULL</span>
+              {:else}
+                <span style="color: var(--fg-default);">{fmt(displayed)}</span>
+              {/if}
+            </td>
+          {/each}
+        {/snippet}
+        {#snippet insertCells(ins: PendingInsert)}
+          {#each columnsMeta ?? [] as col, ci (col.name)}
+            {@const editingThis = editing.kind === 'insert' && editing.tempId === ins.tempId && editing.colIndex === ci}
+            {@const auto = isAutoIncrement?.(col) ?? false}
+            {@const val = ins.values?.[col.name]}
+            {@const hasError = !!ins.errors?.[col.name]}
+            {@const cellEditable = !auto}
+            <td
+              class="px-3 py-2 whitespace-nowrap {cellEditable && !editingThis ? 'cell-editable' : ''}"
+              style="border-bottom: 1px solid var(--row-divider); {hasError
+                ? `background: ${ERROR_BG}; box-shadow: inset 2px 0 0 0 ${ERROR_BORDER};`
+                : ''} {cellEditable && !editingThis ? 'cursor: text;' : 'cursor: default;'}"
+              title={hasError
+                ? ins.errors?.[col.name]
+                : auto
+                  ? 'auto-generated by the database'
+                  : 'Click to edit'}
+              onclick={() => cellEditable && !editingThis && startInsertEdit(ins.tempId, ci)}
+            >
+              {#if editingThis}
+                <input
+                  bind:this={editingInputEl}
+                  bind:value={editingValue}
+                  onkeydown={onCellKey}
+                  onblur={() => commitEdit(false)}
+                  class="w-full rounded-sm border px-1 py-0.5 text-[13px] outline-none"
+                  style="background: var(--surface-titlebar); border-color: var(--accent); color: var(--fg-default); font-family: var(--font-mono);"
+                />
+              {:else if auto}
+                <span style="color: var(--fg-muted); font-style: italic; opacity: 0.55;">auto</span>
+              {:else if val === undefined || val === null || val === ''}
+                <span style="color: var(--fg-muted); font-style: italic; opacity: 0.5;">
+                  {col.nullable || (col.default != null && col.default !== '') ? '(empty)' : '(required)'}
+                </span>
+              {:else}
+                <span style="color: var(--fg-default);">{fmt(val)}</span>
+              {/if}
+            </td>
+          {/each}
+        {/snippet}
+        {#snippet rowActions(row: unknown[], ri: number)}
+          {#if hasPk}
+            <div class="inline-flex gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+              <button
+                title="Edit"
+                class="rounded p-1 hover:bg-[var(--accent-soft)]"
+                onclick={() => onEdit?.(row, ri)}
+                style="color: var(--fg-muted);"
+              >
+                <Edit3 class="h-3 w-3" />
+              </button>
+              <button
+                title="Duplicate"
+                class="rounded p-1 hover:bg-[var(--accent-soft)]"
+                onclick={() => onDuplicate?.(row, ri)}
+                style="color: var(--fg-muted);"
+              >
+                <Copy class="h-3 w-3" />
+              </button>
+              <button
+                title="Delete"
+                class="rounded p-1 hover:bg-[color-mix(in_srgb,var(--dot-danger)_10%,transparent)]"
+                onclick={() => onDelete?.(row, ri)}
+                style="color: var(--dot-danger);"
+              >
+                <Trash2 class="h-3 w-3" />
+              </button>
+            </div>
+          {/if}
+        {/snippet}
+
+        {#if pendingInserts.length > 0 && columnsMeta && columnsMeta.length > 0}
+          <tbody>
+            {#each pendingInserts as ins (ins.tempId)}
+              <tr
+                class="group"
+                style="background: {INSERT_BG}; box-shadow: inset 3px 0 0 0 {INSERT_BORDER};"
+              >
+                <td
+                  class="px-3 py-2 text-right font-mono text-[10px]"
+                  style="color: {INSERT_BORDER}; border-bottom: 1px solid var(--row-divider); width: 48px;"
+                  title="new row (unsaved)"
+                >
+                  +
+                </td>
+                {@render insertCells(ins)}
+                <td
+                  class="px-2 py-2 text-right"
+                  style="border-bottom: 1px solid var(--row-divider); width: 100px;"
+                >
+                  <button
+                    type="button"
+                    title="Discard this new row"
+                    class="rounded p-1 hover:bg-[color-mix(in_srgb,var(--dot-danger)_10%,transparent)]"
+                    onclick={() => onInsertDiscardRow?.(ins.tempId)}
+                    style="color: var(--dot-danger);"
+                  >
+                    <X class="h-3 w-3" />
+                  </button>
+                </td>
+              </tr>
+            {/each}
+          </tbody>
+        {/if}
         {#if useVirtual}
           <tbody style="position: relative; height: {totalSize}px;">
             {#each virtItems as v (v.key)}
@@ -163,54 +550,12 @@
                 >
                   {v.index + 1}
                 </td>
-                {#each row as cell, ci (ci)}
-                  <td
-                    class="px-3 py-2 whitespace-nowrap"
-                    style="border-bottom: 1px solid var(--row-divider);"
-                  >
-                    {#if isNull(cell)}
-                      <span style="color: var(--fg-muted); font-style: italic; opacity: 0.6;"
-                        >NULL</span
-                      >
-                    {:else}
-                      <span style="color: var(--fg-default);">{fmt(cell)}</span>
-                    {/if}
-                  </td>
-                {/each}
+                {@render rowCells(row, v.index)}
                 <td
                   class="px-2 py-2 text-right"
                   style="border-bottom: 1px solid var(--row-divider); width: 100px;"
                 >
-                  {#if hasPk}
-                    <div
-                      class="inline-flex gap-0.5 opacity-0 transition-opacity group-hover:opacity-100"
-                    >
-                      <button
-                        title="Edit"
-                        class="rounded p-1 hover:bg-[var(--accent-soft)]"
-                        onclick={() => onEdit?.(row, v.index)}
-                        style="color: var(--fg-muted);"
-                      >
-                        <Edit3 class="h-3 w-3" />
-                      </button>
-                      <button
-                        title="Duplicate"
-                        class="rounded p-1 hover:bg-[var(--accent-soft)]"
-                        onclick={() => onDuplicate?.(row, v.index)}
-                        style="color: var(--fg-muted);"
-                      >
-                        <Copy class="h-3 w-3" />
-                      </button>
-                      <button
-                        title="Delete"
-                        class="rounded p-1 hover:bg-[color-mix(in_srgb,var(--dot-danger)_10%,transparent)]"
-                        onclick={() => onDelete?.(row, v.index)}
-                        style="color: var(--dot-danger);"
-                      >
-                        <Trash2 class="h-3 w-3" />
-                      </button>
-                    </div>
-                  {/if}
+                  {@render rowActions(row, v.index)}
                 </td>
               </tr>
             {/each}
@@ -228,54 +573,12 @@
                 >
                   {ri + 1}
                 </td>
-                {#each row as cell, ci (ci)}
-                  <td
-                    class="px-3 py-2 whitespace-nowrap"
-                    style="border-bottom: 1px solid var(--row-divider);"
-                  >
-                    {#if isNull(cell)}
-                      <span style="color: var(--fg-muted); font-style: italic; opacity: 0.6;"
-                        >NULL</span
-                      >
-                    {:else}
-                      <span style="color: var(--fg-default);">{fmt(cell)}</span>
-                    {/if}
-                  </td>
-                {/each}
+                {@render rowCells(row, ri)}
                 <td
                   class="px-2 py-2 text-right"
                   style="border-bottom: 1px solid var(--row-divider); width: 100px;"
                 >
-                  {#if hasPk}
-                    <div
-                      class="inline-flex gap-0.5 opacity-0 transition-opacity group-hover:opacity-100"
-                    >
-                      <button
-                        title="Edit"
-                        class="rounded p-1 hover:bg-[var(--accent-soft)]"
-                        onclick={() => onEdit?.(row, ri)}
-                        style="color: var(--fg-muted);"
-                      >
-                        <Edit3 class="h-3 w-3" />
-                      </button>
-                      <button
-                        title="Duplicate"
-                        class="rounded p-1 hover:bg-[var(--accent-soft)]"
-                        onclick={() => onDuplicate?.(row, ri)}
-                        style="color: var(--fg-muted);"
-                      >
-                        <Copy class="h-3 w-3" />
-                      </button>
-                      <button
-                        title="Delete"
-                        class="rounded p-1 hover:bg-[color-mix(in_srgb,var(--dot-danger)_10%,transparent)]"
-                        onclick={() => onDelete?.(row, ri)}
-                        style="color: var(--dot-danger);"
-                      >
-                        <Trash2 class="h-3 w-3" />
-                      </button>
-                    </div>
-                  {/if}
+                  {@render rowActions(row, ri)}
                 </td>
               </tr>
             {/each}
@@ -294,3 +597,10 @@
     </div>
   {/if}
 </div>
+
+<style>
+  /* Subtle hover hint on editable cells — paired with `cursor: text`. */
+  .cell-editable:hover {
+    background: color-mix(in srgb, var(--accent) 6%, transparent);
+  }
+</style>

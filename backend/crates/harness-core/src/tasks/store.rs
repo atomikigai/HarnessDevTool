@@ -284,6 +284,62 @@ impl TaskStore {
         Ok(outcome)
     }
 
+    /// Forcibly hand a task off to `new_agent`, pushing the prior assignee onto
+    /// `previous_assignees` and stamping a history event. Status is preserved
+    /// (used by the scheduler to route `pending_verify` to an evaluator without
+    /// fighting the existing lease).
+    pub fn reassign(
+        &self,
+        tid: &str,
+        task_id: &str,
+        new_agent: &str,
+        ttl: Duration,
+        note: &str,
+    ) -> Result<Lease, Error> {
+        let (index, _) = self.ensure_thread(tid)?;
+        let path = self.task_path(tid, task_id);
+        let now = Utc::now();
+        let (_t, lease) = with_locked_task(&path, |task| {
+            if let Some(prev) = task.assignee.take() {
+                if prev != new_agent {
+                    task.previous_assignees.push(prev);
+                }
+            }
+            let until = now
+                + chrono::Duration::from_std(ttl)
+                    .unwrap_or_else(|_| chrono::Duration::seconds(300));
+            let lease = Lease {
+                holder: new_agent.to_string(),
+                until,
+            };
+            task.claim_lease = Some(lease.clone());
+            task.assignee = Some(new_agent.to_string());
+            task.history.events.push(HistoryEvent {
+                at: now,
+                by: "scheduler".into(),
+                from: task.status.as_str().into(),
+                to: task.status.as_str().into(),
+            });
+            tracing::debug!(
+                target: "scheduling",
+                thread = %tid,
+                task = %task_id,
+                agent = %new_agent,
+                note = %note,
+                "scheduling.reassign"
+            );
+            task.updated_at = now;
+            task.updated_by = "scheduler".into();
+            Ok::<_, Error>(lease)
+        })?;
+        {
+            let idx = index.lock().expect("index mutex poisoned");
+            let t = read_task_file(&path)?;
+            idx.upsert(&t)?;
+        }
+        Ok(lease)
+    }
+
     /// Refresh the lease TTL. Errors if `agent_id` is not the current holder.
     pub fn renew(&self, tid: &str, task_id: &str, agent_id: &str) -> Result<Lease, Error> {
         let path = self.task_path(tid, task_id);

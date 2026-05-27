@@ -39,20 +39,43 @@ pub struct Agent {
     pub kind: AgentKind,
     pub label: String,
     pub created_at: DateTime<Utc>,
+    /// Free-form role tag. Standard values are "planner", "generator",
+    /// "evaluator", but users may define custom roles. `None` is treated as
+    /// "generator" by the scheduler for back-compat with legacy registries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct AgentDraft {
     pub kind: AgentKind,
     pub label: String,
+    #[serde(default)]
+    pub role: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct RegistryFile {
+    #[serde(default = "default_schema_version")]
+    schema_version: u32,
     #[serde(default)]
     agents: Vec<Agent>,
     #[serde(default)]
     counter: u32,
+}
+
+fn default_schema_version() -> u32 {
+    1
+}
+
+impl Default for RegistryFile {
+    fn default() -> Self {
+        Self {
+            schema_version: default_schema_version(),
+            agents: vec![],
+            counter: 0,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -91,6 +114,7 @@ impl AgentsRegistry {
             kind: draft.kind,
             label: draft.label,
             created_at: Utc::now(),
+            role: draft.role,
         };
         st.agents.push(agent.clone());
         let text =
@@ -99,5 +123,55 @@ impl AgentsRegistry {
         fs::write(&tmp, text)?;
         fs::rename(&tmp, &self.path)?;
         Ok(agent)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn role_roundtrips_via_disk() {
+        let dir = tempdir().unwrap();
+        let reg = AgentsRegistry::new(dir.path()).unwrap();
+        let created = reg
+            .create(AgentDraft {
+                kind: AgentKind::Claude,
+                label: "eval-1".into(),
+                role: Some("evaluator".into()),
+            })
+            .unwrap();
+        assert_eq!(created.role.as_deref(), Some("evaluator"));
+
+        // Reload from disk picks up the role.
+        let reg2 = AgentsRegistry::new(dir.path()).unwrap();
+        let all = reg2.list();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].id, created.id);
+        assert_eq!(all[0].role.as_deref(), Some("evaluator"));
+    }
+
+    #[test]
+    fn legacy_registry_without_role_loads() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("profiles/default/agents");
+        fs::create_dir_all(&path).unwrap();
+        // Pre-write a legacy registry (no schema_version, no role).
+        fs::write(
+            path.join("registry.toml"),
+            r#"counter = 1
+[[agents]]
+id = "agent:claude-1"
+kind = "claude"
+label = "legacy"
+created_at = "2025-01-01T00:00:00Z"
+"#,
+        )
+        .unwrap();
+        let reg = AgentsRegistry::new(dir.path()).unwrap();
+        let all = reg.list();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].role, None);
     }
 }

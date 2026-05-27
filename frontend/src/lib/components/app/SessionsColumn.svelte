@@ -18,6 +18,7 @@
   import type { SessionMeta } from '$lib/api/client';
   import HarnessIcons from './HarnessIcons.svelte';
   import { Plus, ChevronRight, ChevronLeft, Bot, Trash2 } from '$lib/icons';
+  import { confirmDialog } from '$lib/components/ui/confirm-dialog';
   import {
     kindChip,
     relTime,
@@ -65,11 +66,13 @@
     ev.preventDefault();
     if (deleting === s.id) return;
     const label = s.kind + ' · ' + s.id.slice(0, 8);
-    // Native confirm keeps the diff small; swap for a shadcn AlertDialog if
-    // the design system grows one.
-    if (!window.confirm(`Delete session ${label}?\n\nThe PTY is killed and the card removed.`)) {
-      return;
-    }
+    const ok = await confirmDialog({
+      title: `Delete session ${label}?`,
+      description: 'The PTY is killed and the card removed.',
+      confirmLabel: 'Delete',
+      destructive: true
+    });
+    if (!ok) return;
     deleting = s.id;
     try {
       await onDelete(s.id);

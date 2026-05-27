@@ -134,23 +134,49 @@ pub async fn insert(
     let engine = pool.engine();
     let pks = primary_key_cols(pool, database, schema, table).await?;
     let qident = quote_ident(engine);
-    let cols: Vec<String> = values.keys().cloned().collect();
-    let col_list = cols
+
+    // Drop NULL/empty values so the database picks up column defaults (serial
+    // sequences, CURRENT_TIMESTAMP, etc.). Binding NULL through sqlx::Any has
+    // to choose a Rust type (Option<String>) which postgres then rejects for
+    // non-text columns. Letting the engine fall back to its own DEFAULT is
+    // both safer and matches the "empty = default" UX the inline insert form
+    // promises.
+    let cols: Vec<String> = values
         .iter()
-        .map(|c| format!("{qident}{c}{qident}"))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let placeholders = (1..=cols.len())
-        .map(|i| placeholder(engine, i))
-        .collect::<Vec<_>>()
-        .join(", ");
+        .filter(|(_, v)| !matches!(v, Value::Null))
+        .map(|(k, _)| k.clone())
+        .collect();
     let qtable = qualify(engine, schema, table);
 
     let supports_returning = matches!(engine, Engine::Postgres | Engine::Sqlite);
-    let sql = if supports_returning {
-        format!("INSERT INTO {qtable} ({col_list}) VALUES ({placeholders}) RETURNING *")
+    let sql = if cols.is_empty() {
+        // All-defaults insert. Postgres/SQLite have DEFAULT VALUES; MySQL needs
+        // a different shape.
+        match engine {
+            Engine::Postgres | Engine::Sqlite => {
+                if supports_returning {
+                    format!("INSERT INTO {qtable} DEFAULT VALUES RETURNING *")
+                } else {
+                    format!("INSERT INTO {qtable} DEFAULT VALUES")
+                }
+            }
+            Engine::Mysql => format!("INSERT INTO {qtable} () VALUES ()"),
+        }
     } else {
-        format!("INSERT INTO {qtable} ({col_list}) VALUES ({placeholders})")
+        let col_list = cols
+            .iter()
+            .map(|c| format!("{qident}{c}{qident}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let placeholders = (1..=cols.len())
+            .map(|i| placeholder(engine, i))
+            .collect::<Vec<_>>()
+            .join(", ");
+        if supports_returning {
+            format!("INSERT INTO {qtable} ({col_list}) VALUES ({placeholders}) RETURNING *")
+        } else {
+            format!("INSERT INTO {qtable} ({col_list}) VALUES ({placeholders})")
+        }
     };
 
     match pool {

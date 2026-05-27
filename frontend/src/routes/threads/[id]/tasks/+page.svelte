@@ -169,8 +169,7 @@
     class="border-b px-4 py-2"
     style="background: var(--surface-canvas); border-color: var(--border-subtle);"
   >
-    <!-- TODO(F3): wire real budget from /api/threads/:id/budget -->
-    <BudgetMeter spent_usd={0} soft_cap={8} hard_cap={10} wall_s={0} wall_max_s={3600} />
+    <BudgetMeter {threadId} />
   </div>
 
   <!-- Body — two panes -->

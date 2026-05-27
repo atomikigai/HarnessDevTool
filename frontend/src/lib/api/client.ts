@@ -142,6 +142,24 @@ export interface PauseAllState {
   paused: boolean;
 }
 
+/**
+ * Server returns the budget plus derived percentages on GET/POST
+ * `/api/threads/:id/budget`. Hand-typed here because the backend ships
+ * this view via plain serde (not ts-rs).
+ */
+export interface BudgetView {
+  thread_id: string;
+  spent_usd: number;
+  limit_usd: number;
+  pct: number;
+  soft_pct: number;
+  hard_pct: number;
+}
+
+export interface SetBudgetRequest {
+  limit_usd: number;
+}
+
 export const api = {
   health: (signal?: AbortSignal) => apiRequest<HealthResponse>('/health', { signal }),
   pauseAll: {
@@ -191,6 +209,14 @@ export const api = {
         signal
       })
   },
+  getBudget: (threadId: string, signal?: AbortSignal) =>
+    apiRequest<BudgetView>(`/threads/${threadId}/budget`, { signal }),
+  setBudget: (threadId: string, limitUsd: number, signal?: AbortSignal) =>
+    apiRequest<BudgetView>(`/threads/${threadId}/budget`, {
+      method: 'POST',
+      body: { limit_usd: limitUsd } satisfies SetBudgetRequest,
+      signal
+    }),
   sessions: {
     create: (threadId: string, req: CreateSessionRequest, signal?: AbortSignal) =>
       apiRequest<CreateSessionResponse>(`/threads/${threadId}/sessions`, {

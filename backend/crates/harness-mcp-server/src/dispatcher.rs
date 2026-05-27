@@ -10,27 +10,47 @@ use crate::protocol::{
     SERVER_NAME, SERVER_VERSION,
 };
 use harness_core::TaskStore;
-use crate::tools::{self, skills, spec, tasks, wrap_error, wrap_text};
+use module_db::Manager as DbManager;
+use crate::tools::{self, db as db_tools, skills, spec, tasks, wrap_error, wrap_text};
 
 pub struct Dispatcher {
     store: TaskStore,
+    db: DbManager,
     harness_home: PathBuf,
     thread_id: String,
     agent_id: String,
+    /// Base URL of the harness-server (e.g. `http://127.0.0.1:8787`). When
+    /// `Some`, `task_create` delegates to the REST endpoint so the in-process
+    /// broadcast bus emits `task.created` and the SSE stream pushes the new
+    /// task into the right panel without the user having to refresh.
+    server_url: Option<String>,
 }
 
 impl Dispatcher {
+    #[allow(dead_code)]
     pub fn new(
         harness_home: PathBuf,
         thread_id: String,
         agent_id: String,
     ) -> Result<Self, String> {
+        Self::new_with_server(harness_home, thread_id, agent_id, None)
+    }
+
+    pub fn new_with_server(
+        harness_home: PathBuf,
+        thread_id: String,
+        agent_id: String,
+        server_url: Option<String>,
+    ) -> Result<Self, String> {
         let store = TaskStore::new(&harness_home).map_err(|e| e.to_string())?;
+        let db = DbManager::new(&harness_home, "default").map_err(|e| e.to_string())?;
         Ok(Self {
             store,
+            db,
             harness_home,
             thread_id,
             agent_id,
+            server_url,
         })
     }
 
@@ -88,6 +108,13 @@ impl Dispatcher {
         let args = params.get("arguments").cloned().unwrap_or(json!({}));
 
         let outcome: Result<Value, String> = match name.as_str() {
+            "task_create" => tasks::create(
+                &self.store,
+                &self.thread_id,
+                &self.agent_id,
+                self.server_url.as_deref(),
+                &args,
+            ),
             "task_list" => tasks::list(&self.store, &self.thread_id, &args),
             "task_get" => tasks::get(&self.store, &args),
             "task_claim" => tasks::claim(&self.store, &args),
@@ -97,6 +124,9 @@ impl Dispatcher {
             "task_submit" => tasks::submit(&self.store, &self.agent_id, &args),
             "spec_read" => spec::read(&self.harness_home, &self.thread_id, &args),
             "skills_search" => skills::search(&args),
+            "db_query" => db_tools::query(&self.db, &args),
+            "db_schema" => db_tools::schema(&self.db, &args),
+            "db_explain" => db_tools::explain(&self.db, &args),
             other => {
                 return error_response_with(
                     id,

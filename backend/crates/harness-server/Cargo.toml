@@ -11,6 +11,7 @@ path = "src/main.rs"
 [dependencies]
 harness-core = { path = "../harness-core" }
 harness-session = { path = "../harness-session" }
+module-db = { path = "../module-db" }
 
 axum = { workspace = true }
 tokio = { workspace = true }

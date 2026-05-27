@@ -8,9 +8,10 @@ use dashmap::DashMap;
 use harness_core::{
     ActiveSession, ActiveSessionsSource, AgentsRegistry, BudgetStore, BudgetWarning,
     BudgetWarningSink, BudgetWiring, ClaudeTranscriptReporter, CodexStubReporter, CostReporter,
-    PauseFlag, RolesRegistry, Scheduler, Store, TaskStore,
+    PauseFlag, RolesRegistry, Scheduler, SessionSpawner, SpawnRequest, SpawnResult, Store,
+    TaskStore,
 };
-use harness_session::{AgentKind, Manager};
+use harness_session::{AgentKind, Manager, SpawnOpts};
 use serde_json::json;
 use tokio::sync::broadcast;
 
@@ -25,6 +26,7 @@ pub struct AppState {
     pub roles: Arc<RolesRegistry>,
     pub pause: Arc<PauseFlag>,
     pub budgets: Arc<BudgetStore>,
+    pub db: Arc<module_db::Manager>,
     #[allow(dead_code)]
     pub scheduler: Arc<Scheduler>,
     /// Detected absolute paths for agent CLIs. Missing entries mean the binary
@@ -36,10 +38,14 @@ pub struct AppState {
     /// Path to the `harness-mcp-server` binary used by the bridge. `None` if
     /// it could not be located; spawn then proceeds without MCP injection.
     pub mcp_server_binary: Option<PathBuf>,
+    /// Base URL the spawned MCP server should call back into for delegating
+    /// `task_create`. Derived from `Config::bind` at boot. Format:
+    /// `http://<host>:<port>`.
+    pub server_url: String,
     /// Per-session MCP config file paths, kept for cleanup on session kill.
     /// Keyed by session id; the file lives at `<harness_home>/.runtime/mcp-configs/<id>.json`
     /// where `<id>` is a UUID we generate at config-write time (NOT the session id).
-    pub mcp_configs: DashMap<String, PathBuf>,
+    pub mcp_configs: Arc<DashMap<String, PathBuf>>,
     pub start_time: Instant,
     pub version: &'static str,
     pub tick_tx: broadcast::Sender<String>,
@@ -55,6 +61,10 @@ impl AppState {
         let roles = Arc::new(RolesRegistry::load(&cfg.home)?);
         let pause = Arc::new(PauseFlag::load(&cfg.home)?);
         let budgets = Arc::new(BudgetStore::load(&cfg.home)?);
+        let db = Arc::new(
+            module_db::Manager::new(&cfg.home, "default")
+                .map_err(|e| anyhow::anyhow!("module-db init: {e}"))?,
+        );
         let (tick_tx, _) = broadcast::channel(64);
 
         // Per-agent-kind cost reporter wiring. Keyed by `AgentKind::as_str()`
@@ -80,18 +90,44 @@ impl AppState {
             }),
         };
 
+        let binaries = detect_binaries();
+        let mcp_server_binary = detect_mcp_server_binary();
+        // Render a loopback-friendly URL even when bind is 0.0.0.0; the MCP
+        // child runs on the same machine and will be unable to reach 0.0.0.0
+        // as a dest, so substitute 127.0.0.1.
+        let host = if cfg.bind.ip().is_unspecified() {
+            "127.0.0.1".to_string()
+        } else {
+            cfg.bind.ip().to_string()
+        };
+        let server_url = format!("http://{}:{}", host, cfg.bind.port());
+
+        // Sub-agent spawner. The scheduler asks this for a PTY whenever it
+        // claims a task or routes one to an evaluator. Without it the
+        // scheduler would silently set the assignee without ever launching
+        // the agent (the "phantom assignee" bug).
+        let spawner = Arc::new(ManagerSpawner {
+            manager: manager.clone(),
+            roles: roles.clone(),
+            binaries: binaries.clone(),
+            mcp_server_binary: mcp_server_binary.clone(),
+            harness_home: cfg.home.clone(),
+            server_url: server_url.clone(),
+            mcp_configs: Arc::new(DashMap::new()),
+        });
+
         // Scheduler takes the store by value; we hand it a clone so AppState
         // can also expose it through `tasks`.
-        let scheduler = Arc::new(Scheduler::spawn_with_budget(
+        let mcp_configs = spawner.mcp_configs.clone();
+        let scheduler = Arc::new(Scheduler::spawn_full(
             task_store.clone(),
             agents.clone(),
             pause.clone(),
             None,
             Some(budget_wiring),
+            spawner as Arc<dyn SessionSpawner>,
         ));
         let tasks = Arc::new(task_store);
-        let binaries = detect_binaries();
-        let mcp_server_binary = detect_mcp_server_binary();
         Ok(Self {
             store,
             manager,
@@ -100,11 +136,13 @@ impl AppState {
             roles,
             pause,
             budgets,
+            db,
             scheduler,
             binaries,
             harness_home: cfg.home.clone(),
             mcp_server_binary,
-            mcp_configs: DashMap::new(),
+            server_url,
+            mcp_configs,
             start_time: Instant::now(),
             version: env!("CARGO_PKG_VERSION"),
             tick_tx,
@@ -204,6 +242,166 @@ fn detect_mcp_server_binary() -> Option<PathBuf> {
         "harness-mcp-server binary not found; sessions will spawn without MCP injection"
     );
     None
+}
+
+/// `SessionSpawner` impl that delegates to `harness_session::Manager`.
+///
+/// De-duping: if the agent already has a live session attached to this thread
+/// we return `AlreadyRunning` instead of launching another PTY. The scheduler
+/// will keep calling on every tick (cheap), so this guard is critical.
+///
+/// Role-prompt: when the role resolves in the registry we seed `SpawnOpts`
+/// with the template. `Manager` injects it into the PTY after a short grace
+/// period — see `manager.rs`.
+struct ManagerSpawner {
+    manager: Arc<Manager>,
+    roles: Arc<RolesRegistry>,
+    binaries: HashMap<AgentKind, PathBuf>,
+    mcp_server_binary: Option<PathBuf>,
+    harness_home: PathBuf,
+    /// Base URL we pass to the MCP child as `--server-url` so it can delegate
+    /// `task_create` back into our HTTP store (drives the SSE `task.created`).
+    server_url: String,
+    mcp_configs: Arc<DashMap<String, PathBuf>>,
+}
+
+impl ManagerSpawner {
+    /// Parse `agent:claude-3` / `agent:codex-1` back into an [`AgentKind`].
+    fn kind_from_str(s: &str) -> Option<AgentKind> {
+        match s {
+            "claude" => Some(AgentKind::Claude),
+            "codex" => Some(AgentKind::Codex),
+            _ => None,
+        }
+    }
+
+    /// Find a live session for `(agent_id, thread_id)`. We tag sessions with
+    /// the agent id via `SessionMeta.role` today; in lieu of a dedicated
+    /// `agent_id` field we use the role-string convention `agent:<id>` set at
+    /// spawn time. Falls back to thread+kind matching for legacy sessions.
+    fn find_existing(&self, agent_id: &str, thread_id: &str) -> Option<String> {
+        for s in self.manager.all() {
+            if s.thread_id() != thread_id {
+                continue;
+            }
+            // Block on the async meta lock briefly; this is fine in the
+            // scheduler context (called at most a few times per tick).
+            let role_match = tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(async {
+                    s.meta()
+                        .await
+                        .role
+                        .as_deref()
+                        .map(|r| r == agent_id)
+                        .unwrap_or(false)
+                })
+            });
+            if role_match {
+                return Some(s.id().to_string());
+            }
+        }
+        None
+    }
+}
+
+impl SessionSpawner for ManagerSpawner {
+    fn spawn(&self, req: SpawnRequest) -> SpawnResult {
+        if let Some(sid) = self.find_existing(&req.agent_id, &req.thread_id) {
+            return SpawnResult::AlreadyRunning { session_id: sid };
+        }
+
+        let kind = match Self::kind_from_str(&req.kind) {
+            Some(k) => k,
+            None => return SpawnResult::Failed(format!("unknown kind: {}", req.kind)),
+        };
+
+        let binary = match self.binaries.get(&kind).cloned() {
+            Some(b) => b,
+            None => {
+                return SpawnResult::Failed(format!(
+                    "no binary detected for kind {}",
+                    req.kind
+                ))
+            }
+        };
+
+        let role = match self.roles.get(&req.role) {
+            Some(r) => r,
+            None => {
+                // We surface this loudly because the previous behavior (per
+                // the bug brief) was "manager logs error but returns OK" —
+                // resulting in invisible failures. With this guard we return
+                // Failed and the scheduler logs at warn level.
+                return SpawnResult::Failed(format!("unknown role: {}", req.role));
+            }
+        };
+
+        let cwd = req
+            .cwd
+            .or_else(dirs::home_dir)
+            .unwrap_or_else(|| PathBuf::from("/"));
+
+        // Build SpawnOpts with the role prompt. We tag SessionMeta.role with
+        // the AGENT id (not the role tag) so `find_existing` can de-dupe.
+        let mut opts = SpawnOpts {
+            role_prompt: Some(role.prompt_template.clone()),
+            role: Some(req.agent_id.clone()),
+            ..SpawnOpts::default()
+        };
+
+        // Per-session MCP config (mirrors the REST `create_session` path so
+        // sub-agents see the same `task_*` tool surface as user-spawned
+        // sessions).
+        let mut config_path: Option<PathBuf> = None;
+        if matches!(kind, AgentKind::Claude) {
+            if let Some(mcp_bin) = self.mcp_server_binary.as_ref() {
+                let mcp_id = uuid::Uuid::new_v4().to_string();
+                let agent_id = format!("agent:{}-{}", kind.as_str(), &mcp_id[..8]);
+                let configs_dir = self.harness_home.join(".runtime").join("mcp-configs");
+                if let Err(e) = std::fs::create_dir_all(&configs_dir) {
+                    return SpawnResult::Failed(format!("create mcp-configs dir: {e}"));
+                }
+                let path = configs_dir.join(format!("{mcp_id}.json"));
+                let config = json!({
+                    "mcpServers": {
+                        "harness": {
+                            "command": mcp_bin.display().to_string(),
+                            "args": [
+                                "--thread", req.thread_id,
+                                "--agent-id", agent_id,
+                                "--harness-home", self.harness_home.display().to_string(),
+                                "--server-url", self.server_url,
+                            ]
+                        }
+                    }
+                });
+                if let Err(e) =
+                    std::fs::write(&path, serde_json::to_vec_pretty(&config).unwrap())
+                {
+                    return SpawnResult::Failed(format!("write mcp config: {e}"));
+                }
+                opts.mcp_config_path = Some(path.clone());
+                config_path = Some(path);
+            }
+        }
+
+        match self.manager.spawn_with_opts(
+            kind,
+            binary,
+            req.thread_id,
+            cwd,
+            opts,
+        ) {
+            Ok(session) => {
+                let sid = session.id().to_string();
+                if let Some(p) = config_path {
+                    self.mcp_configs.insert(sid.clone(), p);
+                }
+                SpawnResult::Launched { session_id: sid }
+            }
+            Err(e) => SpawnResult::Failed(format!("manager.spawn: {e}")),
+        }
+    }
 }
 
 fn detect_binaries() -> HashMap<AgentKind, PathBuf> {

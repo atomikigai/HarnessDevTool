@@ -6,7 +6,10 @@ use serde_json::{json, Value};
 
 use std::str::FromStr;
 
-use harness_core::{Artifacts, ClaimResult, ListFilters, TaskPatch, TaskStatus, TaskStore};
+use harness_core::{
+    AcceptanceCheck, Artifacts, ClaimResult, ListFilters, TaskDraft, TaskPatch, TaskStatus,
+    TaskStore,
+};
 
 fn str_arg<'a>(args: &'a Value, key: &str) -> Result<&'a str, String> {
     args.get(key)
@@ -20,6 +23,104 @@ fn opt_str<'a>(args: &'a Value, key: &str) -> Option<&'a str> {
 
 fn map_err(e: harness_core::Error) -> String {
     e.to_string()
+}
+
+/// `task_create` — primary path: delegate to the harness-server REST endpoint
+/// so the in-process `TaskStore` (the one the SSE stream subscribes to) does
+/// the write. That guarantees the right panel updates without a refresh.
+///
+/// Fallback: when the agent was spawned without `--server-url` (legacy or
+/// detached MCP run), we write directly to the filesystem via our local
+/// `TaskStore` clone. This keeps `task_create` functional in isolated tests
+/// but the SSE stream won't fire — see `Dispatcher::server_url`.
+pub fn create(
+    store: &TaskStore,
+    default_thread: &str,
+    agent_id: &str,
+    server_url: Option<&str>,
+    args: &Value,
+) -> Result<Value, String> {
+    let thread_id = opt_str(args, "thread_id").unwrap_or(default_thread).to_string();
+    let title = str_arg(args, "title")?.to_string();
+    let parent = opt_str(args, "parent").map(String::from);
+    let depends_on: Vec<String> = args
+        .get("depends_on")
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+    let labels: Vec<String> = args
+        .get("labels")
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+    let acceptance: Vec<AcceptanceCheck> = args
+        .get("acceptance")
+        .and_then(|v| v.get("checks"))
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|c| {
+                    let text = c.get("text").and_then(|v| v.as_str())?.to_string();
+                    let id = c
+                        .get("id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .to_string();
+                    Some(AcceptanceCheck {
+                        id,
+                        text,
+                        verified: false,
+                        verified_by: None,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    if let Some(base) = server_url {
+        // Delegate to harness-server so the in-process broadcast bus emits
+        // `task.created` and SSE subscribers see the new task immediately.
+        let url = format!(
+            "{}/api/threads/{}/tasks",
+            base.trim_end_matches('/'),
+            thread_id
+        );
+        let body = json!({
+            "title": title,
+            "parent": parent,
+            "depends_on": depends_on,
+            "labels": labels,
+            "acceptance": { "checks": acceptance.iter().map(|c| json!({
+                "id": c.id,
+                "text": c.text,
+            })).collect::<Vec<_>>() },
+            "created_by": agent_id,
+        });
+        match ureq::post(&url)
+            .timeout(Duration::from_secs(5))
+            .send_json(&body)
+        {
+            Ok(resp) => {
+                let value: Value = resp.into_json().map_err(|e| e.to_string())?;
+                return Ok(value);
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "task_create: HTTP delegation failed, falling back to local store");
+                // fall through to local-store path
+            }
+        }
+    }
+
+    let draft = TaskDraft {
+        title,
+        parent,
+        depends_on,
+        acceptance,
+        labels,
+        created_by: agent_id.to_string(),
+    };
+    let task = store.create(&thread_id, draft).map_err(map_err)?;
+    Ok(json!(task))
 }
 
 pub fn list(store: &TaskStore, default_thread: &str, args: &Value) -> Result<Value, String> {

@@ -13,6 +13,12 @@ thiserror = { workspace = true }
 chrono = { workspace = true }
 anyhow = { workspace = true }
 harness-core = { path = "../harness-core" }
+module-db = { path = "../module-db" }
+tokio = { workspace = true }
+# Tiny sync HTTP client used to ping the harness-server when an agent creates
+# a task via MCP — keeps the in-process broadcast bus (and SSE consumers) in
+# sync without polling the filesystem.
+ureq = { version = "2", features = ["json"], default-features = false }
 
 [[bin]]
 name = "harness-mcp-server"

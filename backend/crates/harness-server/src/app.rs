@@ -44,6 +44,7 @@ pub fn build_router(state: Arc<AppState>, cfg: &Config) -> Router {
         .merge(routes::agents::router())
         .merge(routes::control::router())
         .merge(routes::budget::router())
+        .merge(routes::db::router())
         .layer(middleware)
         .with_state(state)
 }

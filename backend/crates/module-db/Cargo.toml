@@ -1,0 +1,34 @@
+[package]
+name = "module-db"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = []
+# Enables ts-rs derives so `cargo test --features ts-export` writes .ts files
+# into `backend/bindings/`.
+ts-export = ["dep:ts-rs"]
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+sqlx = { workspace = true }
+keyring = { workspace = true }
+rust_decimal = { workspace = true }
+toml_edit = { workspace = true }
+anyhow = { workspace = true }
+base64 = { workspace = true }
+dashmap = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
+ts-rs = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

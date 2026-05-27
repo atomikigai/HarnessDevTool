@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/harness-server", "crates/harness-core", "crates/harness-session", "crates/harness-mcp-server"]
+members = ["crates/harness-server", "crates/harness-core", "crates/harness-session", "crates/harness-mcp-server", "crates/module-db"]
 
 [workspace.package]
 version = "0.0.1"
@@ -20,7 +20,7 @@ uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
-ts-rs = { version = "9", features = ["chrono-impl", "uuid-impl"] }
+ts-rs = { version = "9", features = ["chrono-impl", "uuid-impl", "serde-json-impl"] }
 anyhow = "1"
 thiserror = "1"
 futures = "0.3"
@@ -37,3 +37,6 @@ toml_edit = { version = "0.22", features = ["serde"] }
 rusqlite = { version = "0.31", features = ["bundled"] }
 fs2 = "0.4"
 schemars = { version = "0.8", features = ["chrono"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "sqlite", "postgres", "mysql", "any", "macros", "chrono", "uuid", "rust_decimal"] }
+keyring = "2"
+rust_decimal = { version = "1", features = ["serde"] }

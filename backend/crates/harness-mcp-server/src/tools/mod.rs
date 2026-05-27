@@ -1,3 +1,4 @@
+pub mod db;
 pub mod skills;
 pub mod spec;
 pub mod tasks;
@@ -10,6 +11,40 @@ use crate::protocol::ToolDescriptor;
 /// `[a-zA-Z0-9_-]+`); the brief's `task.list` is the conceptual name.
 pub fn list_descriptors() -> Vec<ToolDescriptor> {
     vec![
+        ToolDescriptor {
+            name: "task_create".into(),
+            description: "Create a new task in the current (or named) thread. Emits a \
+                          task.created SSE event so the UI updates immediately. Returns \
+                          the created Task object."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["title"],
+                "properties": {
+                    "thread_id":  { "type": "string" },
+                    "title":      { "type": "string" },
+                    "parent":     { "type": "string" },
+                    "depends_on": { "type": "array", "items": { "type": "string" } },
+                    "labels":     { "type": "array", "items": { "type": "string" } },
+                    "acceptance": {
+                        "type": "object",
+                        "properties": {
+                            "checks": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "required": ["text"],
+                                    "properties": {
+                                        "id":   { "type": "string" },
+                                        "text": { "type": "string" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }),
+        },
         ToolDescriptor {
             name: "task_list".into(),
             description: "List tasks for a thread, with optional status/label/assignee filters."
@@ -133,6 +168,47 @@ pub fn list_descriptors() -> Vec<ToolDescriptor> {
                 "properties": {
                     "thread_id": { "type": "string" },
                     "scope":     { "type": "string" }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "db_query".into(),
+            description: "Run a SQL query against a saved DB connection. Non-SELECT statements \
+                require `approved: true`."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["connection", "sql"],
+                "properties": {
+                    "connection": { "type": "string", "description": "connection id" },
+                    "sql":        { "type": "string" },
+                    "limit":      { "type": "integer", "minimum": 1 },
+                    "approved":   { "type": "boolean" }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "db_schema".into(),
+            description: "Return the schema tree (schemas/tables/columns) of a connection."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["connection"],
+                "properties": {
+                    "connection": { "type": "string" },
+                    "database":   { "type": "string" }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "db_explain".into(),
+            description: "EXPLAIN a SQL statement on a connection (engine-specific prefix).".into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["connection", "sql"],
+                "properties": {
+                    "connection": { "type": "string" },
+                    "sql":        { "type": "string" }
                 }
             }),
         },

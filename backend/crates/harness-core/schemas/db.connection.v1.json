@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://harness.dev/schemas/db.connection.v1.json",
+  "title": "harness.db.connection.v1",
+  "type": "object",
+  "required": ["id", "name", "engine", "database", "created_at", "updated_at"],
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "id": { "type": "string", "format": "uuid" },
+    "name": { "type": "string", "minLength": 1 },
+    "engine": { "type": "string", "enum": ["sqlite", "postgres", "mysql"] },
+    "host": { "type": ["string", "null"] },
+    "port": { "type": ["integer", "null"], "minimum": 1, "maximum": 65535 },
+    "database": { "type": "string", "minLength": 1 },
+    "username": { "type": ["string", "null"] },
+    "password_ref": {
+      "type": ["string", "null"],
+      "description": "Keyring key (e.g. 'harness:db:<id>'). NEVER the password itself."
+    },
+    "ssl_mode": { "type": ["string", "null"], "enum": ["disable", "prefer", "require", null] },
+    "params": {
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    },
+    "created_at": { "type": "string", "format": "date-time" },
+    "updated_at": { "type": "string", "format": "date-time" }
+  }
+}

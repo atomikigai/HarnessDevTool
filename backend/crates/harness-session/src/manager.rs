@@ -149,25 +149,18 @@ impl Manager {
         )?;
         self.sessions.insert(id, session.clone());
 
-        // If an auto-intro and/or role prompt was supplied, fire-and-forget
-        // a tiny async task to write them once the CLI banner has settled.
-        // Keeping spawn_with_opts sync avoids cascading API changes to every
-        // caller; the 200ms grace gives the agent time to draw its prompt
-        // before we feed input. Intro is written first so the agent knows
-        // about the harness MCP tools BEFORE interpreting the role prompt.
-        let initial_payload = match (opts.auto_intro, opts.role_prompt) {
-            (Some(intro), Some(prompt)) => Some(format!("{intro}\n\n{prompt}")),
-            (Some(intro), None) => Some(intro),
-            (None, Some(prompt)) => Some(prompt),
-            (None, None) => None,
-        };
-        if let Some(mut payload) = initial_payload {
+        // `auto_intro` is passed to claude as `--append-system-prompt` (CLI
+        // flag, baked at spawn) so it never appears as user-typed input.
+        // `role_prompt` IS user-typed: it's the "begin your role" kick that
+        // tells the agent to start working, so it must appear in the
+        // conversation. 200ms grace lets the CLI draw its prompt first.
+        if let Some(mut payload) = opts.role_prompt {
             let s = session.clone();
             tokio::spawn(async move {
                 tokio::time::sleep(std::time::Duration::from_millis(200)).await;
                 payload.push('\n');
                 if let Err(e) = s.write_input(payload.as_bytes()).await {
-                    tracing::warn!(error = %e, "failed to inject initial prompt");
+                    tracing::warn!(error = %e, "failed to inject role prompt");
                 }
             });
         }
@@ -193,11 +186,10 @@ pub struct SpawnOpts {
     /// Optional role name to record in [`SessionMeta`] for inspection. Does
     /// NOT affect runtime behavior on its own; pair with `role_prompt`.
     pub role: Option<String>,
-    /// Optional auto-intro string injected into the PTY shortly after spawn,
-    /// BEFORE `role_prompt`. Used to brief the agent about the harness MCP
-    /// task tools (so it doesn't fall back to its built-in todo list). When
-    /// both `auto_intro` and `role_prompt` are present, they are concatenated
-    /// with a blank line between them and written as a single payload.
+    /// Briefing appended to claude's system prompt via `--append-system-prompt`
+    /// (NOT typed into the PTY). Used to tell the agent about the harness MCP
+    /// tools so it doesn't fall back to its built-in todo list. Silent to the
+    /// user — never shows up as a chat message.
     pub auto_intro: Option<String>,
 }
 
@@ -231,6 +223,12 @@ fn build_extra_args(kind: AgentKind, opts: &SpawnOpts, session_id: &str) -> Vec<
                 // accepts a space- or comma-separated list of tool names.
                 out.push("--disallowed-tools".to_string());
                 out.push("TodoWrite TodoRead".to_string());
+                if let Some(intro) = opts.auto_intro.as_ref() {
+                    // Silent system-prompt addendum — invisible to the user
+                    // and not counted as a turn.
+                    out.push("--append-system-prompt".to_string());
+                    out.push(intro.clone());
+                }
             }
             AgentKind::Codex => {
                 tracing::warn!(
@@ -277,6 +275,34 @@ mod tests {
         // Todo tools disabled
         let dis_idx = args.iter().position(|a| a == "--disallowed-tools").unwrap();
         assert_eq!(args[dis_idx + 1], "TodoWrite TodoRead");
+
+        // No auto_intro set → no --append-system-prompt
+        assert!(!args.iter().any(|a| a == "--append-system-prompt"));
+    }
+
+    #[test]
+    fn claude_with_intro_appends_system_prompt() {
+        let opts = SpawnOpts {
+            mcp_config_path: Some(PathBuf::from("/tmp/cfg.json")),
+            auto_intro: Some("harness MCP available: task_create, ...".to_string()),
+            ..SpawnOpts::default()
+        };
+        let args = build_extra_args(AgentKind::Claude, &opts, "sid-i");
+        let idx = args.iter().position(|a| a == "--append-system-prompt").unwrap();
+        assert_eq!(args[idx + 1], "harness MCP available: task_create, ...");
+    }
+
+    #[test]
+    fn claude_intro_without_mcp_is_not_appended() {
+        // auto_intro is only meaningful when the harness MCP is wired; if
+        // mcp_config_path is None, the intro would describe tools the agent
+        // can't see — better to skip it than confuse the model.
+        let opts = SpawnOpts {
+            auto_intro: Some("some intro".to_string()),
+            ..SpawnOpts::default()
+        };
+        let args = build_extra_args(AgentKind::Claude, &opts, "sid");
+        assert!(!args.iter().any(|a| a == "--append-system-prompt"));
     }
 
     #[test]

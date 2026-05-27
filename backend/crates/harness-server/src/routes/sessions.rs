@@ -20,6 +20,11 @@ pub struct CreateSessionRequest {
     pub kind: AgentKind,
     #[serde(default)]
     pub cwd: Option<String>,
+    /// Optional role-template name (resolved against `AppState.roles`). When
+    /// supplied, the role's `prompt_template` is written to the PTY shortly
+    /// after spawn.
+    #[serde(default)]
+    pub role: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -75,7 +80,18 @@ async fn create_session(
     //    --mcp-config; we cannot rename it after spawn because claude resolves
     //    that arg on startup. Instead we remember sid → config_path so kill
     //    can clean up.
-    let (opts, config_path) = build_spawn_opts(&state, req.kind, &tid)?;
+    let (mut opts, config_path) = build_spawn_opts(&state, req.kind, &tid)?;
+
+    // 5) Resolve optional role template and seed the initial prompt.
+    if let Some(role_name) = req.role.as_deref() {
+        let role = state
+            .roles
+            .get(role_name)
+            .ok_or_else(|| ApiError::BadRequest(format!("unknown role: {role_name}")))?;
+        opts.role_prompt = Some(role.prompt_template.clone());
+        opts.role = Some(role.name.clone());
+    }
+
     let session = state
         .manager
         .spawn_with_opts(req.kind, binary, tid, cwd, opts)?;
@@ -149,6 +165,7 @@ fn build_spawn_opts(
     Ok((
         SpawnOpts {
             mcp_config_path: Some(config_path.clone()),
+            ..SpawnOpts::default()
         },
         Some(config_path),
     ))

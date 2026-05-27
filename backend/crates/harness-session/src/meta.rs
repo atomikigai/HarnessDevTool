@@ -26,4 +26,8 @@ pub struct SessionMeta {
     pub started_at: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exit_code: Option<i32>,
+    /// Name of the role template that seeded this session, if any. Carried as
+    /// metadata only — the prompt itself is written to the PTY at spawn time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
 }

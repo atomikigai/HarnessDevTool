@@ -4,6 +4,8 @@
 
 pub mod agents;
 pub mod events;
+pub mod pause;
+pub mod roles;
 pub mod scheduler;
 pub mod store;
 pub mod tasks;
@@ -11,7 +13,9 @@ pub mod threads;
 
 pub use agents::{Agent, AgentDraft, AgentKind, AgentsRegistry};
 pub use events::Event;
-pub use scheduler::Scheduler;
+pub use pause::PauseFlag;
+pub use roles::{Role, RolesRegistry};
+pub use scheduler::{Scheduler, MAX_CONCURRENT_DEFAULT};
 pub use store::{Store, StoreError};
 pub use tasks::{
     AcceptanceCheck, Artifacts, ClaimResult, HistoryEvent, Lease, ListFilters, Task, TaskDraft,

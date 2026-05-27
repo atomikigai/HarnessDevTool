@@ -5,3 +5,7 @@
 mod tick;
 
 pub use tick::Scheduler;
+
+/// Default cap on concurrent in-progress tasks per thread when none is
+/// configured. Budget-aware override is a later slice.
+pub const MAX_CONCURRENT_DEFAULT: usize = 3;

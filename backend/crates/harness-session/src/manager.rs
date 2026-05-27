@@ -144,9 +144,27 @@ impl Manager {
             cwd,
             dir,
             extra_args,
+            opts.role.clone(),
             self.bus.clone(),
         )?;
         self.sessions.insert(id, session.clone());
+
+        // If a role prompt was supplied, fire-and-forget a tiny async task to
+        // write it once the CLI banner has settled. Keeping spawn_with_opts
+        // sync avoids cascading API changes to every caller; the 200ms grace
+        // gives the agent time to draw its prompt before we feed input.
+        if let Some(prompt) = opts.role_prompt {
+            let s = session.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                let mut payload = prompt;
+                payload.push('\n');
+                if let Err(e) = s.write_input(payload.as_bytes()).await {
+                    tracing::warn!(error = %e, "failed to inject role prompt");
+                }
+            });
+        }
+
         Ok(session)
     }
 
@@ -162,6 +180,12 @@ pub struct SpawnOpts {
     /// Absolute path to a JSON file consumed by the agent's `--mcp-config`
     /// flag (or its kind-specific equivalent). `None` disables MCP injection.
     pub mcp_config_path: Option<PathBuf>,
+    /// Optional initial prompt to write into the PTY after spawn. Used by the
+    /// role-template system to seed the agent.
+    pub role_prompt: Option<String>,
+    /// Optional role name to record in [`SessionMeta`] for inspection. Does
+    /// NOT affect runtime behavior on its own; pair with `role_prompt`.
+    pub role: Option<String>,
 }
 
 /// Translate `SpawnOpts` into the CLI flags appended to the agent invocation.

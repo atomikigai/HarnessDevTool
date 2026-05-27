@@ -46,6 +46,7 @@ impl AgentSession {
         cwd: PathBuf,
         dir: PathBuf,
         extra_args: Vec<String>,
+        role: Option<String>,
         bus: broadcast::Sender<SessionEvent>,
     ) -> Result<Arc<Self>, SessionError> {
         std::fs::create_dir_all(&dir)?;
@@ -108,6 +109,7 @@ impl AgentSession {
             status: SessionStatus::Running,
             started_at: Utc::now().timestamp_millis(),
             exit_code: None,
+            role,
         };
         persist_meta(&dir, &meta)?;
 

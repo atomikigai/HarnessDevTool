@@ -5,7 +5,7 @@ use std::time::Instant;
 
 use anyhow::Result;
 use dashmap::DashMap;
-use harness_core::{AgentsRegistry, Scheduler, Store, TaskStore};
+use harness_core::{AgentsRegistry, PauseFlag, RolesRegistry, Scheduler, Store, TaskStore};
 use harness_session::{AgentKind, Manager};
 use tokio::sync::broadcast;
 
@@ -17,6 +17,8 @@ pub struct AppState {
     pub manager: Arc<Manager>,
     pub tasks: Arc<TaskStore>,
     pub agents: Arc<AgentsRegistry>,
+    pub roles: Arc<RolesRegistry>,
+    pub pause: Arc<PauseFlag>,
     #[allow(dead_code)]
     pub scheduler: Arc<Scheduler>,
     /// Detected absolute paths for agent CLIs. Missing entries mean the binary
@@ -43,11 +45,18 @@ impl AppState {
         let sessions_root = cfg.home.join("profiles").join("default").join("sessions");
         let manager = Arc::new(Manager::new(sessions_root)?);
         let task_store = TaskStore::new(&cfg.home)?;
+        let agents = Arc::new(AgentsRegistry::new(&cfg.home)?);
+        let roles = Arc::new(RolesRegistry::load(&cfg.home)?);
+        let pause = Arc::new(PauseFlag::load(&cfg.home)?);
         // Scheduler takes the store by value; we hand it a clone so AppState
         // can also expose it through `tasks`.
-        let scheduler = Arc::new(Scheduler::spawn(task_store.clone()));
+        let scheduler = Arc::new(Scheduler::spawn(
+            task_store.clone(),
+            agents.clone(),
+            pause.clone(),
+            None,
+        ));
         let tasks = Arc::new(task_store);
-        let agents = Arc::new(AgentsRegistry::new(&cfg.home)?);
         let binaries = detect_binaries();
         let mcp_server_binary = detect_mcp_server_binary();
         let (tick_tx, _) = broadcast::channel(64);
@@ -56,6 +65,8 @@ impl AppState {
             manager,
             tasks,
             agents,
+            roles,
+            pause,
             scheduler,
             binaries,
             harness_home: cfg.home.clone(),

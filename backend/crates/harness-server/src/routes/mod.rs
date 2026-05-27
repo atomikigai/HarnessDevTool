@@ -1,4 +1,5 @@
 pub mod agents;
+pub mod control;
 pub mod events;
 pub mod health;
 pub mod sessions;

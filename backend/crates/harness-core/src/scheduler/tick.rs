@@ -5,7 +5,11 @@ use std::time::Duration;
 use chrono::Utc;
 use tokio::task::JoinHandle;
 
-use crate::tasks::{ListFilters, TaskEvent, TaskStatus, TaskStore};
+use crate::agents::AgentsRegistry;
+use crate::pause::PauseFlag;
+use crate::tasks::{ClaimResult, ListFilters, TaskEvent, TaskStatus, TaskStore};
+
+use super::MAX_CONCURRENT_DEFAULT;
 
 /// Background scheduler loop. Spawn once at boot; the [`JoinHandle`] keeps it
 /// alive (drop to stop — uses an internal `CancellationToken` style flag).
@@ -15,9 +19,19 @@ pub struct Scheduler {
 }
 
 impl Scheduler {
-    pub fn spawn(store: TaskStore) -> Self {
+    /// Spawn the scheduler loop.
+    ///
+    /// `max_concurrent` caps in-progress tasks per thread; defaults to
+    /// [`MAX_CONCURRENT_DEFAULT`] when `None`.
+    pub fn spawn(
+        store: TaskStore,
+        agents: Arc<AgentsRegistry>,
+        pause: Arc<PauseFlag>,
+        max_concurrent: Option<usize>,
+    ) -> Self {
         let stop = Arc::new(Mutex::new(false));
         let stop2 = stop.clone();
+        let max_concurrent = max_concurrent.unwrap_or(MAX_CONCURRENT_DEFAULT);
         let handle = tokio::spawn(async move {
             let mut tick = tokio::time::interval(Duration::from_secs(2));
             let mut lease_tick = tokio::time::interval(Duration::from_secs(30));
@@ -31,6 +45,9 @@ impl Scheduler {
                     _ = tick.tick() => {
                         if let Err(e) = run_ready_pass(&store, &mut announced) {
                             tracing::warn!(?e, "scheduler ready pass failed");
+                        }
+                        if let Err(e) = run_assign_pass(&store, &agents, &pause, max_concurrent) {
+                            tracing::warn!(?e, "scheduler assign pass failed");
                         }
                     }
                     _ = lease_tick.tick() => {
@@ -113,6 +130,91 @@ fn run_ready_pass(
                     }
                 }
                 _ => {}
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Auto-claim eligible queued tasks for idle generators.
+///
+/// [F3-followup] Role-based agent typing not yet modeled — for this slice any
+/// registered agent is treated as a generator. When role typing lands, filter
+/// the candidate set here.
+fn run_assign_pass(
+    store: &TaskStore,
+    agents: &AgentsRegistry,
+    pause: &PauseFlag,
+    max_concurrent: usize,
+) -> Result<(), crate::Error> {
+    if pause.is_paused() {
+        return Ok(());
+    }
+
+    let all_agents = agents.list();
+    let total_agents = all_agents.len();
+
+    for tid in store.known_threads()? {
+        let tasks = store.list(&tid, ListFilters::default())?;
+        let in_progress: Vec<&_> = tasks
+            .iter()
+            .filter(|t| t.status == TaskStatus::InProgress)
+            .collect();
+        let mut busy_ids: HashSet<String> = in_progress
+            .iter()
+            .filter_map(|t| t.assignee.clone())
+            .collect();
+
+        let queued_unblocked: Vec<&_> = tasks
+            .iter()
+            .filter(|t| {
+                t.status == TaskStatus::Queued
+                    && t.blocked_by.is_empty()
+                    && t.assignee.is_none()
+            })
+            .collect();
+
+        let idle_agents = total_agents.saturating_sub(busy_ids.len());
+        tracing::debug!(
+            target: "scheduling",
+            thread = %tid,
+            queued = queued_unblocked.len(),
+            in_progress = in_progress.len(),
+            idle_agents,
+            "scheduling.tick"
+        );
+
+        let mut current = busy_ids.len();
+        for t in queued_unblocked {
+            if current >= max_concurrent {
+                break;
+            }
+            // Pick any agent not currently busy in this thread.
+            let candidate = all_agents.iter().find(|a| !busy_ids.contains(&a.id));
+            let Some(agent) = candidate else {
+                break;
+            };
+
+            match store.claim(&tid, &t.id, &agent.id, Duration::from_secs(300)) {
+                Ok(ClaimResult::Granted(_)) => {
+                    tracing::info!(
+                        target: "scheduling",
+                        thread = %tid,
+                        task = %t.id,
+                        agent = %agent.id,
+                        "scheduling.assign"
+                    );
+                    busy_ids.insert(agent.id.clone());
+                    current += 1;
+                }
+                Ok(ClaimResult::Busy { holder, .. }) => {
+                    // Someone else (likely a human via API) beat us to it; treat
+                    // that holder as busy and continue.
+                    busy_ids.insert(holder);
+                }
+                Err(e) => {
+                    tracing::warn!(?e, task = %t.id, "scheduler claim failed");
+                }
             }
         }
     }

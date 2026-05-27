@@ -1,13 +1,9 @@
 <!--
   BudgetMeter — USD spend gauge for a single thread.
-  Pulls from `budgetStore`, refreshing on mount and on `budget.warning`
-  SSE events fanned in by the page. The soft/hard thresholds are read
-  from the server view (never hardcoded) so band tuning is a backend
-  concern. Includes an inline form to update `limit_usd`.
-
-  Wallclock row remains for visual continuity but is currently always
-  zeroed — F3 ships USD only; wallclock surfacing is queued for a
-  later slice.
+  Subscribes directly to `/api/events` (global, unfiltered) for
+  `budget.warning`: that event is fanned out on the default channel,
+  not on the per-thread topic that tasks use (`/events?thread=`).
+  Thresholds come from the server view; never hardcode them here.
 -->
 <script lang="ts">
   import { onMount } from 'svelte';
@@ -17,11 +13,9 @@
 
   interface Props {
     threadId: string;
-    wall_s?: number;
-    wall_max_s?: number;
   }
 
-  let { threadId, wall_s = 0, wall_max_s = 3600 }: Props = $props();
+  let { threadId }: Props = $props();
 
   const entry = $derived(budgetStore.get(threadId));
   const view = $derived(entry.view);
@@ -40,10 +34,9 @@
   onMount(() => {
     void budgetStore.loadBudget(threadId);
 
-    // Listen for the global budget.warning event. The backend emits it on
-    // the default channel as `{type: "budget.warning", ...}` per the F3
-    // contract, but we also register a named handler in case future
-    // payloads switch to event-typed framing.
+    // budget.warning is emitted on the default channel by the backend
+    // (see harness-server::state::TickWarningSink). Tasks use a separate
+    // named-event stream at /events?thread=&lt;id&gt;; budgets are global.
     const sse: SSEHandle = subscribeSSE<{ type?: string; thread_id?: string }>(
       '/events',
       (data) => {
@@ -53,11 +46,6 @@
           (data as { type?: string }).type === 'budget.warning'
         ) {
           handleWarning(data as { thread_id?: string; pct?: number });
-        }
-      },
-      {
-        events: {
-          'budget.warning': (data) => handleWarning(data as { thread_id?: string; pct?: number })
         }
       }
     );
@@ -71,13 +59,6 @@
     void budgetStore.loadBudget(threadId);
     const pctStr = typeof payload.pct === 'number' ? `${payload.pct.toFixed(0)}%` : '';
     toast.warning(`Budget crossed ${pctStr}`.trim());
-  }
-
-  function clampPct(value: number, max: number): number {
-    if (max <= 0) return 0;
-    const pct = (value / max) * 100;
-    if (!Number.isFinite(pct) || pct < 0) return 0;
-    return Math.min(pct, 100);
   }
 
   function stateFor(pct: number, softPct: number, hardPct: number): 'ok' | 'warn' | 'danger' {
@@ -96,13 +77,6 @@
     return `$${(Number.isFinite(n) ? n : 0).toFixed(2)}`;
   }
 
-  function fmtClock(seconds: number): string {
-    const s = Math.max(0, Math.floor(Number.isFinite(seconds) ? seconds : 0));
-    const m = Math.floor(s / 60);
-    const r = s % 60;
-    return `${String(m).padStart(2, '0')}:${String(r).padStart(2, '0')}`;
-  }
-
   const spent = $derived(view?.spent_usd ?? 0);
   const limit = $derived(view?.limit_usd ?? 0);
   const pct = $derived(view?.pct ?? 0);
@@ -112,10 +86,6 @@
   const usdPct = $derived(Math.min(pct, 100));
   const usdState = $derived(stateFor(pct, softPct, hardPct));
   const usdColor = $derived(colorVar(usdState));
-
-  const wallPct = $derived(clampPct(wall_s, wall_max_s));
-  const wallState = $derived(stateFor(wallPct, 80, 100));
-  const wallColor = $derived(colorVar(wallState));
 
   async function submitLimit(e: SubmitEvent) {
     e.preventDefault();
@@ -194,27 +164,4 @@
     {/if}
   </form>
 
-  <!-- Wallclock row (placeholder; not yet wired to server) -->
-  <div class="flex flex-col gap-1">
-    <div class="flex items-baseline justify-between text-[11px]">
-      <span class="uppercase tracking-wider" style="color: var(--fg-label);">Wall</span>
-      <span class="font-mono" style="color: var(--fg-default);">
-        {fmtClock(wall_s)} / {fmtClock(wall_max_s)}
-      </span>
-    </div>
-    <div
-      class="h-1.5 w-full overflow-hidden rounded-full"
-      style="background: color-mix(in srgb, {wallColor} 12%, transparent);"
-      role="progressbar"
-      aria-valuemin="0"
-      aria-valuemax={wall_max_s}
-      aria-valuenow={wall_s}
-      aria-label="Wallclock vs max"
-    >
-      <div
-        class="h-full rounded-full transition-[width,background-color] duration-300"
-        style="width: {wallPct}%; background: {wallColor};"
-      ></div>
-    </div>
-  </div>
 </div>

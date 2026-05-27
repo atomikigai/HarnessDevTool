@@ -30,7 +30,7 @@
       icon: 'agents',
       badge: () => sessionsState.active.length
     },
-    { label: 'SQL', href: '/sql', icon: 'sql', soon: true },
+    { label: 'DB', href: '/db', icon: 'sql' },
     { label: 'SSH', href: '/ssh', icon: 'ssh', soon: true },
     { label: 'Memory', href: '/memory', icon: 'memory', soon: true },
     { label: 'Settings', href: '/settings', icon: 'settings', soon: true }

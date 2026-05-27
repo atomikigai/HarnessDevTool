@@ -163,5 +163,4 @@
       <span style="color: var(--dot-danger);">{entry.error}</span>
     {/if}
   </form>
-
 </div>

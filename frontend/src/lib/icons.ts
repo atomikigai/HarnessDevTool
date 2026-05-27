@@ -35,5 +35,13 @@ export {
   Network,
   Paperclip,
   RotateCcw,
-  Send
+  Send,
+  Copy,
+  Database,
+  Table as TableIcon,
+  Key,
+  ChevronDown,
+  ChevronUp,
+  MoreHorizontal,
+  PlusCircle
 } from 'lucide-svelte';

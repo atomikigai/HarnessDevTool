@@ -195,8 +195,25 @@ fn delete_password(user: &str) -> DbResult<()> {
 
 /// Build a sqlx DSN for a connection. Pulls password from keyring at call
 /// time. Used by `pool::PoolCache` and by `connections_test`.
-pub fn build_dsn(conn: &Connection, password: Option<&str>) -> DbResult<String> {
+///
+/// `database_override` replaces the connection's saved `database` for
+/// Postgres/MySQL (e.g. when the UI's database dropdown picks a different
+/// database on the same server). SQLite ignores the override because each
+/// SQLite connection maps 1:1 to a file path.
+pub fn build_dsn(
+    conn: &Connection,
+    password: Option<&str>,
+    database_override: Option<&str>,
+) -> DbResult<String> {
     use crate::types::Engine;
+    // For Postgres/MySQL, prefer the override (if non-empty) over the saved
+    // database. SQLite always uses the saved file path.
+    let effective_db = |saved: &str| -> String {
+        match database_override {
+            Some(d) if !d.is_empty() => d.to_string(),
+            _ => saved.to_string(),
+        }
+    };
     match conn.engine {
         Engine::Sqlite => {
             // `database` is a filesystem path.
@@ -215,6 +232,7 @@ pub fn build_dsn(conn: &Connection, password: Option<&str>) -> DbResult<String> 
         Engine::Postgres => {
             let host = conn.host.as_deref().unwrap_or("localhost");
             let port = conn.port.unwrap_or(5432);
+            let db = effective_db(&conn.database);
             let mut url = String::from("postgres://");
             if let Some(u) = &conn.username {
                 url.push_str(&urlencoded(u));
@@ -228,7 +246,7 @@ pub fn build_dsn(conn: &Connection, password: Option<&str>) -> DbResult<String> 
             url.push(':');
             url.push_str(&port.to_string());
             url.push('/');
-            url.push_str(&urlencoded(&conn.database));
+            url.push_str(&urlencoded(&db));
             let mut sep = '?';
             if let Some(ssl) = conn.ssl_mode {
                 url.push(sep);
@@ -248,6 +266,7 @@ pub fn build_dsn(conn: &Connection, password: Option<&str>) -> DbResult<String> 
         Engine::Mysql => {
             let host = conn.host.as_deref().unwrap_or("localhost");
             let port = conn.port.unwrap_or(3306);
+            let db = effective_db(&conn.database);
             let mut url = String::from("mysql://");
             if let Some(u) = &conn.username {
                 url.push_str(&urlencoded(u));
@@ -261,7 +280,7 @@ pub fn build_dsn(conn: &Connection, password: Option<&str>) -> DbResult<String> 
             url.push(':');
             url.push_str(&port.to_string());
             url.push('/');
-            url.push_str(&urlencoded(&conn.database));
+            url.push_str(&urlencoded(&db));
             let mut sep = '?';
             for (k, v) in &conn.params {
                 url.push(sep);
@@ -347,4 +366,76 @@ pub fn redacted_summary(conn: &Connection) -> HashMap<&'static str, String> {
         conn.host.clone().unwrap_or_else(|| "-".to_string()),
     );
     m
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::{Engine, SslMode};
+    use chrono::Utc;
+
+    fn base(engine: Engine, database: &str) -> Connection {
+        let now = Utc::now();
+        Connection {
+            id: "test".into(),
+            name: "t".into(),
+            engine,
+            host: Some("db.example.com".into()),
+            port: None,
+            database: database.into(),
+            username: Some("alice".into()),
+            password_ref: None,
+            ssl_mode: None,
+            params: HashMap::new(),
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    #[test]
+    fn postgres_dsn_uses_saved_database_without_override() {
+        let c = base(Engine::Postgres, "appdb");
+        let dsn = build_dsn(&c, Some("s3cret"), None).unwrap();
+        assert_eq!(
+            dsn,
+            "postgres://alice:s3cret@db.example.com:5432/appdb"
+        );
+    }
+
+    #[test]
+    fn postgres_dsn_honors_database_override() {
+        let mut c = base(Engine::Postgres, "appdb");
+        c.ssl_mode = Some(SslMode::Require);
+        let dsn = build_dsn(&c, None, Some("analytics")).unwrap();
+        assert!(
+            dsn.starts_with("postgres://alice@db.example.com:5432/analytics"),
+            "got: {dsn}"
+        );
+        assert!(dsn.contains("sslmode=require"), "got: {dsn}");
+        // saved database name must not leak when overridden.
+        assert!(!dsn.contains("/appdb"), "got: {dsn}");
+    }
+
+    #[test]
+    fn mysql_dsn_honors_database_override() {
+        let c = base(Engine::Mysql, "appdb");
+        let dsn = build_dsn(&c, Some("pw"), Some("reports")).unwrap();
+        assert_eq!(dsn, "mysql://alice:pw@db.example.com:3306/reports");
+    }
+
+    #[test]
+    fn mysql_dsn_uses_saved_when_override_is_empty() {
+        let c = base(Engine::Mysql, "appdb");
+        let dsn = build_dsn(&c, None, Some("")).unwrap();
+        assert_eq!(dsn, "mysql://alice@db.example.com:3306/appdb");
+    }
+
+    #[test]
+    fn sqlite_dsn_ignores_database_override() {
+        let c = base(Engine::Sqlite, "/tmp/app.sqlite");
+        let with = build_dsn(&c, None, Some("other.sqlite")).unwrap();
+        let without = build_dsn(&c, None, None).unwrap();
+        assert_eq!(with, without);
+        assert_eq!(with, "sqlite:///tmp/app.sqlite?mode=rwc");
+    }
 }

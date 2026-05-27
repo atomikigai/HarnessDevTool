@@ -15,9 +15,14 @@ pub async fn introspect(
     engine: Engine,
     database: Option<&str>,
 ) -> DbResult<SchemaTree> {
+    // The pool is already bound to the requested database (PoolCache routes
+    // per (connection, database)), so engine-specific tree functions only
+    // need the override as a defensive belt — Postgres ignores it entirely
+    // (information_schema is per-database), MySQL keeps it as a filter for
+    // information_schema.tables.
     match engine {
         Engine::Sqlite => sqlite_tree(pool).await,
-        Engine::Postgres => postgres_tree(pool, database).await,
+        Engine::Postgres => postgres_tree(pool).await,
         Engine::Mysql => mysql_tree(pool, database).await,
     }
 }
@@ -131,7 +136,7 @@ async fn sqlite_tree(pool: &AnyPool) -> DbResult<SchemaTree> {
     })
 }
 
-async fn postgres_tree(pool: &AnyPool, _database: Option<&str>) -> DbResult<SchemaTree> {
+async fn postgres_tree(pool: &AnyPool) -> DbResult<SchemaTree> {
     // Tables grouped by schema (excluding pg internals).
     let rows = sqlx::query(
         "SELECT table_schema, table_name, table_type

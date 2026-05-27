@@ -132,7 +132,10 @@ impl Manager {
         database: Option<&str>,
     ) -> DbResult<SchemaTree> {
         let conn = self.store.get(connection_id)?;
-        let pool = self.pools.get_or_init(&self.store, connection_id).await?;
+        let pool = self
+            .pools
+            .get_or_init_for(&self.store, connection_id, database)
+            .await?;
         introspect(&pool, conn.engine, database).await
     }
 
@@ -141,14 +144,17 @@ impl Manager {
     pub async fn query_run(
         &self,
         connection_id: &str,
-        _database: Option<&str>,
+        database: Option<&str>,
         sql: &str,
         _params: Option<Vec<Value>>,
         page_size: usize,
         page: usize,
     ) -> DbResult<QueryResult> {
         let conn = self.store.get(connection_id)?;
-        let pool = self.pools.get_or_init(&self.store, connection_id).await?;
+        let pool = self
+            .pools
+            .get_or_init_for(&self.store, connection_id, database)
+            .await?;
         let ps = if page_size == 0 { 100 } else { page_size.min(10_000) };
         crate::query::run(&pool, conn.engine, sql, ps, page, &self.queries).await
     }
@@ -188,7 +194,10 @@ impl Manager {
         values: HashMap<String, Value>,
     ) -> DbResult<Row> {
         let conn = self.store.get(connection_id)?;
-        let pool = self.pools.get_or_init(&self.store, connection_id).await?;
+        let pool = self
+            .pools
+            .get_or_init_for(&self.store, connection_id, database)
+            .await?;
         row_ops::insert(&pool, conn.engine, database, schema, table, values).await
     }
 
@@ -202,7 +211,10 @@ impl Manager {
         values: HashMap<String, Value>,
     ) -> DbResult<Row> {
         let conn = self.store.get(connection_id)?;
-        let pool = self.pools.get_or_init(&self.store, connection_id).await?;
+        let pool = self
+            .pools
+            .get_or_init_for(&self.store, connection_id, database)
+            .await?;
         row_ops::update(&pool, conn.engine, database, schema, table, pk, values).await
     }
 
@@ -215,7 +227,10 @@ impl Manager {
         pk: HashMap<String, Value>,
     ) -> DbResult<u64> {
         let conn = self.store.get(connection_id)?;
-        let pool = self.pools.get_or_init(&self.store, connection_id).await?;
+        let pool = self
+            .pools
+            .get_or_init_for(&self.store, connection_id, database)
+            .await?;
         row_ops::delete(&pool, conn.engine, database, schema, table, pk).await
     }
 
@@ -228,7 +243,10 @@ impl Manager {
         pk: HashMap<String, Value>,
     ) -> DbResult<Row> {
         let conn = self.store.get(connection_id)?;
-        let pool = self.pools.get_or_init(&self.store, connection_id).await?;
+        let pool = self
+            .pools
+            .get_or_init_for(&self.store, connection_id, database)
+            .await?;
         row_ops::duplicate(&pool, conn.engine, database, schema, table, pk).await
     }
 

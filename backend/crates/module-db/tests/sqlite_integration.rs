@@ -183,6 +183,51 @@ async fn row_insert_refuses_pkless_table() {
 }
 
 #[tokio::test]
+async fn sqlite_query_run_ignores_database_override() {
+    // The /db UI sometimes passes a `database` (the dropdown selection) even
+    // for SQLite connections, where it's meaningless. The backend must treat
+    // it as a no-op: same pool, same data — never an attempt to open a
+    // different file or fail validation.
+    let (mgr, dir) = fresh_manager();
+    let db_path = dir.path().join("override.db");
+    let c = mgr
+        .connections_add(sqlite_input(&db_path, "override"))
+        .unwrap();
+
+    mgr.query_run(
+        &c.id,
+        None,
+        "CREATE TABLE t (n INTEGER)",
+        None,
+        10,
+        0,
+    )
+    .await
+    .unwrap();
+    mgr.query_run(&c.id, None, "INSERT INTO t VALUES (1)", None, 10, 0)
+        .await
+        .unwrap();
+
+    // Both None and Some("bogus") must hit the same SQLite file.
+    let none_res = mgr
+        .query_run(&c.id, None, "SELECT COUNT(*) FROM t", None, 10, 0)
+        .await
+        .unwrap();
+    let override_res = mgr
+        .query_run(&c.id, Some("bogus"), "SELECT COUNT(*) FROM t", None, 10, 0)
+        .await
+        .unwrap();
+    assert_eq!(none_res.rows.len(), 1);
+    assert_eq!(override_res.rows.len(), 1);
+    assert_eq!(none_res.rows, override_res.rows);
+
+    // schema_tree with an override on SQLite still works and returns the
+    // single `main` schema.
+    let tree = mgr.schema_tree(&c.id, Some("ignored")).await.unwrap();
+    assert!(tree.schemas.iter().any(|s| s.name == "main"));
+}
+
+#[tokio::test]
 async fn test_input_works_for_sqlite_file() {
     let (mgr, dir) = fresh_manager();
     let db_path = dir.path().join("test5.db");

@@ -9,11 +9,11 @@ use sqlx::Row as _;
 use tokio::io::AsyncWriteExt;
 
 use crate::error::{DbError, DbResult};
-use crate::pool::{build_pool_for_input, PoolCache};
-use crate::query::{decode_row, QueryRegistry, RunningQuery};
+use crate::pool::{build_pool_for_input, DbPool, PoolCache};
+use crate::query::{QueryRegistry, RunningQuery};
 use crate::row as row_ops;
 use crate::schema::introspect;
-use crate::storage::{ConnectionsStore};
+use crate::storage::ConnectionsStore;
 use crate::types::{
     Connection, ConnectionInput, Engine, QueryResult, Row, SchemaTree, TestResult,
 };
@@ -67,7 +67,7 @@ impl Manager {
         let conn = self.store.get(id)?;
         let pool = self.pools.get_or_init(&self.store, &conn.id).await?;
         let start = Instant::now();
-        let version = probe_server_version(&pool, conn.engine).await;
+        let version = probe_server_version(&pool).await;
         Ok(TestResult {
             ok: true,
             latency_ms: start.elapsed().as_millis() as u64,
@@ -77,11 +77,11 @@ impl Manager {
     }
 
     pub async fn connections_test_input(&self, input: ConnectionInput) -> DbResult<TestResult> {
-        let engine = input.engine;
+        let _engine = input.engine;
         let start = Instant::now();
         match build_pool_for_input(&input).await {
             Ok(pool) => {
-                let version = probe_server_version(&pool, engine).await;
+                let version = probe_server_version(&pool).await;
                 pool.close().await;
                 Ok(TestResult {
                     ok: true,
@@ -104,20 +104,20 @@ impl Manager {
     pub async fn databases_list(&self, connection_id: &str) -> DbResult<Vec<String>> {
         let conn = self.store.get(connection_id)?;
         let pool = self.pools.get_or_init(&self.store, connection_id).await?;
-        let names = match conn.engine {
-            Engine::Sqlite => vec![conn.database.clone()],
-            Engine::Postgres => {
+        let names = match &pool {
+            DbPool::Sqlite(_) => vec![conn.database.clone()],
+            DbPool::Postgres(p) => {
                 let rows = sqlx::query(
                     "SELECT datname FROM pg_database WHERE datistemplate = false ORDER BY datname",
                 )
-                .fetch_all(&pool)
+                .fetch_all(p)
                 .await?;
                 rows.iter()
                     .map(|r| r.try_get::<String, _>(0).unwrap_or_default())
                     .collect()
             }
-            Engine::Mysql => {
-                let rows = sqlx::query("SHOW DATABASES").fetch_all(&pool).await?;
+            DbPool::Mysql(p) => {
+                let rows = sqlx::query("SHOW DATABASES").fetch_all(p).await?;
                 rows.iter()
                     .map(|r| r.try_get::<String, _>(0).unwrap_or_default())
                     .collect()
@@ -156,7 +156,8 @@ impl Manager {
             .get_or_init_for(&self.store, connection_id, database)
             .await?;
         let ps = if page_size == 0 { 100 } else { page_size.min(10_000) };
-        crate::query::run(&pool, conn.engine, sql, ps, page, &self.queries).await
+        let _ = conn;
+        crate::query::run(&pool, sql, ps, page, &self.queries).await
     }
 
     /// Best-effort query cancel. Returns Ok(true) if a cancel was attempted,
@@ -198,7 +199,8 @@ impl Manager {
             .pools
             .get_or_init_for(&self.store, connection_id, database)
             .await?;
-        row_ops::insert(&pool, conn.engine, database, schema, table, values).await
+        let _ = conn;
+        row_ops::insert(&pool, database, schema, table, values).await
     }
 
     pub async fn row_update(
@@ -215,7 +217,8 @@ impl Manager {
             .pools
             .get_or_init_for(&self.store, connection_id, database)
             .await?;
-        row_ops::update(&pool, conn.engine, database, schema, table, pk, values).await
+        let _ = conn;
+        row_ops::update(&pool, database, schema, table, pk, values).await
     }
 
     pub async fn row_delete(
@@ -231,7 +234,8 @@ impl Manager {
             .pools
             .get_or_init_for(&self.store, connection_id, database)
             .await?;
-        row_ops::delete(&pool, conn.engine, database, schema, table, pk).await
+        let _ = conn;
+        row_ops::delete(&pool, database, schema, table, pk).await
     }
 
     pub async fn row_duplicate(
@@ -247,7 +251,8 @@ impl Manager {
             .pools
             .get_or_init_for(&self.store, connection_id, database)
             .await?;
-        row_ops::duplicate(&pool, conn.engine, database, schema, table, pk).await
+        let _ = conn;
+        row_ops::duplicate(&pool, database, schema, table, pk).await
     }
 
     // ---- Export ------------------------------------------------------------
@@ -334,17 +339,24 @@ impl ExportFormat {
     }
 }
 
-async fn probe_server_version(pool: &sqlx::AnyPool, engine: Engine) -> Option<String> {
-    let sql = match engine {
-        Engine::Sqlite => "SELECT sqlite_version()",
-        Engine::Postgres => "SELECT version()",
-        Engine::Mysql => "SELECT version()",
-    };
-    sqlx::query(sql)
-        .fetch_one(pool)
-        .await
-        .ok()
-        .and_then(|r| r.try_get::<String, _>(0).ok())
+async fn probe_server_version(pool: &DbPool) -> Option<String> {
+    match pool {
+        DbPool::Sqlite(p) => sqlx::query("SELECT sqlite_version()")
+            .fetch_one(p)
+            .await
+            .ok()
+            .and_then(|r| r.try_get::<String, _>(0).ok()),
+        DbPool::Postgres(p) => sqlx::query("SELECT version()")
+            .fetch_one(p)
+            .await
+            .ok()
+            .and_then(|r| r.try_get::<String, _>(0).ok()),
+        DbPool::Mysql(p) => sqlx::query("SELECT version()")
+            .fetch_one(p)
+            .await
+            .ok()
+            .and_then(|r| r.try_get::<String, _>(0).ok()),
+    }
 }
 
 fn csv_escape(s: &str) -> String {
@@ -367,8 +379,3 @@ fn value_to_csv(v: &Value) -> String {
     }
 }
 
-// Keep decode_row imported for clarity even if optimizers prune it.
-#[allow(dead_code)]
-fn _decode_row_used(row: &sqlx::any::AnyRow) -> Vec<Value> {
-    decode_row(row)
-}

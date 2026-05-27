@@ -37,6 +37,6 @@ toml_edit = { version = "0.22", features = ["serde"] }
 rusqlite = { version = "0.31", features = ["bundled"] }
 fs2 = "0.4"
 schemars = { version = "0.8", features = ["chrono"] }
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "sqlite", "postgres", "mysql", "any", "macros", "chrono", "uuid", "rust_decimal"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "sqlite", "postgres", "mysql", "macros", "chrono", "uuid", "rust_decimal", "json"] }
 keyring = "2"
 rust_decimal = { version = "1", features = ["serde"] }

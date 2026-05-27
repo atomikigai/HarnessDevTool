@@ -1,8 +1,9 @@
 //! Lazy per-(connection, database) pool cache.
 //!
-//! We use sqlx `Any` so a single code path can run against SQLite, Postgres,
-//! and MySQL. Drivers are installed once at process start via
-//! `install_default_drivers`.
+//! Each engine gets its own native sqlx pool (`SqlitePool`/`PgPool`/`MySqlPool`)
+//! wrapped in [`DbPool`]. This replaces the old `sqlx::AnyPool` which silently
+//! could not decode engine-specific types (uuid, jsonb, numeric, etc.) and
+//! exploded the moment a real postgres column appeared.
 //!
 //! The cache key is `(connection_id, Option<database>)` so the `/db` UI's
 //! database dropdown actually routes queries to the chosen database on the
@@ -12,20 +13,40 @@
 use std::sync::Arc;
 
 use dashmap::DashMap;
-use sqlx::any::AnyPoolOptions;
-use sqlx::AnyPool;
+use sqlx::mysql::MySqlPoolOptions;
+use sqlx::postgres::PgPoolOptions;
+use sqlx::sqlite::SqlitePoolOptions;
+use sqlx::{MySqlPool, PgPool, SqlitePool};
 use tokio::sync::Mutex;
 
 use crate::error::{DbError, DbResult};
 use crate::storage::{build_dsn, fetch_password, ConnectionsStore};
 use crate::types::{Connection, Engine};
 
-/// Make sure the sqlx Any driver registry contains all three engines. Safe to
-/// call repeatedly — sqlx only installs once.
-pub fn install_drivers() {
-    // sqlx 0.7: install_default_drivers requires the cargo features
-    // (sqlite/postgres/mysql) — they're all on in this crate.
-    sqlx::any::install_default_drivers();
+/// Per-engine pool enum. Dispatched on at query/schema/row sites.
+#[derive(Debug, Clone)]
+pub enum DbPool {
+    Sqlite(SqlitePool),
+    Postgres(PgPool),
+    Mysql(MySqlPool),
+}
+
+impl DbPool {
+    pub fn engine(&self) -> Engine {
+        match self {
+            DbPool::Sqlite(_) => Engine::Sqlite,
+            DbPool::Postgres(_) => Engine::Postgres,
+            DbPool::Mysql(_) => Engine::Mysql,
+        }
+    }
+
+    pub async fn close(&self) {
+        match self {
+            DbPool::Sqlite(p) => p.close().await,
+            DbPool::Postgres(p) => p.close().await,
+            DbPool::Mysql(p) => p.close().await,
+        }
+    }
 }
 
 /// Compound key: `(connection_id, database_override)`. `None` means "use the
@@ -34,26 +55,23 @@ type PoolKey = (String, Option<String>);
 
 #[derive(Debug, Default)]
 pub struct PoolCache {
-    inner: DashMap<PoolKey, AnyPool>,
+    inner: DashMap<PoolKey, DbPool>,
     // Serializes pool creation per key to avoid duplicate connect storms.
     locks: DashMap<PoolKey, Arc<Mutex<()>>>,
 }
 
 impl PoolCache {
     pub fn new() -> Self {
-        install_drivers();
         Self::default()
     }
 
     /// Get-or-create the pool bound to the connection's saved default
-    /// database. Convenience wrapper around `get_or_init_for(.., None)` for
-    /// callers that don't care about per-database routing (e.g. listing
-    /// databases on the server).
+    /// database.
     pub async fn get_or_init(
         &self,
         store: &ConnectionsStore,
         connection_id: &str,
-    ) -> DbResult<AnyPool> {
+    ) -> DbResult<DbPool> {
         self.get_or_init_for(store, connection_id, None).await
     }
 
@@ -65,9 +83,7 @@ impl PoolCache {
         store: &ConnectionsStore,
         connection_id: &str,
         database: Option<&str>,
-    ) -> DbResult<AnyPool> {
-        // For SQLite, collapse all (id, *) to (id, None) so we don't churn
-        // pools — the override is meaningless there.
+    ) -> DbResult<DbPool> {
         let conn = store.get(connection_id)?;
         let key_db = match conn.engine {
             Engine::Sqlite => None,
@@ -114,31 +130,69 @@ impl PoolCache {
     }
 }
 
-pub async fn build_pool(conn: &Connection, database_override: Option<&str>) -> DbResult<AnyPool> {
-    install_drivers();
+pub async fn build_pool(conn: &Connection, database_override: Option<&str>) -> DbResult<DbPool> {
     let password = if conn.password_ref.is_some() {
         fetch_password(&conn.id)?
     } else {
         None
     };
     let dsn = build_dsn(conn, password.as_deref(), database_override)?;
-    let pool = AnyPoolOptions::new()
-        .max_connections(8)
-        .connect(&dsn)
-        .await
-        .map_err(DbError::from)?;
-    Ok(pool)
+    match conn.engine {
+        Engine::Sqlite => {
+            let pool = SqlitePoolOptions::new()
+                .max_connections(8)
+                .connect(&dsn)
+                .await
+                .map_err(DbError::from)?;
+            Ok(DbPool::Sqlite(pool))
+        }
+        Engine::Postgres => {
+            let pool = PgPoolOptions::new()
+                .max_connections(8)
+                .connect(&dsn)
+                .await
+                .map_err(DbError::from)?;
+            Ok(DbPool::Postgres(pool))
+        }
+        Engine::Mysql => {
+            let pool = MySqlPoolOptions::new()
+                .max_connections(8)
+                .connect(&dsn)
+                .await
+                .map_err(DbError::from)?;
+            Ok(DbPool::Mysql(pool))
+        }
+    }
 }
 
 /// One-off pool for a `ConnectionInput` (test-without-saving).
-pub async fn build_pool_for_input(input: &crate::types::ConnectionInput) -> DbResult<AnyPool> {
-    install_drivers();
+pub async fn build_pool_for_input(input: &crate::types::ConnectionInput) -> DbResult<DbPool> {
     let conn = crate::storage::ephemeral_connection(input);
     let dsn = build_dsn(&conn, input.password.as_deref(), None)?;
-    let pool = AnyPoolOptions::new()
-        .max_connections(2)
-        .connect(&dsn)
-        .await
-        .map_err(DbError::from)?;
-    Ok(pool)
+    match conn.engine {
+        Engine::Sqlite => {
+            let pool = SqlitePoolOptions::new()
+                .max_connections(2)
+                .connect(&dsn)
+                .await
+                .map_err(DbError::from)?;
+            Ok(DbPool::Sqlite(pool))
+        }
+        Engine::Postgres => {
+            let pool = PgPoolOptions::new()
+                .max_connections(2)
+                .connect(&dsn)
+                .await
+                .map_err(DbError::from)?;
+            Ok(DbPool::Postgres(pool))
+        }
+        Engine::Mysql => {
+            let pool = MySqlPoolOptions::new()
+                .max_connections(2)
+                .connect(&dsn)
+                .await
+                .map_err(DbError::from)?;
+            Ok(DbPool::Mysql(pool))
+        }
+    }
 }

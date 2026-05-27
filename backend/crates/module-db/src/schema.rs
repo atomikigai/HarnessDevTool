@@ -3,31 +3,27 @@
 
 use std::collections::BTreeMap;
 
-use sqlx::{AnyPool, Row};
+use sqlx::Row;
 
 use crate::error::DbResult;
+use crate::pool::DbPool;
 use crate::types::{
     Column, Engine, ForeignKey, Index, SchemaTree, SchemaTreeSchema, Table, TableKind,
 };
 
 pub async fn introspect(
-    pool: &AnyPool,
-    engine: Engine,
+    pool: &DbPool,
+    _engine: Engine,
     database: Option<&str>,
 ) -> DbResult<SchemaTree> {
-    // The pool is already bound to the requested database (PoolCache routes
-    // per (connection, database)), so engine-specific tree functions only
-    // need the override as a defensive belt — Postgres ignores it entirely
-    // (information_schema is per-database), MySQL keeps it as a filter for
-    // information_schema.tables.
-    match engine {
-        Engine::Sqlite => sqlite_tree(pool).await,
-        Engine::Postgres => postgres_tree(pool).await,
-        Engine::Mysql => mysql_tree(pool, database).await,
+    match pool {
+        DbPool::Sqlite(p) => sqlite_tree(p).await,
+        DbPool::Postgres(p) => postgres_tree(p).await,
+        DbPool::Mysql(p) => mysql_tree(p, database).await,
     }
 }
 
-async fn sqlite_tree(pool: &AnyPool) -> DbResult<SchemaTree> {
+async fn sqlite_tree(pool: &sqlx::SqlitePool) -> DbResult<SchemaTree> {
     let tables = sqlx::query(
         "SELECT name, type FROM sqlite_master WHERE type IN ('table','view') AND name NOT LIKE 'sqlite_%' ORDER BY name",
     )
@@ -136,8 +132,7 @@ async fn sqlite_tree(pool: &AnyPool) -> DbResult<SchemaTree> {
     })
 }
 
-async fn postgres_tree(pool: &AnyPool) -> DbResult<SchemaTree> {
-    // Tables grouped by schema (excluding pg internals).
+async fn postgres_tree(pool: &sqlx::PgPool) -> DbResult<SchemaTree> {
     let rows = sqlx::query(
         "SELECT table_schema, table_name, table_type
          FROM information_schema.tables
@@ -226,10 +221,10 @@ async fn postgres_tree(pool: &AnyPool) -> DbResult<SchemaTree> {
     Ok(SchemaTree { schemas })
 }
 
-async fn mysql_tree(pool: &AnyPool, database: Option<&str>) -> DbResult<SchemaTree> {
+async fn mysql_tree(pool: &sqlx::MySqlPool, database: Option<&str>) -> DbResult<SchemaTree> {
     let db = match database {
-        Some(d) => d.to_string(),
-        None => {
+        Some(d) if !d.is_empty() => d.to_string(),
+        _ => {
             let r = sqlx::query("SELECT DATABASE()").fetch_one(pool).await?;
             r.try_get::<String, _>(0).unwrap_or_default()
         }
@@ -288,9 +283,6 @@ async fn mysql_tree(pool: &AnyPool, database: Option<&str>) -> DbResult<SchemaTr
         });
     }
     Ok(SchemaTree {
-        schemas: vec![SchemaTreeSchema {
-            name: db,
-            tables,
-        }],
+        schemas: vec![SchemaTreeSchema { name: db, tables }],
     })
 }

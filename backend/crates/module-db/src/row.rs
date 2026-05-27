@@ -4,13 +4,13 @@
 
 use std::collections::HashMap;
 
-use sqlx::{AnyPool, Executor, Row as _};
+use sqlx::{Column as _, Row as _};
 
 use crate::error::{DbError, DbResult};
-use crate::query::decode_row;
+use crate::pool::DbPool;
 use crate::schema::introspect;
 use crate::types::{Engine, Row};
-use crate::value::Value;
+use crate::value::{decode_mysql_row, decode_postgres_row, decode_sqlite_row, Value};
 
 /// Build a fully-qualified table identifier with engine-specific quoting.
 fn qualify(engine: Engine, schema: Option<&str>, table: &str) -> String {
@@ -35,15 +35,13 @@ fn placeholder(engine: Engine, n: usize) -> String {
     }
 }
 
-/// Find primary-key column names by introspecting the relevant table.
 async fn primary_key_cols(
-    pool: &AnyPool,
-    engine: Engine,
+    pool: &DbPool,
     database: Option<&str>,
     schema: Option<&str>,
     table: &str,
 ) -> DbResult<Vec<String>> {
-    let tree = introspect(pool, engine, database).await?;
+    let tree = introspect(pool, pool.engine(), database).await?;
     for s in &tree.schemas {
         if let Some(sname) = schema {
             if s.name != sname {
@@ -68,37 +66,63 @@ async fn primary_key_cols(
     Err(DbError::NotFound(format!("table {table}")))
 }
 
-/// Bind a `Value` onto a sqlx query. Anything we can't natively bind goes
-/// through its string representation — a documented simplification.
-fn bind_value<'q>(
-    q: sqlx::query::Query<'q, sqlx::Any, sqlx::any::AnyArguments<'q>>,
-    v: &Value,
-) -> sqlx::query::Query<'q, sqlx::Any, sqlx::any::AnyArguments<'q>> {
-    use crate::value::TaggedValue;
-    match v {
-        Value::Null => q.bind(Option::<String>::None),
-        Value::Bool(b) => q.bind(*b),
-        Value::Int(i) => q.bind(*i),
-        Value::Float(f) => q.bind(*f),
-        Value::Text(s) => q.bind(s.clone()),
-        Value::Tagged(t) => match t {
-            TaggedValue::Decimal(s) | TaggedValue::Date(s) | TaggedValue::Time(s)
-            | TaggedValue::DateTime(s) => q.bind(s.clone()),
-            TaggedValue::Bytes(b64) => {
-                use base64::Engine as _;
-                let bytes = base64::engine::general_purpose::STANDARD
-                    .decode(b64)
-                    .unwrap_or_default();
-                q.bind(bytes)
-            }
-            TaggedValue::Json(j) => q.bind(j.to_string()),
-        },
-    }
+// ---- Per-engine bind helpers ----------------------------------------------
+//
+// sqlx's `query::Query<DB, ...>` differs per DB so we can't share a generic
+// `bind_value`. Each engine gets its own.
+
+macro_rules! bind_impl {
+    ($q:ident, $v:expr) => {{
+        use crate::value::TaggedValue;
+        match $v {
+            Value::Null => $q.bind(Option::<String>::None),
+            Value::Bool(b) => $q.bind(*b),
+            Value::Int(i) => $q.bind(*i),
+            Value::Float(f) => $q.bind(*f),
+            Value::Text(s) => $q.bind(s.clone()),
+            Value::Tagged(t) => match t {
+                TaggedValue::Decimal(s)
+                | TaggedValue::Date(s)
+                | TaggedValue::Time(s)
+                | TaggedValue::DateTime(s) => $q.bind(s.clone()),
+                TaggedValue::Bytes(b64) => {
+                    use base64::Engine as _;
+                    let bytes = base64::engine::general_purpose::STANDARD
+                        .decode(b64)
+                        .unwrap_or_default();
+                    $q.bind(bytes)
+                }
+                TaggedValue::Json(j) => $q.bind(j.to_string()),
+            },
+        }
+    }};
 }
 
+fn bind_sqlite<'q>(
+    q: sqlx::query::Query<'q, sqlx::Sqlite, sqlx::sqlite::SqliteArguments<'q>>,
+    v: &Value,
+) -> sqlx::query::Query<'q, sqlx::Sqlite, sqlx::sqlite::SqliteArguments<'q>> {
+    bind_impl!(q, v)
+}
+
+fn bind_pg<'q>(
+    q: sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments>,
+    v: &Value,
+) -> sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments> {
+    bind_impl!(q, v)
+}
+
+fn bind_mysql<'q>(
+    q: sqlx::query::Query<'q, sqlx::MySql, sqlx::mysql::MySqlArguments>,
+    v: &Value,
+) -> sqlx::query::Query<'q, sqlx::MySql, sqlx::mysql::MySqlArguments> {
+    bind_impl!(q, v)
+}
+
+// ---- Insert ----------------------------------------------------------------
+
 pub async fn insert(
-    pool: &AnyPool,
-    engine: Engine,
+    pool: &DbPool,
     database: Option<&str>,
     schema: Option<&str>,
     table: &str,
@@ -107,7 +131,8 @@ pub async fn insert(
     if values.is_empty() {
         return Err(DbError::Validation("values is empty".into()));
     }
-    let pks = primary_key_cols(pool, engine, database, schema, table).await?;
+    let engine = pool.engine();
+    let pks = primary_key_cols(pool, database, schema, table).await?;
     let qident = quote_ident(engine);
     let cols: Vec<String> = values.keys().cloned().collect();
     let col_list = cols
@@ -121,55 +146,67 @@ pub async fn insert(
         .join(", ");
     let qtable = qualify(engine, schema, table);
 
-    // Postgres supports RETURNING; SQLite 3.35+ does as well; MySQL doesn't.
-    let supports_returning =
-        matches!(engine, Engine::Postgres | Engine::Sqlite);
+    let supports_returning = matches!(engine, Engine::Postgres | Engine::Sqlite);
     let sql = if supports_returning {
         format!("INSERT INTO {qtable} ({col_list}) VALUES ({placeholders}) RETURNING *")
     } else {
         format!("INSERT INTO {qtable} ({col_list}) VALUES ({placeholders})")
     };
 
-    let mut q = sqlx::query(&sql);
-    for c in &cols {
-        q = bind_value(q, values.get(c).unwrap_or(&Value::Null));
-    }
-
-    if supports_returning {
-        let row = pool.fetch_one(q).await?;
-        return Ok(decode_named(&row));
-    }
-    // MySQL: execute then fetch by LAST_INSERT_ID() — only works for single
-    // auto-increment PK. For composite PKs we fall back to re-querying by
-    // the values we just inserted that match the PK column.
-    let res = pool.execute(q).await?;
-    let last_id = res.last_insert_id();
-    if pks.len() == 1 && last_id.is_some() {
-        if let Some(id) = last_id {
-            let pk = &pks[0];
-            let sel = format!(
-                "SELECT * FROM {qtable} WHERE {qident}{pk}{qident} = ? LIMIT 1"
-            );
-            let row = pool
-                .fetch_one(sqlx::query(&sel).bind(id))
-                .await?;
-            return Ok(decode_named(&row));
+    match pool {
+        DbPool::Sqlite(p) => {
+            let mut q = sqlx::query(&sql);
+            for c in &cols {
+                q = bind_sqlite(q, values.get(c).unwrap_or(&Value::Null));
+            }
+            let row = q.fetch_one(p).await?;
+            let cells = named_map_sqlite(&row);
+            Ok(Row { cells })
+        }
+        DbPool::Postgres(p) => {
+            let mut q = sqlx::query(&sql);
+            for c in &cols {
+                q = bind_pg(q, values.get(c).unwrap_or(&Value::Null));
+            }
+            let row = q.fetch_one(p).await?;
+            let cells = named_map_pg(&row);
+            Ok(Row { cells })
+        }
+        DbPool::Mysql(p) => {
+            let mut q = sqlx::query(&sql);
+            for c in &cols {
+                q = bind_mysql(q, values.get(c).unwrap_or(&Value::Null));
+            }
+            let res = q.execute(p).await?;
+            let last_id = res.last_insert_id();
+            // MySQL: re-select by LAST_INSERT_ID() for single auto-PK, else by provided PKs.
+            if pks.len() == 1 && last_id != 0 {
+                let pk = &pks[0];
+                let sel = format!(
+                    "SELECT * FROM {qtable} WHERE {qident}{pk}{qident} = ? LIMIT 1"
+                );
+                let row = sqlx::query(&sel).bind(last_id).fetch_one(p).await?;
+                let cells = named_map_mysql(&row);
+                return Ok(Row { cells });
+            }
+            let where_clause = where_for_pks(engine, &pks, &values)?;
+            let sel = format!("SELECT * FROM {qtable} WHERE {} LIMIT 1", where_clause.0);
+            let mut sq = sqlx::query(&sel);
+            for v in &where_clause.1 {
+                sq = bind_mysql(sq, v);
+            }
+            let row = sq.fetch_one(p).await?;
+            Ok(Row {
+                cells: named_map_mysql(&row),
+            })
         }
     }
-    // Best-effort: re-select using provided PK values if all PKs were given.
-    let where_clause = where_for_pks(engine, &pks, &values)?;
-    let sel = format!("SELECT * FROM {qtable} WHERE {} LIMIT 1", where_clause.0);
-    let mut sq = sqlx::query(&sel);
-    for v in &where_clause.1 {
-        sq = bind_value(sq, v);
-    }
-    let row = pool.fetch_one(sq).await?;
-    Ok(decode_named(&row))
 }
 
+// ---- Update ----------------------------------------------------------------
+
 pub async fn update(
-    pool: &AnyPool,
-    engine: Engine,
+    pool: &DbPool,
     _database: Option<&str>,
     schema: Option<&str>,
     table: &str,
@@ -182,6 +219,7 @@ pub async fn update(
     if values.is_empty() {
         return Err(DbError::Validation("values is empty".into()));
     }
+    let engine = pool.engine();
     let qident = quote_ident(engine);
     let qtable = qualify(engine, schema, table);
     let mut counter = 1usize;
@@ -214,39 +252,67 @@ pub async fn update(
         sql_core.clone()
     };
 
-    let mut q = sqlx::query(&sql);
-    for k in values.keys() {
-        q = bind_value(q, values.get(k).unwrap());
+    match pool {
+        DbPool::Sqlite(p) => {
+            let mut q = sqlx::query(&sql);
+            for k in values.keys() {
+                q = bind_sqlite(q, values.get(k).unwrap());
+            }
+            for k in pk.keys() {
+                q = bind_sqlite(q, pk.get(k).unwrap());
+            }
+            let row = q.fetch_one(p).await?;
+            Ok(Row {
+                cells: named_map_sqlite(&row),
+            })
+        }
+        DbPool::Postgres(p) => {
+            let mut q = sqlx::query(&sql);
+            for k in values.keys() {
+                q = bind_pg(q, values.get(k).unwrap());
+            }
+            for k in pk.keys() {
+                q = bind_pg(q, pk.get(k).unwrap());
+            }
+            let row = q.fetch_one(p).await?;
+            Ok(Row {
+                cells: named_map_pg(&row),
+            })
+        }
+        DbPool::Mysql(p) => {
+            let mut q = sqlx::query(&sql);
+            for k in values.keys() {
+                q = bind_mysql(q, values.get(k).unwrap());
+            }
+            for k in pk.keys() {
+                q = bind_mysql(q, pk.get(k).unwrap());
+            }
+            let _ = q.execute(p).await?;
+            // Re-select by PK.
+            let sel_where: Vec<String> = pk
+                .keys()
+                .map(|k| format!("{qident}{k}{qident} = ?"))
+                .collect();
+            let sel = format!(
+                "SELECT * FROM {qtable} WHERE {} LIMIT 1",
+                sel_where.join(" AND ")
+            );
+            let mut sq = sqlx::query(&sel);
+            for k in pk.keys() {
+                sq = bind_mysql(sq, pk.get(k).unwrap());
+            }
+            let row = sq.fetch_one(p).await?;
+            Ok(Row {
+                cells: named_map_mysql(&row),
+            })
+        }
     }
-    for k in pk.keys() {
-        q = bind_value(q, pk.get(k).unwrap());
-    }
-
-    if supports_returning {
-        let row = pool.fetch_one(q).await?;
-        return Ok(decode_named(&row));
-    }
-    let _ = pool.execute(q).await?;
-    // MySQL: re-select by PK.
-    let sel_where: Vec<String> = pk
-        .keys()
-        .map(|k| format!("{qident}{k}{qident} = ?"))
-        .collect();
-    let sel = format!(
-        "SELECT * FROM {qtable} WHERE {} LIMIT 1",
-        sel_where.join(" AND ")
-    );
-    let mut sq = sqlx::query(&sel);
-    for k in pk.keys() {
-        sq = bind_value(sq, pk.get(k).unwrap());
-    }
-    let row = pool.fetch_one(sq).await?;
-    Ok(decode_named(&row))
 }
 
+// ---- Delete ----------------------------------------------------------------
+
 pub async fn delete(
-    pool: &AnyPool,
-    engine: Engine,
+    pool: &DbPool,
     _database: Option<&str>,
     schema: Option<&str>,
     table: &str,
@@ -255,6 +321,7 @@ pub async fn delete(
     if pk.is_empty() {
         return Err(DbError::Validation("pk is empty".into()));
     }
+    let engine = pool.engine();
     let qident = quote_ident(engine);
     let qtable = qualify(engine, schema, table);
     let mut counter = 1usize;
@@ -267,23 +334,45 @@ pub async fn delete(
         })
         .collect();
     let sql = format!("DELETE FROM {qtable} WHERE {}", where_parts.join(" AND "));
-    let mut q = sqlx::query(&sql);
-    for k in pk.keys() {
-        q = bind_value(q, pk.get(k).unwrap());
+    match pool {
+        DbPool::Sqlite(p) => {
+            let mut q = sqlx::query(&sql);
+            for k in pk.keys() {
+                q = bind_sqlite(q, pk.get(k).unwrap());
+            }
+            let res = q.execute(p).await?;
+            Ok(res.rows_affected())
+        }
+        DbPool::Postgres(p) => {
+            let mut q = sqlx::query(&sql);
+            for k in pk.keys() {
+                q = bind_pg(q, pk.get(k).unwrap());
+            }
+            let res = q.execute(p).await?;
+            Ok(res.rows_affected())
+        }
+        DbPool::Mysql(p) => {
+            let mut q = sqlx::query(&sql);
+            for k in pk.keys() {
+                q = bind_mysql(q, pk.get(k).unwrap());
+            }
+            let res = q.execute(p).await?;
+            Ok(res.rows_affected())
+        }
     }
-    let res = pool.execute(q).await?;
-    Ok(res.rows_affected())
 }
 
+// ---- Duplicate -------------------------------------------------------------
+
 pub async fn duplicate(
-    pool: &AnyPool,
-    engine: Engine,
+    pool: &DbPool,
     database: Option<&str>,
     schema: Option<&str>,
     table: &str,
     pk: HashMap<String, Value>,
 ) -> DbResult<Row> {
-    let pks = primary_key_cols(pool, engine, database, schema, table).await?;
+    let engine = pool.engine();
+    let pks = primary_key_cols(pool, database, schema, table).await?;
     let qident = quote_ident(engine);
     let qtable = qualify(engine, schema, table);
     let mut counter = 1usize;
@@ -299,19 +388,37 @@ pub async fn duplicate(
         "SELECT * FROM {qtable} WHERE {} LIMIT 1",
         where_parts.join(" AND ")
     );
-    let mut sq = sqlx::query(&sel);
-    for k in pk.keys() {
-        sq = bind_value(sq, pk.get(k).unwrap());
-    }
-    let row = pool.fetch_one(sq).await?;
-    let mut cells = decode_named_map(&row);
-    // Strip PK cols so auto-generated PKs can be re-assigned. If a PK column
-    // is not auto-increment this insert will fail with a constraint error —
-    // surfaced to the caller verbatim.
+    let mut cells = match pool {
+        DbPool::Sqlite(p) => {
+            let mut sq = sqlx::query(&sel);
+            for k in pk.keys() {
+                sq = bind_sqlite(sq, pk.get(k).unwrap());
+            }
+            let row = sq.fetch_one(p).await?;
+            named_map_sqlite(&row)
+        }
+        DbPool::Postgres(p) => {
+            let mut sq = sqlx::query(&sel);
+            for k in pk.keys() {
+                sq = bind_pg(sq, pk.get(k).unwrap());
+            }
+            let row = sq.fetch_one(p).await?;
+            named_map_pg(&row)
+        }
+        DbPool::Mysql(p) => {
+            let mut sq = sqlx::query(&sel);
+            for k in pk.keys() {
+                sq = bind_mysql(sq, pk.get(k).unwrap());
+            }
+            let row = sq.fetch_one(p).await?;
+            named_map_mysql(&row)
+        }
+    };
+    // Strip PK cols so auto-generated PKs can be re-assigned.
     for p in &pks {
         cells.remove(p);
     }
-    insert(pool, engine, database, schema, table, cells).await
+    insert(pool, database, schema, table, cells).await
 }
 
 fn where_for_pks(
@@ -332,16 +439,29 @@ fn where_for_pks(
     Ok((parts.join(" AND "), binds))
 }
 
-fn decode_named(row: &sqlx::any::AnyRow) -> Row {
-    Row {
-        cells: decode_named_map(row),
+fn named_map_sqlite(row: &sqlx::sqlite::SqliteRow) -> HashMap<String, Value> {
+    let cols = row.columns();
+    let decoded = decode_sqlite_row(row);
+    let mut out = HashMap::with_capacity(cols.len());
+    for (i, c) in cols.iter().enumerate() {
+        out.insert(c.name().to_string(), decoded[i].clone());
     }
+    out
 }
 
-fn decode_named_map(row: &sqlx::any::AnyRow) -> HashMap<String, Value> {
-    use sqlx::Column as _;
+fn named_map_pg(row: &sqlx::postgres::PgRow) -> HashMap<String, Value> {
     let cols = row.columns();
-    let decoded = decode_row(row);
+    let decoded = decode_postgres_row(row);
+    let mut out = HashMap::with_capacity(cols.len());
+    for (i, c) in cols.iter().enumerate() {
+        out.insert(c.name().to_string(), decoded[i].clone());
+    }
+    out
+}
+
+fn named_map_mysql(row: &sqlx::mysql::MySqlRow) -> HashMap<String, Value> {
+    let cols = row.columns();
+    let decoded = decode_mysql_row(row);
     let mut out = HashMap::with_capacity(cols.len());
     for (i, c) in cols.iter().enumerate() {
         out.insert(c.name().to_string(), decoded[i].clone());

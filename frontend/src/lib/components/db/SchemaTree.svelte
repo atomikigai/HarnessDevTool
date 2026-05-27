@@ -19,12 +19,29 @@
 
   let expanded = $state<Record<string, boolean>>({});
   let filter = $state('');
+  let lastSchemaKey = $state<string>('');
 
   $effect(() => {
-    // Auto-expand the first schema when the tree loads.
-    if (tree && tree.schemas.length > 0 && Object.keys(expanded).length === 0) {
-      expanded = { [tree.schemas[0].name]: true };
+    if (!tree) return;
+    // Re-sync expansion state when the tree's schema set changes
+    // (e.g., after switching database). Auto-expand all when there
+    // are few schemas — typical case for sqlite/mysql (1) and most
+    // postgres setups (public + a handful). Above 8, only expand the
+    // first to avoid an avalanche.
+    const key = tree.schemas.map((s) => s.name).join('|');
+    if (key === lastSchemaKey) return;
+    lastSchemaKey = key;
+    const next: Record<string, boolean> = {};
+    if (tree.schemas.length === 0) {
+      expanded = next;
+      return;
     }
+    if (tree.schemas.length <= 8) {
+      for (const s of tree.schemas) next[s.name] = true;
+    } else {
+      next[tree.schemas[0].name] = true;
+    }
+    expanded = next;
   });
 
   function toggle(name: string) {
@@ -67,7 +84,8 @@
       <p class="px-4 py-3 text-xs" style="color: var(--fg-muted);">No schemas found.</p>
     {:else}
       {#each tree.schemas as schema (schema.name)}
-        {@const open = expanded[schema.name]}
+        {@const matches = visibleTables(schema.tables)}
+        {@const open = expanded[schema.name] || (filter.trim() !== '' && matches.length > 0)}
         <button
           type="button"
           class="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[13px]"
@@ -92,9 +110,14 @@
               class="px-4 pt-2 pb-1 text-[9px] font-bold uppercase tracking-wider"
               style="color: var(--fg-label);"
             >
-              Tables · {visibleTables(schema.tables).length}
+              Tables · {matches.length}
             </div>
-            {#each visibleTables(schema.tables) as t (t.name)}
+            {#if matches.length === 0}
+              <p class="px-4 py-1 text-[11px]" style="color: var(--fg-muted);">
+                {filter.trim() ? 'No tables match the filter.' : 'No tables in this schema.'}
+              </p>
+            {/if}
+            {#each matches as t (t.name)}
               {@const active =
                 activeTable && activeTable.schema === schema.name && activeTable.name === t.name}
               <button

@@ -21,6 +21,7 @@ chrono = { workspace = true }
 uuid = { workspace = true }
 toml_edit.workspace = true
 rusqlite.workspace = true
+dirs = { workspace = true }
 fs2.workspace = true
 schemars.workspace = true
 ts-rs = { workspace = true, optional = true }

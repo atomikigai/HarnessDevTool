@@ -135,7 +135,7 @@ impl Manager {
     ) -> Result<Arc<AgentSession>, SessionError> {
         let id = uuid::Uuid::new_v4().to_string();
         let dir = self.sessions_root.join(&id);
-        let extra_args = build_extra_args(kind, &opts);
+        let extra_args = build_extra_args(kind, &opts, &id);
         let session = AgentSession::spawn_with_id(
             id.clone(),
             kind,
@@ -190,12 +190,18 @@ pub struct SpawnOpts {
 
 /// Translate `SpawnOpts` into the CLI flags appended to the agent invocation.
 ///
-/// - `Claude`: `--mcp-config <path> --strict-mcp-config` (validated by spike Q7).
-/// - `Codex`:  no equivalent flag exists in this version; skipped. The MCP
-///   config path is recorded but not injected. Codex MCP wiring is deferred to
-///   a later phase (likely via `$CODEX_HOME/config.toml` or `-c` overrides).
-fn build_extra_args(kind: AgentKind, opts: &SpawnOpts) -> Vec<String> {
+/// - `Claude`: pins `--session-id <id>` so the harness UUID matches the on-disk
+///   transcript filename (`~/.claude/projects/{cwd-slug}/{id}.jsonl`); the
+///   budget reporter relies on this mapping. Also adds
+///   `--mcp-config <path> --strict-mcp-config` when MCP injection is on.
+/// - `Codex`: no equivalent flags exist in this version; skipped. Codex
+///   integration is deferred (likely via `$CODEX_HOME/config.toml` or `-c`).
+fn build_extra_args(kind: AgentKind, opts: &SpawnOpts, session_id: &str) -> Vec<String> {
     let mut out = Vec::new();
+    if matches!(kind, AgentKind::Claude) {
+        out.push("--session-id".to_string());
+        out.push(session_id.to_string());
+    }
     if let Some(path) = opts.mcp_config_path.as_ref() {
         match kind {
             AgentKind::Claude => {

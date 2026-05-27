@@ -3,6 +3,7 @@
 //! See `docs/01-foundations/lessons-learned.md` §D1-D6 for the task design contract.
 
 pub mod agents;
+pub mod budget;
 pub mod events;
 pub mod pause;
 pub mod roles;
@@ -12,6 +13,10 @@ pub mod tasks;
 pub mod threads;
 
 pub use agents::{Agent, AgentDraft, AgentKind, AgentsRegistry};
+pub use budget::{
+    Budget, BudgetStore, ClaudeTranscriptReporter, CodexStubReporter, CostReporter, SessionCost,
+    Usage,
+};
 pub use events::Event;
 pub use pause::PauseFlag;
 pub use roles::{Role, RolesRegistry};

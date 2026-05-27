@@ -537,6 +537,7 @@ version = "0.0.1"
 dependencies = [
  "anyhow",
  "chrono",
+ "dirs",
  "fs2",
  "rusqlite",
  "schemars",

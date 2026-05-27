@@ -12,6 +12,7 @@
   import TaskDetail from '$lib/components/tasks/TaskDetail.svelte';
   import TaskCreateForm from '$lib/components/tasks/TaskCreateForm.svelte';
   import TaskGraph from '$lib/components/tasks/TaskGraph.svelte';
+  import BudgetMeter from '$lib/components/tasks/BudgetMeter.svelte';
   import { Button } from '$lib/components/ui/button';
   import { Input } from '$lib/components/ui/input';
   import {
@@ -162,6 +163,15 @@
       </a>
     </div>
   </header>
+
+  <!-- Budget strip — shows USD/wallclock burn for this thread. -->
+  <div
+    class="border-b px-4 py-2"
+    style="background: var(--surface-canvas); border-color: var(--border-subtle);"
+  >
+    <!-- TODO(F3): wire real budget from /api/threads/:id/budget -->
+    <BudgetMeter spent_usd={0} soft_cap={8} hard_cap={10} wall_s={0} wall_max_s={3600} />
+  </div>
 
   <!-- Body — two panes -->
   <div class="flex min-h-0 flex-1">

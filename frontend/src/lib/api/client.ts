@@ -138,8 +138,19 @@ export interface ListTasksFilters {
   assignee?: string;
 }
 
+export interface PauseAllState {
+  paused: boolean;
+}
+
 export const api = {
   health: (signal?: AbortSignal) => apiRequest<HealthResponse>('/health', { signal }),
+  pauseAll: {
+    get: (signal?: AbortSignal) => apiRequest<PauseAllState>('/pause-all', { signal }),
+    pause: (signal?: AbortSignal) =>
+      apiRequest<PauseAllState>('/pause-all', { method: 'POST', signal }),
+    resume: (signal?: AbortSignal) =>
+      apiRequest<PauseAllState>('/resume-all', { method: 'POST', signal })
+  },
   agents: {
     list: (signal?: AbortSignal) => apiRequest<Agent[]>('/agents', { signal }),
     create: (body: CreateAgentRequest, signal?: AbortSignal) =>

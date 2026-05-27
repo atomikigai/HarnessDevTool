@@ -9,13 +9,17 @@
   import { onMount, onDestroy } from 'svelte';
   import HarnessIcons from './HarnessIcons.svelte';
   import { health } from '$lib/stores/health.svelte';
+  import { pauseAll } from '$lib/stores/pause-all.svelte';
   import { theme } from '$lib/stores/theme.svelte';
+  import { Pause, Play } from '$lib/icons';
 
   const REFRESH_MS = 10_000;
   let timer: ReturnType<typeof setInterval> | null = null;
 
   onMount(() => {
     health.refresh();
+    // [F3-followup] keyboard shortcut Ctrl+Shift+. not wired in this slice.
+    pauseAll.refresh();
     timer = setInterval(() => health.refresh(), REFRESH_MS);
   });
 
@@ -82,6 +86,29 @@
 
   <!-- Theme toggle + connection pill -->
   <div class="flex items-center gap-2">
+    {#if pauseAll.supported}
+      <button
+        type="button"
+        onclick={() => pauseAll.toggle()}
+        disabled={pauseAll.loading}
+        class="relative flex h-7 w-7 items-center justify-center rounded-md transition-colors disabled:opacity-50"
+        style="color: {pauseAll.paused ? 'var(--dot-danger)' : 'var(--fg-muted)'};"
+        title={pauseAll.paused ? 'Paused — click to resume' : 'Pause all'}
+        aria-label={pauseAll.paused ? 'Resume all' : 'Pause all'}
+        aria-pressed={pauseAll.paused}
+      >
+        {#if pauseAll.paused}
+          <Play class="h-3.5 w-3.5" />
+          <span
+            class="absolute right-0.5 top-0.5 h-1.5 w-1.5 rounded-full"
+            style="background: var(--dot-danger); box-shadow: 0 0 0 2px var(--surface-titlebar);"
+            aria-hidden="true"
+          ></span>
+        {:else}
+          <Pause class="h-3.5 w-3.5" />
+        {/if}
+      </button>
+    {/if}
     <button
       type="button"
       onclick={() => theme.toggle()}

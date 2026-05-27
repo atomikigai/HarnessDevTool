@@ -5,8 +5,13 @@ use std::time::Instant;
 
 use anyhow::Result;
 use dashmap::DashMap;
-use harness_core::{AgentsRegistry, PauseFlag, RolesRegistry, Scheduler, Store, TaskStore};
+use harness_core::{
+    ActiveSession, ActiveSessionsSource, AgentsRegistry, BudgetStore, BudgetWarning,
+    BudgetWarningSink, BudgetWiring, ClaudeTranscriptReporter, CodexStubReporter, CostReporter,
+    PauseFlag, RolesRegistry, Scheduler, Store, TaskStore,
+};
 use harness_session::{AgentKind, Manager};
+use serde_json::json;
 use tokio::sync::broadcast;
 
 use crate::config::Config;
@@ -19,6 +24,7 @@ pub struct AppState {
     pub agents: Arc<AgentsRegistry>,
     pub roles: Arc<RolesRegistry>,
     pub pause: Arc<PauseFlag>,
+    pub budgets: Arc<BudgetStore>,
     #[allow(dead_code)]
     pub scheduler: Arc<Scheduler>,
     /// Detected absolute paths for agent CLIs. Missing entries mean the binary
@@ -48,18 +54,44 @@ impl AppState {
         let agents = Arc::new(AgentsRegistry::new(&cfg.home)?);
         let roles = Arc::new(RolesRegistry::load(&cfg.home)?);
         let pause = Arc::new(PauseFlag::load(&cfg.home)?);
+        let budgets = Arc::new(BudgetStore::load(&cfg.home)?);
+        let (tick_tx, _) = broadcast::channel(64);
+
+        // Per-agent-kind cost reporter wiring. Keyed by `AgentKind::as_str()`
+        // so `harness-core` stays free of a dependency on `harness-session`.
+        let mut reporters: HashMap<String, Arc<dyn CostReporter>> = HashMap::new();
+        reporters.insert(
+            AgentKind::Claude.as_str().to_string(),
+            Arc::new(ClaudeTranscriptReporter::new()),
+        );
+        reporters.insert(
+            AgentKind::Codex.as_str().to_string(),
+            Arc::new(CodexStubReporter),
+        );
+
+        let budget_wiring = BudgetWiring {
+            store: (*budgets).clone(),
+            reporters,
+            sessions: Arc::new(ManagerSessionsSource {
+                manager: manager.clone(),
+            }),
+            sink: Arc::new(TickWarningSink {
+                tx: tick_tx.clone(),
+            }),
+        };
+
         // Scheduler takes the store by value; we hand it a clone so AppState
         // can also expose it through `tasks`.
-        let scheduler = Arc::new(Scheduler::spawn(
+        let scheduler = Arc::new(Scheduler::spawn_with_budget(
             task_store.clone(),
             agents.clone(),
             pause.clone(),
             None,
+            Some(budget_wiring),
         ));
         let tasks = Arc::new(task_store);
         let binaries = detect_binaries();
         let mcp_server_binary = detect_mcp_server_binary();
-        let (tick_tx, _) = broadcast::channel(64);
         Ok(Self {
             store,
             manager,
@@ -67,6 +99,7 @@ impl AppState {
             agents,
             roles,
             pause,
+            budgets,
             scheduler,
             binaries,
             harness_home: cfg.home.clone(),
@@ -76,6 +109,48 @@ impl AppState {
             version: env!("CARGO_PKG_VERSION"),
             tick_tx,
         })
+    }
+}
+
+/// Bridges `harness-session::Manager` to the scheduler's budget pass without
+/// requiring the pass to await an async lock — we cache the immutable
+/// per-session identity on `AgentSession` itself.
+struct ManagerSessionsSource {
+    manager: Arc<Manager>,
+}
+
+impl ActiveSessionsSource for ManagerSessionsSource {
+    fn snapshot(&self) -> Vec<ActiveSession> {
+        self.manager
+            .all()
+            .into_iter()
+            .map(|s| ActiveSession {
+                thread_id: s.thread_id().to_string(),
+                session_id: s.id().to_string(),
+                cwd: s.cwd().to_path_buf(),
+                kind: s.kind().as_str().to_string(),
+            })
+            .collect()
+    }
+}
+
+/// Forwards `budget.warning` events onto the shared tick broadcast so they
+/// reach any SSE subscriber on `/api/events` (no filter).
+struct TickWarningSink {
+    tx: broadcast::Sender<String>,
+}
+
+impl BudgetWarningSink for TickWarningSink {
+    fn emit(&self, w: BudgetWarning) {
+        let payload = json!({
+            "type": "budget.warning",
+            "thread_id": w.thread_id,
+            "spent_usd": w.spent_usd,
+            "limit_usd": w.limit_usd,
+            "pct": w.pct,
+        })
+        .to_string();
+        let _ = self.tx.send(payload);
     }
 }
 

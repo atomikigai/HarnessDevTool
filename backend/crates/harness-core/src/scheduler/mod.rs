@@ -4,7 +4,7 @@
 
 mod tick;
 
-pub use tick::Scheduler;
+pub use tick::{run_budget_pass, BudgetWiring, Scheduler};
 
 /// Default cap on concurrent in-progress tasks per thread when none is
 /// configured. Budget-aware override is a later slice.

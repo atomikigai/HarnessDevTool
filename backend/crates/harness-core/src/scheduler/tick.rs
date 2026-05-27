@@ -6,10 +6,29 @@ use chrono::Utc;
 use tokio::task::JoinHandle;
 
 use crate::agents::{Agent, AgentsRegistry};
+use crate::budget::{
+    ActiveSessionsSource, BudgetStore, BudgetWarning, BudgetWarningSink, CostReporter,
+};
 use crate::pause::PauseFlag;
 use crate::tasks::{ClaimResult, ListFilters, TaskEvent, TaskStatus, TaskStore};
 
 use super::MAX_CONCURRENT_DEFAULT;
+
+/// Threshold bands used by [`run_budget_pass`]. We only re-emit
+/// `budget.warning` when the spend crosses a *higher* band than the last one
+/// we reported for the thread, so SSE consumers don't see warning spam on
+/// every 2-second tick.
+const WARNING_BANDS: &[u8] = &[75, 90, 100];
+
+fn band_for(pct: u8) -> u8 {
+    let mut chosen = 0u8;
+    for &b in WARNING_BANDS {
+        if pct >= b {
+            chosen = b;
+        }
+    }
+    chosen
+}
 
 /// Generators that recently failed an evaluator check are temporarily skipped
 /// when the same `(thread, task)` re-enters the queue.
@@ -32,6 +51,20 @@ pub struct Scheduler {
     stop: Arc<Mutex<bool>>,
 }
 
+/// Optional plumbing for the budget pass. When `Some`, the scheduler tick
+/// loop polls each active session's `CostReporter`, aggregates per-thread
+/// spend into [`BudgetStore`], and emits warnings / triggers the pause flag
+/// when thresholds are crossed.
+///
+/// Reporters are keyed by `AgentKind::as_str()` so this crate stays free of a
+/// dependency on `harness-session`.
+pub struct BudgetWiring {
+    pub store: BudgetStore,
+    pub reporters: HashMap<String, Arc<dyn CostReporter>>,
+    pub sessions: Arc<dyn ActiveSessionsSource>,
+    pub sink: Arc<dyn BudgetWarningSink>,
+}
+
 impl Scheduler {
     /// Spawn the scheduler loop.
     ///
@@ -43,9 +76,22 @@ impl Scheduler {
         pause: Arc<PauseFlag>,
         max_concurrent: Option<usize>,
     ) -> Self {
+        Self::spawn_with_budget(store, agents, pause, max_concurrent, None)
+    }
+
+    /// Same as [`spawn`](Self::spawn) but also runs [`run_budget_pass`] on
+    /// every tick when `budget` is `Some`.
+    pub fn spawn_with_budget(
+        store: TaskStore,
+        agents: Arc<AgentsRegistry>,
+        pause: Arc<PauseFlag>,
+        max_concurrent: Option<usize>,
+        budget: Option<BudgetWiring>,
+    ) -> Self {
         let stop = Arc::new(Mutex::new(false));
         let stop2 = stop.clone();
         let max_concurrent = max_concurrent.unwrap_or(MAX_CONCURRENT_DEFAULT);
+        let pause_for_budget = pause.clone();
         let handle = tokio::spawn(async move {
             let mut tick = tokio::time::interval(Duration::from_secs(2));
             let mut lease_tick = tokio::time::interval(Duration::from_secs(30));
@@ -54,6 +100,9 @@ impl Scheduler {
             let mut prev_status: StatusSnapshot = HashMap::new();
             let cooldown: Arc<Mutex<HashMap<CooldownKey, Instant>>> =
                 Arc::new(Mutex::new(HashMap::new()));
+            // Per-thread "last warning band" so we only emit on threshold
+            // *crossings* (75/90/100), not every tick.
+            let mut last_warned_band: HashMap<String, u8> = HashMap::new();
             loop {
                 if *stop2.lock().expect("stop mutex") {
                     break;
@@ -72,6 +121,15 @@ impl Scheduler {
                             &cooldown,
                         ) {
                             tracing::warn!(?e, "scheduler assign pass failed");
+                        }
+                        if let Some(b) = &budget {
+                            if let Err(e) = run_budget_pass(
+                                b,
+                                &pause_for_budget,
+                                &mut last_warned_band,
+                            ) {
+                                tracing::warn!(?e, "scheduler budget pass failed");
+                            }
                         }
                     }
                     _ = lease_tick.tick() => {
@@ -378,6 +436,92 @@ fn run_assign_pass(
     Ok(())
 }
 
+/// One pass of the budget reconciler: for every active session, poll the
+/// kind-specific [`CostReporter`], aggregate per-thread spend, persist via
+/// [`BudgetStore::set_spent`], and emit warnings / trip the pause flag when a
+/// new threshold band is crossed.
+///
+/// `last_warned_band` is keyed by `thread_id` and remembers the highest band
+/// (`75 / 90 / 100`) already reported so we don't emit on every tick.
+pub fn run_budget_pass(
+    wiring: &BudgetWiring,
+    pause: &PauseFlag,
+    last_warned_band: &mut HashMap<String, u8>,
+) -> Result<(), crate::Error> {
+    let sessions = wiring.sessions.snapshot();
+    // Per-thread aggregation: sum of per-session cost_usd reported this tick.
+    let mut per_thread: HashMap<String, f64> = HashMap::new();
+    for s in &sessions {
+        let Some(reporter) = wiring.reporters.get(&s.kind) else {
+            continue;
+        };
+        match reporter.poll(&s.session_id, &s.cwd) {
+            Ok(cost) => {
+                *per_thread.entry(s.thread_id.clone()).or_insert(0.0) += cost.cost_usd;
+            }
+            Err(e) => {
+                tracing::warn!(
+                    target: "budget",
+                    error = %e,
+                    session = %s.session_id,
+                    thread = %s.thread_id,
+                    "cost reporter poll failed"
+                );
+            }
+        }
+    }
+
+    for (thread_id, spent_usd) in per_thread {
+        let budget = match wiring.store.set_spent(&thread_id, spent_usd) {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::warn!(?e, thread = %thread_id, "budget persist failed");
+                continue;
+            }
+        };
+
+        // No limit set => nothing to warn or trip on.
+        if budget.limit_usd <= 0.0 {
+            continue;
+        }
+
+        let pct = budget.pct_spent();
+        let band = band_for(pct);
+        let last = last_warned_band.get(&thread_id).copied().unwrap_or(0);
+
+        if band > last {
+            last_warned_band.insert(thread_id.clone(), band);
+            wiring.sink.emit(BudgetWarning {
+                thread_id: thread_id.clone(),
+                spent_usd: budget.spent_usd,
+                limit_usd: budget.limit_usd,
+                pct,
+            });
+            tracing::info!(
+                target: "budget",
+                thread = %thread_id,
+                pct,
+                "budget.warning"
+            );
+        }
+
+        if budget.over_hard() && !pause.is_paused() {
+            if let Err(e) = pause.set(true) {
+                tracing::warn!(?e, thread = %thread_id, "budget hard cap pause failed");
+            } else {
+                tracing::warn!(
+                    target: "budget",
+                    thread = %thread_id,
+                    spent = budget.spent_usd,
+                    limit = budget.limit_usd,
+                    "budget.hard_cap_pause"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 fn run_lease_pass(store: &TaskStore) -> Result<(), crate::Error> {
     let now = Utc::now();
     for tid in store.known_threads()? {
@@ -660,6 +804,132 @@ mod tests {
         let second_gen = t.assignee.clone().unwrap();
         let other = if first_gen == g1.id { g2.id.clone() } else { g1.id.clone() };
         assert_eq!(second_gen, other, "cooldown should have forced the other generator");
+    }
+
+    // ----- budget pass -----
+
+    use crate::budget::{
+        ActiveSession, ActiveSessionsSource, BudgetStore, BudgetWarning, BudgetWarningSink,
+        CostReporter, SessionCost,
+    };
+    use std::path::Path;
+    use std::sync::Mutex as StdMutex;
+    use tempfile::tempdir;
+
+    struct MockReporter {
+        cost: f64,
+    }
+    impl CostReporter for MockReporter {
+        fn poll(&self, _sid: &str, _cwd: &Path) -> Result<SessionCost, crate::Error> {
+            Ok(SessionCost {
+                model: "claude-opus-4-7".into(),
+                usage: Default::default(),
+                cost_usd: self.cost,
+            })
+        }
+    }
+
+    struct StaticSessions(Vec<ActiveSession>);
+    impl ActiveSessionsSource for StaticSessions {
+        fn snapshot(&self) -> Vec<ActiveSession> {
+            self.0.clone()
+        }
+    }
+
+    #[derive(Default)]
+    struct RecordingSink(StdMutex<Vec<BudgetWarning>>);
+    impl BudgetWarningSink for RecordingSink {
+        fn emit(&self, w: BudgetWarning) {
+            self.0.lock().unwrap().push(w);
+        }
+    }
+
+    fn mk_wiring(
+        dir: &Path,
+        cost: f64,
+        sessions: Vec<ActiveSession>,
+        sink: Arc<RecordingSink>,
+    ) -> BudgetWiring {
+        let store = BudgetStore::load(dir).unwrap();
+        let mut reporters: HashMap<String, Arc<dyn CostReporter>> = HashMap::new();
+        reporters.insert("claude".into(), Arc::new(MockReporter { cost }));
+        BudgetWiring {
+            store,
+            reporters,
+            sessions: Arc::new(StaticSessions(sessions)),
+            sink,
+        }
+    }
+
+    #[test]
+    fn budget_pass_emits_warning_on_soft_crossing_only_once() {
+        let dir = tempdir().unwrap();
+        let pause = PauseFlag::load(dir.path()).unwrap();
+        let sink = Arc::new(RecordingSink::default());
+        let sessions = vec![ActiveSession {
+            thread_id: "thr-1".into(),
+            session_id: "sid-1".into(),
+            cwd: dir.path().to_path_buf(),
+            kind: "claude".into(),
+        }];
+
+        // 80% — over soft (band 75), under hard.
+        let wiring = mk_wiring(dir.path(), 8.0, sessions.clone(), sink.clone());
+        wiring.store.set_limit("thr-1", 10.0).unwrap();
+
+        let mut bands: HashMap<String, u8> = HashMap::new();
+        run_budget_pass(&wiring, &pause, &mut bands).unwrap();
+        run_budget_pass(&wiring, &pause, &mut bands).unwrap();
+
+        let emitted = sink.0.lock().unwrap();
+        assert_eq!(emitted.len(), 1, "warning should fire exactly once per band");
+        assert_eq!(emitted[0].thread_id, "thr-1");
+        assert_eq!(emitted[0].pct, 80);
+        assert!(!pause.is_paused(), "soft cross must not trip pause");
+        assert_eq!(bands.get("thr-1").copied(), Some(75));
+    }
+
+    #[test]
+    fn budget_pass_trips_pause_at_hard_cap() {
+        let dir = tempdir().unwrap();
+        let pause = PauseFlag::load(dir.path()).unwrap();
+        let sink = Arc::new(RecordingSink::default());
+        let sessions = vec![ActiveSession {
+            thread_id: "thr-x".into(),
+            session_id: "sid-x".into(),
+            cwd: dir.path().to_path_buf(),
+            kind: "claude".into(),
+        }];
+        let wiring = mk_wiring(dir.path(), 10.0, sessions, sink.clone());
+        wiring.store.set_limit("thr-x", 10.0).unwrap();
+
+        let mut bands: HashMap<String, u8> = HashMap::new();
+        run_budget_pass(&wiring, &pause, &mut bands).unwrap();
+
+        assert!(pause.is_paused(), "hard cap must trip global pause");
+        let emitted = sink.0.lock().unwrap();
+        assert_eq!(emitted.len(), 1);
+        assert_eq!(emitted[0].pct, 100);
+    }
+
+    #[test]
+    fn budget_pass_skips_sessions_without_reporter_for_kind() {
+        let dir = tempdir().unwrap();
+        let pause = PauseFlag::load(dir.path()).unwrap();
+        let sink = Arc::new(RecordingSink::default());
+        let sessions = vec![ActiveSession {
+            thread_id: "thr-c".into(),
+            session_id: "sid-c".into(),
+            cwd: dir.path().to_path_buf(),
+            kind: "codex".into(), // not in reporters map
+        }];
+        let wiring = mk_wiring(dir.path(), 10.0, sessions, sink.clone());
+        wiring.store.set_limit("thr-c", 10.0).unwrap();
+
+        let mut bands: HashMap<String, u8> = HashMap::new();
+        run_budget_pass(&wiring, &pause, &mut bands).unwrap();
+        assert!(sink.0.lock().unwrap().is_empty());
+        assert!(!pause.is_paused());
     }
 
     #[test]

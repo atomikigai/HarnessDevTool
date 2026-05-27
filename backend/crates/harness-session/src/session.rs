@@ -29,6 +29,28 @@ pub struct AgentSession {
     killer: AsyncMutex<Box<dyn portable_pty::ChildKiller + Send + Sync>>,
     child_pid: u32,
     seq: AtomicU64,
+    /// Immutable identity, cached outside the async meta lock so non-async
+    /// callers (e.g. the scheduler's budget pass) can read them without
+    /// awaiting.
+    id_static: String,
+    kind_static: AgentKind,
+    thread_id_static: String,
+    cwd_static: PathBuf,
+}
+
+impl AgentSession {
+    pub fn id(&self) -> &str {
+        &self.id_static
+    }
+    pub fn kind(&self) -> AgentKind {
+        self.kind_static
+    }
+    pub fn thread_id(&self) -> &str {
+        &self.thread_id_static
+    }
+    pub fn cwd(&self) -> &std::path::Path {
+        &self.cwd_static
+    }
 }
 
 impl AgentSession {
@@ -122,6 +144,10 @@ impl AgentSession {
             killer: AsyncMutex::new(killer),
             child_pid,
             seq: AtomicU64::new(0),
+            id_static: id.clone(),
+            kind_static: kind,
+            thread_id_static: thread_id.clone(),
+            cwd_static: cwd.clone(),
         });
 
         // Emit started.

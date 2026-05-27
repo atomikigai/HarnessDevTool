@@ -14,13 +14,13 @@ pub mod threads;
 
 pub use agents::{Agent, AgentDraft, AgentKind, AgentsRegistry};
 pub use budget::{
-    Budget, BudgetStore, ClaudeTranscriptReporter, CodexStubReporter, CostReporter, SessionCost,
-    Usage,
+    ActiveSession, ActiveSessionsSource, Budget, BudgetStore, BudgetWarning, BudgetWarningSink,
+    ClaudeTranscriptReporter, CodexStubReporter, CostReporter, SessionCost, Usage,
 };
 pub use events::Event;
 pub use pause::PauseFlag;
 pub use roles::{Role, RolesRegistry};
-pub use scheduler::{Scheduler, MAX_CONCURRENT_DEFAULT};
+pub use scheduler::{run_budget_pass, BudgetWiring, Scheduler, MAX_CONCURRENT_DEFAULT};
 pub use store::{Store, StoreError};
 pub use tasks::{
     AcceptanceCheck, Artifacts, ClaimResult, HistoryEvent, Lease, ListFilters, Task, TaskDraft,

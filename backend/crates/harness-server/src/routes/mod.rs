@@ -1,4 +1,5 @@
 pub mod agents;
+pub mod budget;
 pub mod control;
 pub mod events;
 pub mod health;

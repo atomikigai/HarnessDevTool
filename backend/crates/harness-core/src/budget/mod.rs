@@ -63,6 +63,43 @@ impl Budget {
     }
 }
 
+/// Snapshot used by the budget pass to map a running PTY session back to its
+/// owning thread and the kind-specific cost reporter.
+///
+/// Kept stringly-typed (`kind` is the reporter map key) so this crate does
+/// **not** need to import `harness-session::AgentKind`.
+#[derive(Debug, Clone)]
+pub struct ActiveSession {
+    pub thread_id: String,
+    pub session_id: String,
+    pub cwd: PathBuf,
+    pub kind: String,
+}
+
+/// Pluggable provider of currently-active sessions. The server wires this to
+/// `harness-session::Manager::all()`.
+pub trait ActiveSessionsSource: Send + Sync {
+    fn snapshot(&self) -> Vec<ActiveSession>;
+}
+
+/// SSE-payload struct emitted when a thread crosses its `soft_pct` boundary
+/// for the first time (re-emitted on subsequent threshold jumps but not on
+/// every tick — see [`crate::scheduler::tick::run_budget_pass`]).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[cfg_attr(feature = "ts-export", derive(TS))]
+#[cfg_attr(feature = "ts-export", ts(export, export_to = "../../../bindings/"))]
+pub struct BudgetWarning {
+    pub thread_id: String,
+    pub spent_usd: f64,
+    pub limit_usd: f64,
+    pub pct: u8,
+}
+
+/// Sink for `budget.warning` events. Server impl forwards to the SSE hub.
+pub trait BudgetWarningSink: Send + Sync {
+    fn emit(&self, warning: BudgetWarning);
+}
+
 #[derive(Clone)]
 pub struct BudgetStore {
     dir: PathBuf,
@@ -211,5 +248,27 @@ mod tests {
         let dir = tempdir().unwrap();
         let s = BudgetStore::load(dir.path()).unwrap();
         assert!(s.set_limit("thr", -1.0).is_err());
+    }
+
+    #[test]
+    fn set_limit_then_spent_then_over_transitions() {
+        let dir = tempdir().unwrap();
+        let s = BudgetStore::load(dir.path()).unwrap();
+        s.set_limit("t", 10.0).unwrap();
+
+        // 50% — below both thresholds.
+        let b = s.set_spent("t", 5.0).unwrap();
+        assert!(!b.over_soft());
+        assert!(!b.over_hard());
+
+        // 80% — over soft, under hard.
+        let b = s.set_spent("t", 8.0).unwrap();
+        assert!(b.over_soft());
+        assert!(!b.over_hard());
+
+        // 100% — over both.
+        let b = s.set_spent("t", 10.0).unwrap();
+        assert!(b.over_soft());
+        assert!(b.over_hard());
     }
 }

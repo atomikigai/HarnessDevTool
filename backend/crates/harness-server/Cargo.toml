@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+ts-export = ["dep:ts-rs", "harness-core/ts-export"]
+
 [[bin]]
 name = "harness-server"
 path = "src/main.rs"
@@ -36,3 +39,4 @@ base64 = { workspace = true }
 bytes = "1"
 sha2 = "0.10"
 tempfile = "3"
+ts-rs = { workspace = true, optional = true }

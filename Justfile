@@ -36,7 +36,7 @@ build:
 
 # Generate TypeScript types via ts-rs and copy into frontend
 gen-types:
-    cd backend && cargo test --features ts-export
+    cd backend && cargo test --features ts-export --workspace
     mkdir -p frontend/src/lib/api/types
     cp -r backend/bindings/* frontend/src/lib/api/types/
 

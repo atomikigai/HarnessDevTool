@@ -162,11 +162,23 @@ impl ActiveSessionsSource for ManagerSessionsSource {
         self.manager
             .all()
             .into_iter()
-            .map(|s| ActiveSession {
-                thread_id: s.thread_id().to_string(),
-                session_id: s.id().to_string(),
-                cwd: s.cwd().to_path_buf(),
-                kind: s.kind().as_str().to_string(),
+            .map(|s| {
+                let role_value = s.role();
+                let (agent_id, role) = match role_value {
+                    Some(value) if value.starts_with("agent:") => {
+                        (Some(value["agent:".len()..].to_string()), None)
+                    }
+                    Some(value) => (None, Some(value)),
+                    None => (None, None),
+                };
+                ActiveSession {
+                    thread_id: s.thread_id().to_string(),
+                    session_id: s.id().to_string(),
+                    cwd: s.cwd().to_path_buf(),
+                    kind: s.kind().as_str().to_string(),
+                    agent_id,
+                    role,
+                }
             })
             .collect()
     }

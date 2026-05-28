@@ -36,6 +36,7 @@ pub struct AgentSession {
     kind_static: AgentKind,
     thread_id_static: String,
     cwd_static: PathBuf,
+    role_static: Option<String>,
 }
 
 impl AgentSession {
@@ -50,6 +51,9 @@ impl AgentSession {
     }
     pub fn cwd(&self) -> &std::path::Path {
         &self.cwd_static
+    }
+    pub fn role(&self) -> Option<String> {
+        self.role_static.clone()
     }
 }
 
@@ -150,7 +154,7 @@ impl AgentSession {
             status: SessionStatus::Running,
             started_at: Utc::now().timestamp_millis(),
             exit_code: None,
-            role,
+            role: role.clone(),
         };
         persist_meta(&dir, &meta)?;
 
@@ -167,6 +171,7 @@ impl AgentSession {
             kind_static: kind,
             thread_id_static: thread_id.clone(),
             cwd_static: cwd.clone(),
+            role_static: role.clone(),
         });
 
         // Emit started.

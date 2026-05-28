@@ -35,7 +35,9 @@ pub enum TaggedValue {
     Date(String),
     Time(String),
     DateTime(String),
-    Json(serde_json::Value),
+    Json(
+        #[cfg_attr(feature = "ts-export", ts(type = "unknown"))] serde_json::Value,
+    ),
 }
 
 impl Value {

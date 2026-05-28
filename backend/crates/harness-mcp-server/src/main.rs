@@ -1,7 +1,7 @@
 //! Standalone MCP stdio server exposing Harness task/spec/skills tools to
 //! agent CLIs (`claude --mcp-config ...`).
 //!
-//! Transport: line-delimited JSON-RPC 2.0 on stdin/stdout.
+//! Transport: MCP stdio (`Content-Length`) or legacy line-delimited JSON-RPC 2.0.
 //! Logging:   `tracing` to **stderr only** — stdout is the MCP wire.
 //!
 //! Usage:
@@ -20,6 +20,76 @@ mod tools;
 
 use crate::dispatcher::Dispatcher;
 use crate::protocol::{error_response, parse_request, RpcError};
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WireMode {
+    ContentLength,
+    JsonLine,
+}
+
+fn trim_line_end(s: &str) -> &str {
+    s.trim_end_matches(['\r', '\n'])
+}
+
+fn parse_content_length(header: &str) -> Option<usize> {
+    let (name, value) = header.split_once(':')?;
+    if !name.eq_ignore_ascii_case("content-length") {
+        return None;
+    }
+    value.trim().parse().ok()
+}
+
+fn read_wire_message<R: BufRead>(reader: &mut R) -> std::io::Result<Option<(String, WireMode)>> {
+    loop {
+        let mut line = String::new();
+        let n = reader.read_line(&mut line)?;
+        if n == 0 {
+            return Ok(None);
+        }
+
+        let header = trim_line_end(&line);
+        if header.trim().is_empty() {
+            continue;
+        }
+
+        let Some(len) = parse_content_length(header) else {
+            return Ok(Some((header.to_string(), WireMode::JsonLine)));
+        };
+
+        loop {
+            let mut header_line = String::new();
+            if reader.read_line(&mut header_line)? == 0 {
+                return Ok(None);
+            }
+            if trim_line_end(&header_line).is_empty() {
+                break;
+            }
+        }
+
+        let mut buf = vec![0_u8; len];
+        reader.read_exact(&mut buf)?;
+        let payload = String::from_utf8(buf).map_err(|e| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("invalid utf-8: {e}"),
+            )
+        })?;
+        return Ok(Some((payload, WireMode::ContentLength)));
+    }
+}
+
+fn write_wire_message<W: Write>(out: &mut W, mode: WireMode, payload: &str) -> std::io::Result<()> {
+    match mode {
+        WireMode::JsonLine => {
+            writeln!(out, "{payload}")?;
+        }
+        WireMode::ContentLength => {
+            write!(out, "Content-Length: {}\r\n\r\n", payload.len())?;
+            out.write_all(payload.as_bytes())?;
+        }
+    }
+    out.flush()
+}
 
 #[derive(Debug)]
 struct CliArgs {
@@ -141,17 +211,18 @@ fn main() -> ExitCode {
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
-    let reader = BufReader::new(stdin.lock());
+    let mut reader = BufReader::new(stdin.lock());
 
-    for line in reader.lines() {
-        let line = match line {
-            Ok(l) => l,
+    loop {
+        let (message, mode) = match read_wire_message(&mut reader) {
+            Ok(Some(m)) => m,
+            Ok(None) => break,
             Err(e) => {
                 error!(error = %e, "stdin read error");
                 break;
             }
         };
-        let trimmed = line.trim();
+        let trimmed = message.trim();
         if trimmed.is_empty() {
             continue;
         }
@@ -176,10 +247,7 @@ fn main() -> ExitCode {
                 }
             };
             debug!(line = %s, "send");
-            if writeln!(out, "{s}").is_err() {
-                break;
-            }
-            if out.flush().is_err() {
+            if write_wire_message(&mut out, mode, &s).is_err() {
                 break;
             }
         }
@@ -188,4 +256,43 @@ fn main() -> ExitCode {
     info!("harness-mcp-server exiting");
     let _ = RpcError::InvalidRequest; // keep error variants used
     ExitCode::SUCCESS
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{read_wire_message, write_wire_message, WireMode};
+    use std::io::Cursor;
+
+    #[test]
+    fn reads_legacy_json_line_message() {
+        let mut input = Cursor::new(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}\n");
+        let (payload, mode) = read_wire_message(&mut input).unwrap().unwrap();
+        assert_eq!(mode, WireMode::JsonLine);
+        assert_eq!(
+            payload,
+            "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}"
+        );
+    }
+
+    #[test]
+    fn reads_content_length_framed_message() {
+        let body = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}";
+        let wire = format!("Content-Length: {}\r\n\r\n{}", body.len(), body);
+        let mut input = Cursor::new(wire.into_bytes());
+        let (payload, mode) = read_wire_message(&mut input).unwrap().unwrap();
+        assert_eq!(mode, WireMode::ContentLength);
+        assert_eq!(payload, body);
+    }
+
+    #[test]
+    fn writes_content_length_framed_message() {
+        let body = "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}";
+        let mut out = Vec::new();
+        write_wire_message(&mut out, WireMode::ContentLength, body).unwrap();
+        let wire = String::from_utf8(out).unwrap();
+        assert_eq!(
+            wire,
+            format!("Content-Length: {}\r\n\r\n{}", body.len(), body)
+        );
+    }
 }

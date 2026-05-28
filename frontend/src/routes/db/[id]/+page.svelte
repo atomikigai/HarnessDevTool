@@ -19,14 +19,13 @@
     type SchemaTreeQueryGenerate,
     type SchemaTreeTableExport
   } from '$lib/components/db/SchemaTree.svelte';
-  import ExportDialog, {
-    type ExportDialogTarget
-  } from '$lib/components/db/ExportDialog.svelte';
+  import ExportDialog, { type ExportDialogTarget } from '$lib/components/db/ExportDialog.svelte';
   import SqlEditor from '$lib/components/db/SqlEditor.svelte';
   import ResultGrid from '$lib/components/db/ResultGrid.svelte';
   import RowEditorPanel from '$lib/components/db/RowEditorPanel.svelte';
   import TableSchemaView from '$lib/components/db/TableSchemaView.svelte';
   import TerminalView from '$lib/components/app/TerminalView.svelte';
+  import { api } from '$lib/api/client';
   import {
     generatedQuery,
     qualifiedTableName,
@@ -142,7 +141,9 @@
         page_size: 5000
       });
       if (t.format === 'markdown') {
-        const blob = new Blob([resultToMarkdown(res.data)], { type: 'text/markdown;charset=utf-8' });
+        const blob = new Blob([resultToMarkdown(res.data)], {
+          type: 'text/markdown;charset=utf-8'
+        });
         triggerDownload(blob, `${baseName}.md`);
       } else {
         triggerDownload(resultToXlsxBlob(res.data), `${baseName}.xlsx`);
@@ -585,8 +586,40 @@
     editorOpen = true;
   }
 
+  function resetDbAgentPanel() {
+    dbAgentPanelCollapsed = false;
+    dbAgentFullscreen = false;
+    dbAgentThreadId = null;
+    dbAgentSessionId = null;
+  }
+
+  async function stopDbAgentSession(sessionId: string) {
+    try {
+      await api.sessions.kill(sessionId);
+    } catch (err) {
+      console.warn('failed to kill DB agent session', err);
+    }
+  }
+
   async function startDbAgent() {
     if (startingDbAgent) return;
+    if (dbAgentSessionId) {
+      const ok = await confirmDialog({
+        title: 'Start a new DB agent?',
+        description:
+          'The current DB agent session will be closed before starting the selected agent.',
+        confirmLabel: 'Start new agent',
+        destructive: true
+      });
+      if (!ok) {
+        dbAgentPanelCollapsed = false;
+        dbAgentFullscreen = false;
+        return;
+      }
+      await stopDbAgentSession(dbAgentSessionId);
+      resetDbAgentPanel();
+    }
+
     startingDbAgent = true;
     try {
       const res = await dbApi.startAgent(connId, {
@@ -605,11 +638,23 @@
     }
   }
 
-  function closeDbAgentPanel() {
-    dbAgentPanelCollapsed = false;
-    dbAgentFullscreen = false;
-    dbAgentThreadId = null;
-    dbAgentSessionId = null;
+  async function closeDbAgentPanel() {
+    if (!dbAgentSessionId) {
+      resetDbAgentPanel();
+      return;
+    }
+    const sessionId = dbAgentSessionId;
+    const ok = await confirmDialog({
+      title: 'Close DB agent session?',
+      description: 'This will kill the DB agent PTY session and remove the panel.',
+      confirmLabel: 'Close session',
+      destructive: true
+    });
+    if (!ok) return;
+
+    await stopDbAgentSession(sessionId);
+    resetDbAgentPanel();
+    toast.success('DB agent session closed');
   }
 </script>
 
@@ -644,7 +689,8 @@
     <div class="flex items-center gap-2">
       <select
         value={dbAgentKind}
-        onchange={(e) => (dbAgentKind = (e.currentTarget as HTMLSelectElement).value as SessionKind)}
+        onchange={(e) =>
+          (dbAgentKind = (e.currentTarget as HTMLSelectElement).value as SessionKind)}
         disabled={startingDbAgent || !conn}
         class="h-8 rounded-md border px-2 text-xs"
         style="border-color: var(--border-input); background: var(--surface-titlebar); color: var(--fg-default);"
@@ -656,7 +702,12 @@
         <option value="antigravity">Antigravity</option>
         <option value="zeus">Zeus</option>
       </select>
-      <Button variant="outline" size="sm" onclick={startDbAgent} disabled={startingDbAgent || !conn}>
+      <Button
+        variant="outline"
+        size="sm"
+        onclick={startDbAgent}
+        disabled={startingDbAgent || !conn}
+      >
         {#if startingDbAgent}
           <Loader2 class="h-3.5 w-3.5 animate-spin" />
         {:else}
@@ -848,7 +899,8 @@
             </span>
             <select
               value={ws.activeTabId ?? ''}
-              onchange={(e) => dbStore.setActiveTab(connId, (e.currentTarget as HTMLSelectElement).value)}
+              onchange={(e) =>
+                dbStore.setActiveTab(connId, (e.currentTarget as HTMLSelectElement).value)}
               class="h-7 max-w-[260px] rounded-md border px-2 text-[11px] outline-none"
               style="border-color: var(--border-input); background: var(--surface-window); color: var(--fg-default);"
               title="All open DB tabs"
@@ -1185,10 +1237,7 @@
   </div>
 
   {#if dbAgentFullscreen && dbAgentThreadId && dbAgentSessionId}
-    <div
-      class="fixed inset-0 z-50 flex flex-col"
-      style="background: var(--surface-window);"
-    >
+    <div class="fixed inset-0 z-50 flex flex-col" style="background: var(--surface-window);">
       <div
         class="flex h-11 shrink-0 items-center justify-between border-b px-4"
         style="border-color: var(--border-subtle); background: var(--surface-panel);"

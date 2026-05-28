@@ -9,9 +9,9 @@ use crate::protocol::{
     error_response, error_response_with, result_response, Request, RpcError, PROTOCOL_VERSION,
     SERVER_NAME, SERVER_VERSION,
 };
+use crate::tools::{self, db as db_tools, skills, spec, tasks, wrap_error, wrap_text};
 use harness_core::TaskStore;
 use module_db::Manager as DbManager;
-use crate::tools::{self, db as db_tools, skills, spec, tasks, wrap_error, wrap_text};
 
 pub struct Dispatcher {
     store: TaskStore,
@@ -28,11 +28,7 @@ pub struct Dispatcher {
 
 impl Dispatcher {
     #[allow(dead_code)]
-    pub fn new(
-        harness_home: PathBuf,
-        thread_id: String,
-        agent_id: String,
-    ) -> Result<Self, String> {
+    pub fn new(harness_home: PathBuf, thread_id: String, agent_id: String) -> Result<Self, String> {
         Self::new_with_server(harness_home, thread_id, agent_id, None)
     }
 
@@ -123,6 +119,7 @@ impl Dispatcher {
             "task_release" => tasks::release(&self.store, &args),
             "task_submit" => tasks::submit(&self.store, &self.agent_id, &args),
             "spec_read" => spec::read(&self.harness_home, &self.thread_id, &args),
+            "spec_write" => spec::write(&self.harness_home, self.server_url.as_deref(), &args),
             "skills_search" => skills::search(&args),
             "db_query" => db_tools::query(&self.db, &args),
             "db_schema" => db_tools::schema(&self.db, &args),
@@ -175,8 +172,7 @@ mod tests {
 
     fn mk(thread: &str, agent: &str) -> (Dispatcher, PathBuf) {
         let home = tmp_home();
-        let d =
-            Dispatcher::new(home.clone(), thread.to_string(), agent.to_string()).unwrap();
+        let d = Dispatcher::new(home.clone(), thread.to_string(), agent.to_string()).unwrap();
         (d, home)
     }
 
@@ -184,8 +180,7 @@ mod tests {
     fn initialize_then_list_tools() {
         let (d, _) = mk("t1", "agent:1");
 
-        let init_line =
-            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#;
+        let init_line = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#;
         let req = parse_request(init_line).unwrap();
         let resp = d.handle(req).unwrap();
         assert_eq!(resp["result"]["protocolVersion"], PROTOCOL_VERSION);
@@ -208,6 +203,7 @@ mod tests {
             "task_release",
             "task_submit",
             "spec_read",
+            "spec_write",
             "skills_search",
         ] {
             assert!(names.contains(&expected), "missing tool: {expected}");
@@ -248,5 +244,20 @@ mod tests {
         let resp = d.handle(parse_request(line).unwrap()).unwrap();
         let text = resp["result"]["content"][0]["text"].as_str().unwrap();
         assert!(text.contains("\"content\":\"\""));
+    }
+
+    #[test]
+    fn spec_write_then_spec_read_returns_written_content() {
+        let (d, _) = mk("t1", "agent:1");
+        let write_line = r##"{"jsonrpc":"2.0","id":12,"method":"tools/call","params":{"name":"spec_write","arguments":{"thread_id":"t1","content":"# Spec\nBody"}}}"##;
+        let resp = d.handle(parse_request(write_line).unwrap()).unwrap();
+        let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("\"ok\":true"));
+        assert!(text.contains("\"created\":true"));
+
+        let read_line = r#"{"jsonrpc":"2.0","id":13,"method":"tools/call","params":{"name":"spec_read","arguments":{"thread_id":"t1"}}}"#;
+        let resp = d.handle(parse_request(read_line).unwrap()).unwrap();
+        let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("# Spec\\nBody"));
     }
 }

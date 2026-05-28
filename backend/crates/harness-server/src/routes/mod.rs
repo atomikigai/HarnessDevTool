@@ -5,5 +5,6 @@ pub mod db;
 pub mod events;
 pub mod health;
 pub mod sessions;
+pub mod spec;
 pub mod tasks;
 pub mod threads;

@@ -95,7 +95,7 @@ async fn start_db_agent(
             kind,
             thread_id: thread.id.clone(),
             cwd,
-            role: Some("db-agent".into()),
+            role: None,
             auto_intro: supports_system_context.then(|| prompt.clone()),
             initial_prompt: (!supports_system_context).then_some(prompt),
             parent_session_id: None,

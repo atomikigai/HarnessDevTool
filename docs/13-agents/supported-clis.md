@@ -28,6 +28,8 @@ sources: []
 |----------------------------------|--------|-------|--------|-------------|-----------------|
 | Spawn vía PTY                    | ✅     | ✅    | ✅     | ✅          | ✅ (via Claude) |
 | `--session-id` pin               | ✅     | ✗     | ✗      | ✗           | ✅              |
+| Default model                    | `claude-opus-4-7` | `gpt-5.5` | CLI default | CLI default | `claude-opus-4-7` |
+| Default effort                   | `medium` | `medium` | CLI default | CLI default | `medium` |
 | MCP injection                    | ✅ `--mcp-config` | ✅ `-c mcp_servers.*` | ✗      | ✗           | ✅              |
 | `--append-system-prompt` silent  | ✅     | ✗     | ✗      | ✗           | ✅              |
 | `--disallowed-tools`             | ✅     | ✗     | ✗      | ✗           | ✅              |
@@ -45,6 +47,11 @@ Patrón uniforme (ver [[agents/spawn-lifecycle]]):
 3. Append flags específicos por CLI (ver `build_extra_args` en `harness-session::manager`).
 4. Spawn en PTY; emitir `session.started { session_id, pid }`.
 5. El `session_id` es UUID v4 y se usa como `spawn_id` para tracing y log paths (cierre de Q3).
+
+Claude se lanza con `--model claude-opus-4-7 --effort medium`. Codex se lanza
+con `--model gpt-5.5 -c model_reasoning_effort="medium"`. El modelo Codex se
+confirmó contra `codex debug models` en `codex-cli 0.134.0`; el CLI lo lista
+como `GPT-5.5` con reasoning default `medium`.
 
 ## Inyección del prompt inicial
 

@@ -10,6 +10,11 @@ use crate::kind::AgentKind;
 use crate::output::OutputWriter;
 use crate::session::AgentSession;
 
+const DEFAULT_CLAUDE_MODEL: &str = "claude-opus-4-7";
+const DEFAULT_CLAUDE_EFFORT: &str = "medium";
+const DEFAULT_CODEX_MODEL: &str = "gpt-5.5";
+const DEFAULT_CODEX_EFFORT: &str = "medium";
+
 /// Broadcast event published by sessions onto the shared bus.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -345,6 +350,10 @@ fn build_extra_args(kind: AgentKind, opts: &SpawnOpts, session_id: &str) -> Vec<
     if matches!(kind, AgentKind::Claude) {
         out.push("--session-id".to_string());
         out.push(session_id.to_string());
+        out.push("--model".to_string());
+        out.push(DEFAULT_CLAUDE_MODEL.to_string());
+        out.push("--effort".to_string());
+        out.push(DEFAULT_CLAUDE_EFFORT.to_string());
     }
 
     // ── Per-CLI autonomous-mode flags ──────────────────────────────────────
@@ -364,6 +373,13 @@ fn build_extra_args(kind: AgentKind, opts: &SpawnOpts, session_id: &str) -> Vec<
             out.push("never".to_string());
             out.push("--sandbox".to_string());
             out.push("workspace-write".to_string());
+            out.push("--model".to_string());
+            out.push(DEFAULT_CODEX_MODEL.to_string());
+            out.push("-c".to_string());
+            out.push(format!(
+                "model_reasoning_effort={}",
+                toml_string(DEFAULT_CODEX_EFFORT)
+            ));
             if let Some(command) = opts.mcp_server_command.as_ref() {
                 out.push("-c".to_string());
                 out.push(format!(
@@ -488,7 +504,14 @@ mod tests {
         let args = build_extra_args(AgentKind::Claude, &opts, "sid-123");
         assert_eq!(
             args,
-            vec!["--session-id".to_string(), "sid-123".to_string()]
+            vec![
+                "--session-id".to_string(),
+                "sid-123".to_string(),
+                "--model".to_string(),
+                DEFAULT_CLAUDE_MODEL.to_string(),
+                "--effort".to_string(),
+                DEFAULT_CLAUDE_EFFORT.to_string()
+            ]
         );
         assert!(!args.iter().any(|a| a == "--disallowed-tools"));
         assert!(!args.iter().any(|a| a == "--mcp-config"));
@@ -505,6 +528,12 @@ mod tests {
         // session-id is always present for claude
         let sid_idx = args.iter().position(|a| a == "--session-id").unwrap();
         assert_eq!(args[sid_idx + 1], "sid-xyz");
+        assert!(args
+            .windows(2)
+            .any(|w| w[0] == "--model" && w[1] == DEFAULT_CLAUDE_MODEL));
+        assert!(args
+            .windows(2)
+            .any(|w| w[0] == "--effort" && w[1] == DEFAULT_CLAUDE_EFFORT));
 
         // MCP wiring
         let mcp_idx = args.iter().position(|a| a == "--mcp-config").unwrap();
@@ -572,6 +601,12 @@ mod tests {
         assert!(args
             .windows(2)
             .any(|w| w[0] == "--sandbox" && w[1] == "workspace-write"));
+        assert!(args
+            .windows(2)
+            .any(|w| w[0] == "--model" && w[1] == DEFAULT_CODEX_MODEL));
+        assert!(args
+            .iter()
+            .any(|a| a == "model_reasoning_effort=\"medium\""));
         assert!(
             !args.iter().any(|a| a == "--mcp-config"),
             "Codex uses -c config overrides, not --mcp-config"

@@ -5,6 +5,7 @@
 pub mod agents;
 pub mod budget;
 pub mod events;
+pub mod knowledge;
 pub mod pause;
 pub mod roles;
 pub mod scheduler;
@@ -19,6 +20,10 @@ pub use budget::{
     StubReporter, Usage,
 };
 pub use events::Event;
+pub use knowledge::{
+    check_pdftotext, ingest_pdf, ingest_text, KnowledgeIngestRequest, KnowledgeIngestResult,
+    KnowledgeShard, PdfTextToolStatus,
+};
 pub use pause::PauseFlag;
 pub use roles::{Role, RolesRegistry};
 pub use scheduler::{

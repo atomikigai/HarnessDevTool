@@ -11,7 +11,8 @@ use crate::protocol::{
     SERVER_NAME, SERVER_VERSION,
 };
 use crate::tools::{
-    self, db as db_tools, session as session_tools, skills, spec, tasks, wrap_error, wrap_text,
+    self, db as db_tools, knowledge as knowledge_tools, session as session_tools, skills, spec,
+    tasks, wrap_error, wrap_text,
 };
 use harness_core::TaskStore;
 use module_db::Manager as DbManager;
@@ -143,6 +144,10 @@ impl Dispatcher {
             "task_submit" => tasks::submit(&self.store, &self.thread_id, &self.agent_id, &args),
             "spec_read" => spec::read(&self.harness_home, &self.thread_id, &args),
             "spec_write" => spec::write(&self.harness_home, self.server_url.as_deref(), &args),
+            "knowledge_pdftotext_check" => Ok(knowledge_tools::pdftotext_check()),
+            "knowledge_pdf_ingest" => {
+                knowledge_tools::pdf_ingest(&self.harness_home, &self.profile, &args)
+            }
             "skills_search" => skills::search(&args),
             "db_query" => db_tools::query(&self.db, &args),
             "db_schema" => db_tools::schema(&self.db, &args),
@@ -293,6 +298,8 @@ mod tests {
             "task_submit",
             "spec_read",
             "spec_write",
+            "knowledge_pdftotext_check",
+            "knowledge_pdf_ingest",
             "db_performance_audit",
             "db_memory_read",
             "db_memory_write",

@@ -1,4 +1,5 @@
 pub mod db;
+pub mod knowledge;
 pub mod session;
 pub mod skills;
 pub mod spec;
@@ -12,6 +13,31 @@ use crate::protocol::ToolDescriptor;
 /// `[a-zA-Z0-9_-]+`); the brief's `task.list` is the conceptual name.
 pub fn list_descriptors() -> Vec<ToolDescriptor> {
     vec![
+        ToolDescriptor {
+            name: "knowledge_pdftotext_check".into(),
+            description: "Check whether `pdftotext` is installed and available on PATH. Returns a warning with OS-specific install guidance when missing."
+                .into(),
+            input_schema: json!({ "type": "object", "properties": {} }),
+        },
+        ToolDescriptor {
+            name: "knowledge_pdf_ingest".into(),
+            description: "Extract a local technical PDF into compact Markdown shards under HARNESS_HOME/profiles/<profile>/knowledge/pdf/<document>. Returns index and shard paths for future agent sessions."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["source_path"],
+                "properties": {
+                    "source_path": {
+                        "type": "string",
+                        "description": "Absolute or working-directory-relative path to a local .pdf file."
+                    },
+                    "title": {
+                        "type": "string",
+                        "description": "Optional human-readable document title used for the output folder."
+                    }
+                }
+            }),
+        },
         ToolDescriptor {
             name: "task_create".into(),
             description: "Create a new task in the current (or named) thread. Emits a \

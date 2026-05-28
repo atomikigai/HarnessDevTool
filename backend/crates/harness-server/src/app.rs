@@ -37,6 +37,7 @@ pub fn build_router(state: Arc<AppState>, cfg: &Config) -> Router {
 
     Router::new()
         .merge(routes::health::router())
+        .merge(routes::knowledge::router())
         .merge(routes::threads::router())
         .merge(routes::sessions::router())
         .merge(routes::events::router())

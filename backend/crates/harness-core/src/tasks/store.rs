@@ -24,6 +24,19 @@ use crate::Error;
 
 const BROADCAST_CAP: usize = 256;
 
+/// Maximum number of "active" tasks (anything not `done` / `abandoned`) that
+/// can coexist in a single thread. Hitting the cap forces the agent to finish
+/// or abandon work in flight before opening a new front — matches the human
+/// rule that a conversation should focus on one of a few small goals at a
+/// time, not pile up dozens of half-started threads.
+pub const THREAD_ACTIVE_TASK_CAP: usize = 3;
+
+/// Whether a status counts toward [`THREAD_ACTIVE_TASK_CAP`] and toward the
+/// "what should we resume?" auto-pick at session spawn.
+fn is_active(status: TaskStatus) -> bool {
+    !matches!(status, TaskStatus::Done | TaskStatus::Abandoned)
+}
+
 /// Filesystem-backed [`Task`] store rooted at `$HARNESS_HOME/profiles/default`.
 ///
 /// Cheap to clone — shared internal state is `Arc`-wrapped. Use this as the
@@ -31,6 +44,9 @@ const BROADCAST_CAP: usize = 256;
 #[derive(Clone)]
 pub struct TaskStore {
     home: PathBuf,
+    /// Active profile (workspace) id. Threaded into every on-disk path so
+    /// switching profiles isolates tasks per workspace.
+    profile: String,
     threads: Arc<Mutex<HashMap<String, ThreadState>>>,
 }
 
@@ -40,20 +56,33 @@ struct ThreadState {
 }
 
 impl TaskStore {
-    /// Create a store rooted at `$HARNESS_HOME` (the parent of `profiles/`).
+    /// Create a store rooted at `$HARNESS_HOME` (the parent of `profiles/`)
+    /// using the `"default"` profile. Kept for backwards compatibility with
+    /// tests and isolated callers; prefer [`Self::with_profile`].
     pub fn new(home: &Path) -> Result<Self, Error> {
-        fs::create_dir_all(home.join("profiles/default/threads"))?;
+        Self::with_profile(home, "default")
+    }
+
+    /// Create a store scoped to a specific profile (workspace) id.
+    pub fn with_profile(home: &Path, profile: &str) -> Result<Self, Error> {
+        let threads_root = home.join("profiles").join(profile).join("threads");
+        fs::create_dir_all(&threads_root)?;
         Ok(Self {
             home: home.to_path_buf(),
+            profile: profile.to_string(),
             threads: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
-    fn thread_dir(&self, tid: &str) -> PathBuf {
+    fn threads_root(&self) -> PathBuf {
         self.home
-            .join("profiles/default/threads")
-            .join(tid)
-            .join("tasks")
+            .join("profiles")
+            .join(&self.profile)
+            .join("threads")
+    }
+
+    fn thread_dir(&self, tid: &str) -> PathBuf {
+        self.threads_root().join(tid).join("tasks")
     }
 
     fn task_path(&self, tid: &str, task_id: &str) -> PathBuf {
@@ -138,9 +167,39 @@ impl TaskStore {
         read_task_file(&path)
     }
 
+    /// Count active (non-terminal) tasks in a thread. Used for the per-thread
+    /// cap and for the "anything to resume?" check at session spawn.
+    pub fn count_active(&self, tid: &str) -> Result<usize, Error> {
+        let tasks = self.list(tid, ListFilters::default())?;
+        Ok(tasks.into_iter().filter(|t| is_active(t.status)).count())
+    }
+
+    /// Most-recently-updated active task in a thread, or `None` if the thread
+    /// has no active tasks. Used to auto-pick "what should this session
+    /// continue" at spawn time.
+    pub fn latest_active(&self, tid: &str) -> Result<Option<Task>, Error> {
+        let mut tasks: Vec<Task> = self
+            .list(tid, ListFilters::default())?
+            .into_iter()
+            .filter(|t| is_active(t.status))
+            .collect();
+        tasks.sort_by_key(|task| std::cmp::Reverse(task.updated_at));
+        Ok(tasks.into_iter().next())
+    }
+
     /// Create a new task. Status starts as `queued`, or `blocked` if any
     /// `depends_on` is non-empty.
+    ///
+    /// Rejects with [`Error::LimitExceeded`] if the thread already has
+    /// [`THREAD_ACTIVE_TASK_CAP`] active tasks.
     pub fn create(&self, tid: &str, draft: TaskDraft) -> Result<Task, Error> {
+        let active = self.count_active(tid)?;
+        if active >= THREAD_ACTIVE_TASK_CAP {
+            return Err(Error::LimitExceeded(format!(
+                "thread {tid} already has {active} active tasks (cap {THREAD_ACTIVE_TASK_CAP}); \
+                 complete or abandon one before creating another"
+            )));
+        }
         let (index, bus) = self.ensure_thread(tid)?;
         let dir = self.thread_dir(tid);
         let id = next_id(&dir)?;
@@ -426,7 +485,7 @@ impl TaskStore {
 
     /// Internal: list known threads (those with a `tasks/` dir).
     pub fn known_threads(&self) -> Result<Vec<String>, Error> {
-        let root = self.home.join("profiles/default/threads");
+        let root = self.threads_root();
         let mut out = vec![];
         if !root.exists() {
             return Ok(out);
@@ -659,6 +718,60 @@ mod tests {
         assert!(s.renew("thr-1", "T-0001", "agent:b").is_err());
 
         s.release("thr-1", "T-0001", "agent:a").unwrap();
+    }
+
+    fn mk_draft(title: &str) -> TaskDraft {
+        TaskDraft {
+            title: title.into(),
+            parent: None,
+            depends_on: vec![],
+            acceptance: vec![],
+            labels: vec![],
+            created_by: "human".into(),
+        }
+    }
+
+    #[test]
+    fn create_rejects_when_thread_at_active_cap() {
+        let (_dir, s) = store();
+        for i in 1..=THREAD_ACTIVE_TASK_CAP {
+            s.create("thr-1", mk_draft(&format!("t{i}"))).unwrap();
+        }
+        let err = s
+            .create("thr-1", mk_draft("overflow"))
+            .expect_err("cap should reject");
+        assert!(matches!(err, Error::LimitExceeded(_)), "got {err:?}");
+
+        // Finishing a task frees a slot.
+        let patch = TaskPatch {
+            status: Some(TaskStatus::Abandoned),
+            why_abandoned: Some("test".into()),
+            ..Default::default()
+        };
+        s.patch("thr-1", "T-0001", patch, "human").unwrap();
+        s.create("thr-1", mk_draft("after-free")).unwrap();
+    }
+
+    #[test]
+    fn latest_active_picks_most_recently_updated() {
+        let (_dir, s) = store();
+        s.create("thr-1", mk_draft("a")).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        s.create("thr-1", mk_draft("b")).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        // Touch T-0001 so it becomes the most recent.
+        s.patch(
+            "thr-1",
+            "T-0001",
+            TaskPatch {
+                labels: Some(vec!["bump".into()]),
+                ..Default::default()
+            },
+            "human",
+        )
+        .unwrap();
+        let pick = s.latest_active("thr-1").unwrap().unwrap();
+        assert_eq!(pick.id, "T-0001");
     }
 
     #[test]

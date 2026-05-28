@@ -26,6 +26,7 @@
     type DbEngine,
     type SslMode
   } from '$lib/api/db';
+  import { parseParamsJson, validateConnection } from '$lib/api/schemas/db';
   import { ApiError } from '$lib/api/client';
   import { Loader2 } from '$lib/icons';
   import { toast } from 'svelte-sonner';
@@ -102,25 +103,15 @@
     }
   }
 
-  function validate(): boolean {
-    const errs: Record<string, string> = {};
-    if (!name.trim()) errs.name = 'Required';
-    if (!database.trim()) errs.database = engine === 'sqlite' ? 'File path required' : 'Required';
-    if (needsHost(engine) && !host.trim()) errs.host = 'Required';
-    fieldErrors = errs;
-    return Object.keys(errs).length === 0;
-  }
-
+  /**
+   * Build the candidate input from form state. Parses the advanced-JSON field
+   * and surfaces a `params` field error if it's malformed.
+   */
   function buildInput(): ConnectionInput | null {
-    let params: Record<string, string> | undefined;
-    if (paramsText.trim()) {
-      try {
-        const parsed = JSON.parse(paramsText);
-        if (parsed && typeof parsed === 'object') params = parsed as Record<string, string>;
-      } catch {
-        fieldErrors = { ...fieldErrors, params: 'Invalid JSON' };
-        return null;
-      }
+    const paramsResult = parseParamsJson(paramsText);
+    if (!paramsResult.ok) {
+      fieldErrors = { ...fieldErrors, params: paramsResult.error };
+      return null;
     }
     const body: ConnectionInput = {
       name: name.trim(),
@@ -134,13 +125,24 @@
       if (password) body.password = password;
     }
     if (engine === 'postgres') body.ssl_mode = sslMode;
-    if (params) body.params = params;
+    if (paramsResult.value) body.params = paramsResult.value;
     return body;
   }
 
+  /**
+   * Validate via valibot. Returns the validated body when ok, null otherwise.
+   * Field errors are mirrored to local state for inline rendering.
+   */
+  function validateInput(): ConnectionInput | null {
+    const candidate = buildInput();
+    if (!candidate) return null;
+    const result = validateConnection(candidate);
+    fieldErrors = result.fieldErrors;
+    return result.ok ? candidate : null;
+  }
+
   async function onTest() {
-    if (!validate()) return;
-    const body = buildInput();
+    const body = validateInput();
     if (!body) return;
     testing = true;
     testResult = null;
@@ -171,8 +173,7 @@
   async function onSubmit(ev: SubmitEvent) {
     ev.preventDefault();
     if (submitting) return;
-    if (!validate()) return;
-    const body = buildInput();
+    const body = validateInput();
     if (!body) return;
 
     submitting = true;

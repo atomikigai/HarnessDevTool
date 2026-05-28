@@ -56,6 +56,22 @@ just test            # tests de ambos stacks
 Copia `.env.example` a `.env` y ajusta `HARNESS_HOME` si no quieres
 `~/.harness`.
 
+## CLIs soportados y auth compartida (importante)
+
+El harness sabe spawnear 4 CLIs: `claude`, `codex`, `cursor` (binario
+`cursor-agent`) y `antigravity` (binario `agy`). Cada uno guarda su token de
+auth en su propio directorio del home: `~/.claude/`, `~/.codex/`,
+`~/.cursor/`, `~/.antigravity/`.
+
+En docker, esos directorios se **bind-mountean RW** al container — el harness
+y el host comparten literalmente el token store. Esto permite que el refresh
+del token sobreviva a destruir el container.
+
+**Restriccion**: no corras el mismo CLI con otra cuenta en el host mientras
+hay sesion activa en el harness. Podria confundir el token store del CLI.
+Ver [[agents/supported-clis]] y la decision N4 en
+[[build-plan/decisions-locked]].
+
 ## Referencia
 
 El indice completo de documentacion vive en

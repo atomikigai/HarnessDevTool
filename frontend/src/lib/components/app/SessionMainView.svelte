@@ -9,9 +9,9 @@
     • Footer with attach (visual) + free-text input that forwards to PTY
 
   Notes:
-    • The terminal owns its own SSE / xterm lifecycle; we just embed it.
-    • The footer input is an alternative to clicking into the xterm — on
-      Enter we POST the same bytes to /sessions/<sid>/input. The xterm
+    • The terminal owns its own SSE / renderer lifecycle; we just embed it.
+    • The footer input is an alternative to clicking into the terminal — on
+      Enter we POST the same bytes to /sessions/<sid>/input. The terminal
       will echo them back through SSE just like any other key press.
     • "Restart" is a best-effort: kill the current session, then create
       a new one with the same kind+cwd, and notify the parent so it can
@@ -47,6 +47,8 @@
   let sending = $state(false);
   let stopping = $state(false);
   let restarting = $state(false);
+  let attaching = $state(false);
+  let fileInputEl: HTMLInputElement | null = $state(null);
 
   const encoder = new TextEncoder();
 
@@ -57,8 +59,17 @@
   async function sendInput() {
     if (!session || !input || sending || stopped) return;
     sending = true;
+    const payload = input;
     try {
-      await api.sessions.input(session.id, encoder.encode(input + '\r'));
+      // Send the text and the Enter as SEPARATE writes with a small gap so
+      // the running TUI (Claude/Codex) sees them as two distinct PTY reads:
+      // text first (renders into the prompt), then \r (submits). Sending
+      // `text + '\r'` in a single chunk lets the CLI's Ink reconciler treat
+      // the burst as a paste and swallow the trailing CR, so the message
+      // never gets submitted.
+      await api.sessions.input(session.id, encoder.encode(payload));
+      await new Promise((r) => setTimeout(r, 60));
+      await api.sessions.input(session.id, encoder.encode('\r'));
       input = '';
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -72,6 +83,30 @@
     if (ev.key === 'Enter' && !ev.shiftKey) {
       ev.preventDefault();
       void sendInput();
+    }
+  }
+
+  function pickFiles() {
+    if (!session || stopped || attaching) return;
+    fileInputEl?.click();
+  }
+
+  async function onFilesPicked(ev: Event) {
+    if (!session) return;
+    const t = ev.currentTarget as HTMLInputElement;
+    const files = t.files ? Array.from(t.files) : [];
+    t.value = '';
+    if (files.length === 0) return;
+    attaching = true;
+    try {
+      const saved = await api.sessions.attach(session.id, files);
+      const summary = saved.map((f) => f.name).join(', ');
+      toast.success(`Attached ${saved.length} file${saved.length === 1 ? '' : 's'}: ${summary}`);
+    } catch (err) {
+      const msg = err instanceof ApiError ? err.message : String(err);
+      toast.error(`Attach failed: ${msg}`);
+    } finally {
+      attaching = false;
     }
   }
 
@@ -154,6 +189,24 @@
       >
         {session.kind} · {session.id.slice(0, 8)}
       </span>
+      {#if session.role === 'zeus-orchestrator'}
+        <span
+          class="inline-flex items-center gap-1 rounded border px-1.5 py-0.5 font-mono text-[10px] font-bold uppercase"
+          style="color: rgb(74 222 128); border-color: rgba(74 222 128 / 0.5); background: rgba(74 222 128 / 0.1);"
+          title="Root supervisor session — can spawn child workers via session_spawn_child"
+        >
+          ZEUS
+        </span>
+      {:else if session.parent_session_id}
+        <span
+          class="inline-flex items-center gap-1 rounded border px-1.5 py-0.5 font-mono text-[10px] font-semibold"
+          style="color: var(--fg-muted); border-color: var(--border-subtle); background: var(--surface-titlebar);"
+          title={`Child of session ${session.parent_session_id}` +
+            (session.role ? ` · role ${session.role}` : '')}
+        >
+          ↳ {session.role ?? 'child'}
+        </span>
+      {/if}
       {#if k}
         <span
           class="inline-flex items-center rounded px-1.5 py-0.5 font-mono text-[10px] font-semibold"
@@ -233,9 +286,12 @@
           </span>
         </div>
 
-        <!-- xterm — header-less variant -->
+        <!-- Body. `{#key session.id}` forces remount when the selected session
+             changes, so its terminal + SSE are torn down and rebuilt. -->
         <div class="min-h-0 flex-1">
-          <TerminalView threadId={session.thread_id} sessionId={session.id} embedded />
+          {#key session.id}
+            <TerminalView threadId={session.thread_id} sessionId={session.id} embedded />
+          {/key}
         </div>
 
         <!-- Footer prompt -->
@@ -246,17 +302,25 @@
             border-color: rgba(255, 255, 255, 0.06);
           "
         >
+          <input
+            type="file"
+            multiple
+            class="hidden"
+            bind:this={fileInputEl}
+            onchange={onFilesPicked}
+          />
           <button
             type="button"
-            class="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border opacity-60"
+            onclick={pickFiles}
+            disabled={stopped || attaching}
+            class="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border transition-colors disabled:opacity-50"
             style="
               border-color: rgba(255, 255, 255, 0.1);
               background: rgba(255, 255, 255, 0.05);
-              color: #94a3b8;
+              color: #cbd5e0;
             "
-            title="Attach files (coming soon)"
+            title="Attach files to this session"
             aria-label="Attach files"
-            disabled
           >
             <Paperclip class="h-3.5 w-3.5" />
           </button>

@@ -12,6 +12,7 @@
 
 pub mod error;
 pub mod export;
+pub mod lease;
 pub mod manager;
 pub mod pool;
 pub mod query;
@@ -23,10 +24,11 @@ pub mod value;
 
 pub use error::{DbError, DbResult};
 pub use export::{ExportFormat, ExportRequest, ExportResult, ExportScope, ExportTarget};
+pub use lease::PinnedTab;
 pub use manager::Manager;
 pub use types::{
-    Column, Connection, ConnectionInput, Engine, ForeignKey, Index, QueryResult, Row,
-    SchemaTree, SchemaTreeSchema, SslMode, Table, TableKind, TestResult,
+    Column, Connection, ConnectionInput, Engine, ForeignKey, Index, QueryResult, Row, SchemaTree,
+    SchemaTreeSchema, SslMode, Table, TableKind, TestResult,
 };
 pub use value::Value;
 

@@ -21,7 +21,9 @@ pub mod pricing;
 pub mod reporter;
 
 pub use pricing::{model_price, ModelPrice};
-pub use reporter::{ClaudeTranscriptReporter, CodexStubReporter, CostReporter, SessionCost, Usage};
+pub use reporter::{
+    ClaudeTranscriptReporter, CodexStubReporter, CostReporter, SessionCost, StubReporter, Usage,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[cfg_attr(feature = "ts-export", derive(TS))]
@@ -107,8 +109,14 @@ pub struct BudgetStore {
 }
 
 impl BudgetStore {
+    /// Backwards-compatible loader: uses the `"default"` profile.
     pub fn load(home: &Path) -> Result<Self, Error> {
-        let dir = home.join("profiles/default/budgets");
+        Self::load_for_profile(home, "default")
+    }
+
+    /// Load the budget store for a specific profile (workspace).
+    pub fn load_for_profile(home: &Path, profile: &str) -> Result<Self, Error> {
+        let dir = home.join("profiles").join(profile).join("budgets");
         fs::create_dir_all(&dir)?;
         let mut map = HashMap::new();
         for entry in fs::read_dir(&dir)? {

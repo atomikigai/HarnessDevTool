@@ -19,6 +19,32 @@ import {
   type TableMeta
 } from '$lib/api/db';
 
+/**
+ * Comment-aware extraction of the first SQL keyword, uppercase. Mirrors
+ * `module-db::query::leading_keyword` on the backend so the UI can decide
+ * what to optimistically reflect (e.g. transaction state for the pin icon).
+ */
+function leadingSqlKeyword(sql: string): string {
+  let s = sql.trimStart();
+  while (true) {
+    if (s.startsWith('--')) {
+      const nl = s.indexOf('\n');
+      if (nl === -1) return '';
+      s = s.slice(nl + 1).trimStart();
+      continue;
+    }
+    if (s.startsWith('/*')) {
+      const end = s.indexOf('*/');
+      if (end === -1) return '';
+      s = s.slice(end + 2).trimStart();
+      continue;
+    }
+    break;
+  }
+  const m = s.match(/^[A-Za-z_]+/);
+  return m ? m[0].toUpperCase() : '';
+}
+
 export type DbTabKind = 'sql' | 'table';
 
 export interface DbTab {
@@ -39,6 +65,12 @@ export interface DbTab {
   error: string | null;
   result: QueryResult | null;
   lastQueryId: string | null;
+  /**
+   * Whether this tab is pinned to a dedicated DB connection (Q13). Set by
+   * the UI toggle, or automatically true after the backend auto-pinned on a
+   * `BEGIN`. Visual-only: actual lease state lives on the backend.
+   */
+  pinned?: boolean;
 }
 
 export interface PendingRowEdit {
@@ -401,17 +433,28 @@ class DbStore {
 
     this.patchTab(connId, tabId, { loading: true, error: null });
     try {
+      // Namespace the tab id with the connection so the backend lease map
+      // doesn't collide if two workspaces happen to mint the same local id.
+      // The lease auto-pins on `BEGIN` and auto-unpins on `COMMIT`/`ROLLBACK`
+      // — see Q13 in docs/12-build-plan/open-questions.md.
       const res = await dbApi.query(connId, {
         database: tab.database,
         sql,
         page: tab.page,
-        page_size: tab.pageSize
+        page_size: tab.pageSize,
+        tab_id: `${connId}:${tabId}`
       });
-      this.patchTab(connId, tabId, {
+      // Mirror backend auto-pin/unpin transitions in the UI so the lock
+      // icon reflects the actual lease state after BEGIN / COMMIT / ROLLBACK.
+      const kw = leadingSqlKeyword(sql);
+      const patch: Partial<DbTab> = {
         result: res.data,
         lastQueryId: res.data.query_id,
         loading: false
-      });
+      };
+      if (kw === 'BEGIN' || kw === 'START') patch.pinned = true;
+      else if (kw === 'COMMIT' || kw === 'ROLLBACK' || kw === 'END') patch.pinned = false;
+      this.patchTab(connId, tabId, patch);
     } catch (err) {
       this.patchTab(connId, tabId, {
         error: err instanceof Error ? err.message : String(err),
@@ -428,6 +471,33 @@ class DbStore {
       await dbApi.cancel(connId, tab.lastQueryId);
     } catch {
       // best-effort
+    }
+  }
+
+  // ── lease pin/unpin (Q13) ────────────────────────────────────────────────
+  async pinTab(connId: string, tabId: string): Promise<void> {
+    const ws = this.workspace(connId);
+    const tab = ws.tabs.find((t) => t.id === tabId);
+    if (!tab) return;
+    // Optimistic — revert on failure.
+    this.patchTab(connId, tabId, { pinned: true });
+    try {
+      await dbApi.tabs.pin(`${connId}:${tabId}`, {
+        connection_id: connId,
+        database: tab.database
+      });
+    } catch (err) {
+      this.patchTab(connId, tabId, { pinned: false });
+      throw err;
+    }
+  }
+
+  async unpinTab(connId: string, tabId: string): Promise<void> {
+    this.patchTab(connId, tabId, { pinned: false });
+    try {
+      await dbApi.tabs.unpin(`${connId}:${tabId}`);
+    } catch {
+      // best-effort — server may already have released the lease.
     }
   }
 }

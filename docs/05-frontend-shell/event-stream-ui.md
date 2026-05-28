@@ -2,8 +2,8 @@
 id: frontend-shell/event-stream-ui
 title: Render del event stream (PTY + items)
 shard: 05-frontend-shell
-tags: [streaming, ui, xterm, markdown, items]
-summary: PTY → xterm.js en vivo; items estructurados → componentes Svelte tipados.
+tags: [streaming, ui, terminal, ghostty, xterm, markdown, items]
+summary: PTY → terminal web en vivo; items estructurados → componentes Svelte tipados.
 related: [frontend-shell/state-store, harness-core/streaming-events, agents/spawn-lifecycle]
 sources: []
 ---
@@ -12,9 +12,30 @@ sources: []
 
 > Dos rendering paths: **PTY raw** (xterm.js) y **items estructurados** (componentes Svelte). Vienen del mismo SSE pero se procesan distinto.
 
-## Path 1 — PTY output (xterm.js)
+## Path 1 — PTY output (TerminalView)
 
 Items con `kind = "spawn.output"` llevan bytes base64 del PTY del CLI hijo. Se rendean en un `<TerminalView>` dedicado por session.
+
+Implementación actual: `frontend/src/lib/components/app/TerminalView.svelte` usa `ghostty-web`. La documentación histórica y varios shards todavía dicen "xterm.js"; tratar eso como el patrón conceptual (terminal browser compatible con PTY), no como la API exacta del componente actual.
+
+### Pitfall crítico — `ghostty-web` custom key handler
+
+`ghostty-web` NO usa la misma semántica mental que xterm para el handler custom de teclado:
+
+- `attachCustomKeyEventHandler` devuelve `true` cuando la tecla ya fue manejada y debe bloquearse el encoding normal hacia el PTY.
+- Devuelve `false` para dejar que `ghostty-web` convierta letras, Enter, flechas, Backspace, etc. y emita `onData`.
+
+Regla: el handler custom solo debe devolver `true` para shortcuts que la UI consume explícitamente, por ejemplo copy/paste propios. Para teclas normales debe devolver `false`.
+
+Síntoma si se rompe: la terminal renderiza output y puede recibir SSE, pero no se puede escribir, Enter no envía nada y las flechas no se mueven dentro del CLI. El bug real fue devolver `true` por defecto, lo que tragaba todo el input antes de llegar al PTY.
+
+Checklist mínimo al tocar `<TerminalView>`:
+
+1. Click dentro del canvas de terminal.
+2. Escribir texto visible en el CLI.
+3. Enter envía/submite.
+4. Flechas arriba/abajo navegan historial o opciones del CLI.
+5. Ctrl+C sin selección llega al PTY; copiar con selección sigue copiando.
 
 ```svelte
 <!-- $lib/components/app/TerminalView.svelte -->

@@ -17,25 +17,36 @@ sources: []
 ### Q1 · Identidad/profile activo `[RESUELTA]`
 → Profile activo es **global del backend**, resuelto vía symlink `~/.harness/active_profile` + env `HARNESS_PROFILE`. Cambio de profile en UI dispara symlink update + restart suave. Ver [[cross-cutting/profiles]] y [[build-plan/decisions-locked]].
 
-### Q2 · `AGENTS.md` snapshot del proyecto del usuario `[PENDIENTE]`
-- Cuando el thread tiene `working_dir = /home/me/proj/myapp`, ¿cómo encuentra el harness el `AGENTS.md`?
-- **Propuesta**: subir desde `working_dir` buscando git root; si existe `<git-root>/AGENTS.md`, snapshot. Si no, fallback a `~/AGENTS.md` global del usuario. Si tampoco, vacío.
-- **Decisión requerida antes de F1**.
+### Q2 · `AGENTS.md` snapshot del proyecto del usuario `[RESUELTA — reformulada]`
+→ `AGENTS.md` **no** vive en el repo del usuario. En su lugar: cuando se abre una sesión a una carpeta nueva, el harness corre un **análisis inicial del repo** y genera/actualiza un `ARCHITECTURE.md` **dentro del propio repo del usuario**. Diseño:
+- **Corto, indexable, referenciable** — frontmatter + shards atómicos (≤ 80 líneas cada uno).
+- Sub-shards en `architecture/` cuando una sección crece (`architecture/data-model.md`, `architecture/routes.md`, etc.), linked desde el índice raíz.
+- Generado por un agente "repo-mapper" (rol nuevo) que corre `repo.scan` + heurísticas (lenguajes, frameworks, entrypoints) + LLM summarization.
+- Refresh manual (botón "Re-analyze repo") o automático con threshold de cambios (decidir en F3).
+- Convive con cualquier `AGENTS.md` del proyecto si el usuario ya tiene uno; no lo pisa.
+- **Documentar shard nuevo**: [[recipes/architecture-md-generation]] al implementar.
 
-### Q3 · Correlación de logs cross-process `[PENDIENTE]`
-- El `harness-server` loggea con `tracing`. El `claude`/`codex` hijo escribe a su PTY. ¿Cómo correlacionamos?
-- **Propuesta**: cada spawn lleva `spawn_id` (UUID). Spans del backend lo incluyen como atributo; `spawns/<sid>/output.log` lleva el id en su path. Cross-ref por timestamp + id.
-- **Decisión menor, no bloqueante**.
+### Q3 · Correlación de logs cross-process `[RESUELTA]`
+→ Cada spawn lleva `spawn_id` (UUID v4) asignado al crear el child. Spans `tracing` del backend lo incluyen como atributo; `spawns/<sid>/output.log` lleva el id en su path. Cross-ref por timestamp + id.
 
 ## F1 — Sesiones
 
-### Q4 · Múltiples sesiones simultáneas en UI desde F1 `[PENDIENTE]`
-- ¿Permitimos lista + tabs desde F1 o esperamos a F3?
-- **Propuesta**: F1 = lista en sidebar muestra activas pero vista activa **una sola** a la vez. Multi-tab en F3 cuando el equipo lo necesita.
+### Q4 · Múltiples sesiones simultáneas en UI desde F1 `[RESUELTA]`
+→ **Sí, multi-sesión real**. Backend ya soporta múltiples sesiones; la clave es que la UI **no cierre nada al cambiar de pantalla**. Implicaciones:
+- Cada sesión/conexión vive en el backend independiente de la ruta UI activa.
+- Frontend monta/desmonta vistas pero el state persistente (PTY buffers, DB pools, SSH channels, transfer queues) sigue corriendo.
+- Ir de `/agents` a `/db` y volver: la sesión PTY sigue viva; el output que llegó mientras estabas en `/db` se reprodujo via SSE buffer y la vista lo muestra al re-montar.
+- Lo mismo para `/db` ↔ `/ssh`: pool y conexiones no se destruyen al navegar.
+- **Regla**: solo se cierra cuando el usuario explícitamente cierra la sesión/conexión, o por TTL/idle timeout del backend.
+- UI: tabs (no una vista única) para sesiones de agentes, mostrando indicador "live" cuando llega output mientras estás en otra tab.
 
-### Q5 · CLIs desconocidos (no `claude` ni `codex`) `[PENDIENTE]`
-- ¿Soportamos otros (aider, cursor-cli)?
-- **Propuesta**: F1 hardcodea dos opciones. F4+ generaliza con `agent_kind: "custom"` + plantilla del usuario.
+### Q5 · CLIs soportados `[RESUELTA]`
+→ Set fijo de **4 CLIs hardcoded**: `claude`, `codex`, `cursor` (cursor-agent), `antigravity` (`agy`). No hay `agent_kind: custom` por ahora. Cada CLI necesita:
+- Detector binario (path discovery).
+- Plantilla de spawn (cómo se inyecta el prompt inicial — ver [[agents/spawn-lifecycle]] N2).
+- Mapeo de flags (`--append-system-prompt` equivalente si existe).
+- Test de smoke: spawn + saludo + exit.
+- **Acción**: ampliar selector del UI de "claude/codex" a los 4. Crear shard [[agents/supported-clis]] con la matriz de features por CLI.
 
 ### Q6 · Persistencia del PTY raw `[RESUELTA]`
 → 50 MiB con rotación zstd. Documentado en [[agents/spawn-lifecycle]].
@@ -50,31 +61,32 @@ sources: []
 ### Q8 · Granularidad de tasks `[RESUELTA]`
 → ≤6 `acceptance.checks` por task. Validation warning (no error). Documentado en [[agents/orchestrator]] y [[foundations/lessons-learned]] §D4.
 
-### Q9 · Matriz roles × tools MCP permitidas `[PENDIENTE]`
-- ¿El planner puede `task.create` pero no `task.claim`? ¿El generator al revés?
-- **Decisión requerida antes de F2**. Lo formalizo como tabla en [[agents/capability-registry]] o en un shard nuevo.
+### Q9 · Matriz roles × tools MCP permitidas `[RESUELTA]`
+→ Cerrada en [[agents/role-capability-matrix]]. Modelo: `role + tool + resource + scope + ownership + thread_id + path_policy`. `task.create` solo planner/orchestrator; workers usan nueva tool `task.propose`. `spec.set_section` exige version check. Workers no tienen `memory.search:global`. `repo.write` atado a `task.write_paths`. Audit obligatorio para allow y deny.
 
 ### Q10 · Roles concurrentes del mismo tipo `[RESUELTA]`
 → `max_concurrent_spawns = 3` por thread, configurable en `budget.toml`. Documentado en [[build-plan/phase-3-team]].
 
 ## F3 — Equipo
 
-### Q11 · `spec.md` lock vs concurrencia `[PENDIENTE]`
-- ¿El planner puede editar `spec.md` mientras hay workers activos?
-- **Propuesta**: spec append-only durante un thread activo; solo planner edita; secciones individuales pueden actualizarse vía `spec.set_section` con lock por sección.
+### Q11 · `spec.md` lock vs concurrencia `[RESUELTA]`
+→ `spec.md` es **append-only durante thread activo**; solo planner/orchestrator edita. `spec.append_section` no necesita lock (es append). `spec.set_section` exige `spec_version_required` + section lock atómico — rechaza si la versión está stale (ver [[agents/role-capability-matrix]] §spec.md). Workers nunca tocan spec; escriben en `task.notes`/`task.artifacts`/`qa.results`/`learner.observations`.
 
 ### Q12 · Recovery de un agente muerto `[RESUELTA]`
 → Tras `TTL + grace 30min` sin renew, scheduler mueve task a `queued` con `notes.recovered_from_crash`. Documentado en [[agents/spawn-lifecycle]].
 
 ## F4 — Módulos
 
-### Q13 · Multi-tab queries y conexiones DB `[PENDIENTE]`
-- ¿Cada tab "Editor SQL" comparte conexión del pool o usa su propia?
-- **Propuesta**: comparten; el pool gestiona.
+### Q13 · Multi-tab queries y conexiones DB `[RESUELTA]`
+→ **Shared pool por default + pin opt-in cuando hace falta session state**.
+- Default: cada query SQL del editor pide una conexión al pool, la usa, la devuelve. El pool ya respeta `max_connections`.
+- Casos que requieren la misma conexión (transacciones largas, `SET search_path`, temp tables, `LISTEN/NOTIFY`): la tab obtiene un **lease** de una conexión específica.
+- Trigger del lease: (a) automático al detectar `BEGIN` en el SQL ejecutado, (b) manual via toggle "🔒 Pin session" en el header del editor.
+- Liberación: `COMMIT`/`ROLLBACK`, cerrar tab, o timeout de inactividad (5min) → libera la conexión y warning al usuario si había transacción abierta.
+- Cancelación de queries usa una conexión auxiliar del pool (MySQL/PG), ortogonal al lease.
 
-### Q14 · SFTP transfer policies default `[PENDIENTE]`
-- ¿`overwrite`, `skip`, `resume`, `ask`?
-- **Propuesta**: `resume` por default; UI permite override por batch. Para conflictos sin resume posible (size mismatch): `ask`.
+### Q14 · SFTP transfer policies default `[RESUELTA]`
+→ Default **`resume`**. Si la transferencia no es resumable (size mismatch / file vanished / hash divergente): fallback a **`ask`** con modal por archivo (opción "apply to all" en el modal). UI permite override por batch al encolar. **Nunca `overwrite` silencioso.**
 
 ## F5 — Skills
 
@@ -89,13 +101,11 @@ sources: []
 
 ## F6 — Polish
 
-### Q18 · Tasks-target reproducibles para GEPA `[PENDIENTE]`
-- ¿Cómo se construye? ¿Generated o curated?
-- **Propuesta**: curated manual al cierre de F3 (5 tasks-target representativas). Mantener en `tests/eval/targets/`.
+### Q18 · Tasks-target reproducibles para GEPA `[RESUELTA]`
+→ **Curated manual** al cierre de F3: 5 tasks-target representativas cubriendo (a) frontend simple, (b) backend CRUD, (c) bug fix, (d) refactor, (e) DB schema change. Viven en `tests/eval/targets/`. F6 puede ampliar a generated/expandido si hace falta más coverage.
 
-### Q19 · Distribución `[PENDIENTE]`
-- Docker Hub público vs ghcr.io vs solo self-host?
-- **Decidir en F6**, no urgente.
+### Q19 · Distribución `[RESUELTA]`
+→ **Self-hosted only**. Dockerfile + `docker compose` en el repo; el usuario clona, builda y corre local. No publicamos imagen a registries públicos por ahora. Reduce superficie de ataque y mantenimiento. Re-abrir si surge demanda real.
 
 ### Q20 · IDE integration (ACP-style) `[RESUELTA — fuera de scope]`
 → Fuera de scope hasta haber estabilizado todo lo demás.
@@ -104,11 +114,8 @@ sources: []
 
 ## Nuevas surgidas en cleanup (no estaban antes)
 
-### N1 · `harness-mcp-server`: sub-binario vs in-process `[PENDIENTE]`
-- ¿Lo spawneamos como child process del backend o lo linkeamos in-process?
-- **Trade-off**: child = aislamiento + Codex-like + más memoria; in-process = más rápido + simpler + más acoplado.
-- **Propuesta**: in-process por default (`feature = "embedded"`); habilitar child como fallback si surgen problemas.
-- **Decidir en F2**.
+### N1 · `harness-mcp-server`: sub-binario vs in-process `[RESUELTA]`
+→ **In-process por default** vía feature `embedded`. Child process como fallback documentado si surgen problemas de aislamiento/crash. Más simple para arrancar; fácil cambiar después porque la interfaz MCP stdio JSONL es la misma.
 
 ### N2 · Cómo el harness inyecta el prompt inicial al CLI hijo `[RESUELTA]`
 - **Mecanismo**: stdin como primer "user input" al PTY. Portable a cualquier CLI, no depende de flags.
@@ -120,27 +127,26 @@ sources: []
 - Fallback futuro si el rol "se olvida" turn-tras-turn: añadir `--append-system-prompt` por CLI (requiere confirmar soporte en `codex`). No bloquea F3.
 - Documentar mecanismo final en [[agents/spawn-lifecycle]] al implementar F3.
 
-### N3 · Sandbox de las tools que el CLI ejecuta `[PENDIENTE]`
-- `claude` tiene su propio sandbox/approval para `shell.exec`. ¿Necesitamos sandbox adicional desde el harness?
-- **Propuesta**: confiamos en el sandbox del CLI hijo para sus tools. Nuestro `harness-sandbox` envuelve solo lo que el harness-bridge ejecuta directamente (raro: la mayoría son rails read-only).
-- **Decidir en F3**.
+### N3 · Sandbox de las tools que el CLI ejecuta `[RESUELTA]`
+→ Confiamos en el sandbox del CLI hijo (`claude`/`codex`/`cursor`/`agy`) para sus propios `shell.exec` y tools. **No duplicamos.** `harness-sandbox` envuelve solamente lo que el bridge ejecuta directamente — y casi todo el bridge es read-only (`repo.scan`, `memory.search`, `task.list`...), así que el sandbox del harness es mínimo.
 
-### N7 · Implementar módulos SQL y SSH (F4) `[PENDIENTE, F4]`
+### N7 · Implementar módulos SQL y SSH (F4) `[WORK ITEM — SQL done, SSH pendiente en F4]`
 Hay diseño UI ya hecho para ambos módulos, vive en `DEVTOOL - GUI/` (gitignored, copia local del usuario):
 - `harness-table-v2.jsx` — vista de tabla virtualizada estilo "paper" con row-detail panel derecho, breadcrumbs sara/public/users, tabs Data/Query/Schema/Relations. Es la referencia para **SQL** (DB Manager).
 - `harness-ssh.jsx` — referencia para **SSH Manager** (FileZilla-style 2-paneles, drag&drop, transfer queue).
 - Screenshots: `screenshots/preview.png` y `paper-interactive.png` muestran SQL en uso.
 
 Lo que falta:
-- **Backend SQL** (crate `module-db`): drivers sqlx para SQLite/Postgres/MySQL; pool por conexión guardada; query runner con pagination + cancel; introspección de schema (DB→tabla→columna); endpoints REST (`GET /api/db/connections`, `POST /api/db/query`, etc) + SSE para streaming de filas grandes.
-- **Backend SSH** (crate `module-ssh`): russh + russh-sftp; gestión de identidades + agente + host keys; cola de transferencias resumable; endpoints REST + SSE para progreso.
-- **Frontend SQL**: ruta `/sql/+page.svelte` con layout 3-col (sidebar conexiones → tablas → tabla virtualizada). Adaptar `harness-table-v2.jsx` a Svelte 5 + Tailwind v4.
-- **Frontend SSH**: ruta `/ssh/+page.svelte` con dos paneles local↔remote, drag&drop, queue panel inferior.
-- **IconRail**: las entradas SQL y SSH están hoy disabled con badge "soon"; habilitarlas cuando el módulo esté listo.
+- ~~**Backend SQL** (crate `module-db`)~~ ✅ DONE: pools per-engine SQLite/Postgres/MySQL, query.run/cancel/export, schema.tree, row CRUD, MCP tools (`db_query/schema/explain`).
+- **Backend SSH** (crate `module-ssh`): russh + russh-sftp; gestión de identidades + agente + host keys; cola de transferencias resumable; endpoints REST + SSE para progreso. **No iniciado.**
+- ~~**Frontend SQL**~~ ✅ DONE en `/db`: schema tree + SQL editor + ResultGrid virtualizado + RowEditor + ExportDialog. Falta solo: schema valibot en el ConnectionFormDialog.
+- **Frontend SSH**: ruta `/ssh/+page.svelte` con dos paneles local↔remote, drag&drop, queue panel inferior. **No iniciado.**
+- **IconRail**: SQL ya habilitado; SSH sigue disabled con badge "soon".
 
 Este es el alcance entero de **F4** (ver `phase-4-modules.md`). Anotado aquí porque ya existe diseño UI listo para arrancar.
 
-### N6 · Llenar los tabs del SessionRightPanel con datos reales `[PENDIENTE, F2.5/F3]`
+### N6 · Llenar los tabs del SessionRightPanel con datos reales `[WORK ITEM — revisar estado actual antes de F3]`
+> **Nota**: ya hubo cambios incrementales sobre estos tabs en commits previos. Antes de retomar, hacer un audit del estado real de `SessionRightPanel.svelte` (Tasks/Agents/Info) y actualizar este shard con lo que falta de verdad.
 El panel derecho de la sesión (`SessionRightPanel.svelte`) tiene 3 tabs y solo el de Tasks lee data parcial. Pendiente:
 
 - **Tasks**: hoy lee de `tasksState` que se suscribe vía SSE solo a la thread seleccionada. Funciona PARCIAL porque la sesión claude actual NO crea tasks vía MCP todavía (espera spawn vía orchestrator F3). **Acción**: verificar que cuando el claude de la sesión llame `mcp__harness__task_create` (cuando exista, hoy solo está `task_list/get/claim/etc`), las nuevas tasks aparezcan en el panel en tiempo real vía el SSE `task.created` que ya existe.
@@ -148,6 +154,8 @@ El panel derecho de la sesión (`SessionRightPanel.svelte`) tiene 3 tabs y solo 
   - Para sesiones humanas (sin orchestrator), añadir un botón "+ task" en el tab que llame al REST endpoint con `created_by: "human"`.
 
 - **Agents (sub-agentes)**: el tab debe mostrar los agentes paralelos spawneados POR esta sesión claude (no por el harness directamente). Esto requiere:
+  - Observado 2026-05-27: la orquestación Claude → Codex funciona; Claude pudo iniciar Codex y Codex quedó trabajando. Bug pendiente: el tab Agents del panel derecho no reflejó esa sesión hija activa.
+  - Regla de producto: agentes autorizados pueden iniciar subagentes si lo necesitan; no es exclusivo del Zeus/root orchestrator. La UI debe mostrar el árbol completo padre → hijas → nietas si se permite más de un nivel.
   - Que claude pueda llamar a una tool MCP tipo `agent.spawn { role, prompt, ... }` que vaya al harness y arranque una sub-sesión hija marcada con `parent_session_id = <sid>`.
   - Backend: el shape `SessionMeta` necesita campo opcional `parent_session_id`. El Manager lista hijas vía `list_children(parent_sid)`.
   - SSE: emitir `subagent.spawned/started/exited` filtrables por `?parent_session=<sid>`.
@@ -161,18 +169,15 @@ El panel derecho de la sesión (`SessionRightPanel.svelte`) tiene 3 tabs y solo 
   - Tiempo total wallclock vs tiempo del modelo.
   - **Mecanismo**: cuando el CLI hijo expone esto en su output, parsear; alternativa, el harness lleva contadores con base en heartbeats del proceso. Decidir en F3.
 
-### N5 · Adjuntar archivos a las sesiones `[PENDIENTE, F3+]`
-- El footer del SessionMainView tiene un botón clip (icono Paperclip) puesto visualmente pero `disabled`.
-- Hace falta: endpoint backend que acepte multipart (archivos) y los inyecte como contexto al PTY (¿escribir paths en el stdin? ¿exponer un "drop zone" que el agente lea via tool MCP?).
-- **Decidir el mecanismo en F3** (cuando el orchestrator pueda pedir adjuntos como parte de una task). Posibles caminos:
-  - (a) Endpoint `POST /api/sessions/:sid/attach` que copia el archivo a `$HARNESS_HOME/.runtime/attach/<sid>/<name>` y emite SSE `session.attachment` con el path; el agente lo lee del FS.
-  - (b) Endpoint que mete el path como texto en stdin (más sucio; depende del CLI).
-- Habilitar el botón cuando el mecanismo esté claro.
+### N5 · Adjuntar archivos a las sesiones `[RESUELTA — opción (a)]`
+→ Endpoint `POST /api/sessions/:sid/attach` multipart copia archivos a `$HARNESS_HOME/.runtime/attach/<sid>/<filename>` y emite SSE `session.attachment { path, mime, size }`. El CLI hijo accede via tools MCP nuevas `attach.list { session_id }` / `attach.read { session_id, name }`.
+- **Propósito**: que `claude`/`codex`/`cursor`/`agy` puedan ver imágenes, documentos (PDF, MD), o archivos arbitrarios pasados por el usuario.
+- MIME detection en backend; tool `attach.read` devuelve binario base64 + mime para que el CLI decida cómo procesar.
+- Cleanup: directorio `attach/<sid>/` se purga cuando la sesión cierra (o por TTL si la sesión sigue viva > 24h).
+- Habilitar el botón Paperclip del SessionMainView cuando endpoint exista.
 
-### N4 · Auth re-login dentro del container `[PENDIENTE]`
-- Si el bind-mount de `~/.claude/` es del host y el CLI hace refresh de token, ¿escribe sobre el host?
-- **Propuesta**: bind-mount RW por default; el container y el host comparten `~/.claude/` literalmente (el host no debe usar `claude` con otra cuenta en paralelo).
-- Alternativa: copy-on-launch dentro del container; trade-off es perder refresh tokens al destruir el container.
+### N4 · Auth re-login dentro del container `[RESUELTA]`
+→ **Bind-mount RW compartido**. Container y host comparten literalmente `~/.claude/`, `~/.codex/`, `~/.cursor/`, `~/.antigravity/`. Refresh tokens sobreviven a destrucción del container. **Restricción documentada**: el host no debe correr el mismo CLI con otra cuenta en paralelo mientras hay sesión activa en el harness (puede confundir el token store del CLI).
 
 ---
 
@@ -185,9 +190,7 @@ El panel derecho de la sesión (`SessionRightPanel.svelte`) tiene 3 tabs y solo 
 
 ## Estado de cierre
 
-**Resueltas**: Q1, Q6, Q7, Q8, Q10, Q12, Q15, Q16, Q17, Q20, N2 (11). Q7 cerrada con spike F2 (claude OK, codex deferred).
-**Pendientes originales**: Q2, Q3, Q4, Q5, Q9, Q11, Q13, Q14, Q18, Q19 (10 de 20).
-**Nuevas pendientes**: N1, N3, N4, N5, N6, N7 (6).
+**Resueltas**: Q1, Q2, Q3, Q4, Q5, Q6, Q7, Q8, Q9, Q10, Q11, Q12, Q13, Q14, Q15, Q16, Q17, Q18, Q19, Q20, N1, N2, N3, N4, N5 (25/26 preguntas + sub-items).
+**Work items abiertos (no preguntas, trabajo a ejecutar)**: N6 (audit + completar tabs SessionRightPanel, F3), N7 (SSH backend + frontend, F4).
 
-**Total pendiente**: **16** preguntas.
-**Críticas/bloqueantes**: **Q9** (matriz roles × tools, antes de F3 — propuesta ya en chat, falta confirmar y persistir aquí).
+**Total pendiente de decisión: 0.** Todas las preguntas cerradas. Solo quedan slices de implementación.

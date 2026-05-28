@@ -99,8 +99,22 @@ export interface ThreadSummary {
   sessions?: SessionMeta[];
 }
 
-export type SessionKind = 'claude' | 'codex';
+export type SessionKind =
+  | 'claude'
+  | 'codex'
+  | 'cursor'
+  | 'antigravity'
+  /**
+   * Zeus is a virtual orchestrator (not a real CLI). Creating a Zeus session
+   * runs a Claude PTY under the hood with a Zeus orchestrator system prompt;
+   * full multi-CLI delegation lands with F3. See
+   * docs/13-agents/zeus-orchestrator.md.
+   */
+  | 'zeus';
 export type SessionStatus = 'running' | 'exited' | 'killed';
+
+/** Heuristic interaction phase of the child CLI, derived from PTY scrollback. */
+export type AgentState = 'working' | 'blocked' | 'idle' | 'unknown';
 
 export interface SessionMeta {
   id: string;
@@ -111,11 +125,72 @@ export interface SessionMeta {
   status: SessionStatus;
   started_at: string;
   exit_code?: number | null;
+  /** Free-form role label — "zeus-orchestrator" for Zeus, "backend"/"qa"/...
+   *  for spawned workers, null for plain user-created sessions. */
+  role?: string | null;
+  /** Parent session id when this session was spawned by an orchestrator. */
+  parent_session_id?: string | null;
+  /** Topmost ancestor in the session tree (equals `id` for root sessions). */
+  root_session_id?: string;
+  /** Heuristic detector — null until the first detection pass completes. */
+  detected_state?: AgentState | null;
+  /** Whether the harness is tailing a structured JSONL transcript for this
+   *  session (= Chat view is available). True for Claude/Zeus today. */
+  has_transcript?: boolean;
+}
+
+export type TranscriptKind =
+  | 'message'
+  | 'thinking'
+  | 'tool_call'
+  | 'tool_result'
+  | 'system_note'
+  | 'meta'
+  | 'unknown';
+
+export interface TranscriptUsage {
+  input_tokens?: number;
+  output_tokens?: number;
+  cache_read_input_tokens?: number;
+  cache_creation_input_tokens?: number;
+  // Additional fields tolerated.
+  [k: string]: unknown;
+}
+
+export interface TranscriptEvent {
+  seq: number;
+  session_id: string;
+  ts: string;
+  source: 'claude' | 'codex' | 'cursor' | 'antigravity';
+  kind: TranscriptKind;
+  role?: 'user' | 'assistant' | null;
+  content?: string | null;
+  tool_name?: string | null;
+  tool_args?: unknown;
+  tool_use_id?: string | null;
+  tool_result?: unknown;
+  is_error?: boolean | null;
+  /** Model id that produced an assistant turn (e.g. "claude-opus-4-7"). */
+  model?: string | null;
+  /** Token usage for the assistant turn — attached only to its first event. */
+  usage?: TranscriptUsage | null;
+  /** User-facing label for `system_note` events ("init", "compact", ...). */
+  subtype?: string | null;
+  raw?: unknown;
 }
 
 export interface CreateSessionRequest {
   kind: SessionKind;
   cwd?: string;
+  /**
+   * Optional initial PTY size. When provided, the backend opens the PTY at
+   * exactly this size instead of the 80x24 default, so the TUI's first frame
+   * lands at the right dimensions. The SSE catch-up otherwise replays bytes
+   * calibrated for 80 cols into a wider terminal and the user sees a mangled
+   * first frame until they trigger a repaint.
+   */
+  cols?: number;
+  rows?: number;
 }
 
 export interface CreateSessionResponse {
@@ -158,6 +233,30 @@ export interface BudgetView {
 
 export interface SetBudgetRequest {
   limit_usd: number;
+}
+
+export interface ProfileSummary {
+  id: string;
+  display_name: string;
+  path: string | null;
+  created_at: string;
+  active: boolean;
+}
+
+export interface ActiveProfile {
+  active: string;
+  pending: string | null;
+}
+
+export interface CreateProfileRequest {
+  id: string;
+  display_name: string;
+  path?: string;
+}
+
+export interface ActivateProfileResponse {
+  pending: string;
+  requires_restart: boolean;
 }
 
 export const api = {
@@ -247,6 +346,47 @@ export const api = {
         const text = await res.text().catch(() => '');
         throw new ApiError(res.status, `input failed: ${res.status}`, text);
       }
-    }
+    },
+    /**
+     * Attach files to a session (N5). Multipart upload; backend stores under
+     * `$HARNESS_HOME/.runtime/attach/<sid>/<name>` and returns the saved
+     * metadata. The MCP `attach.list`/`attach.read` tools that expose these
+     * to the child CLI land in F3.
+     */
+    attach: async (
+      sessionId: string,
+      files: File[],
+      signal?: AbortSignal
+    ): Promise<AttachedFile[]> => {
+      const url = `${API_BASE.endsWith('/') ? API_BASE.slice(0, -1) : API_BASE}/sessions/${sessionId}/attach`;
+      const form = new FormData();
+      for (const f of files) form.append('file', f, f.name);
+      const res = await fetch(url, { method: 'POST', body: form, signal });
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        throw new ApiError(res.status, `attach failed: ${res.status}`, text);
+      }
+      return (await res.json()) as AttachedFile[];
+    },
+    listAttachments: (sessionId: string, signal?: AbortSignal) =>
+      apiRequest<AttachedFile[]>(`/sessions/${sessionId}/attach`, { signal })
+  },
+  profiles: {
+    list: (signal?: AbortSignal) => apiRequest<ProfileSummary[]>('/profiles', { signal }),
+    active: (signal?: AbortSignal) => apiRequest<ActiveProfile>('/profiles/active', { signal }),
+    create: (body: CreateProfileRequest, signal?: AbortSignal) =>
+      apiRequest<ProfileSummary>('/profiles', { method: 'POST', body, signal }),
+    activate: (id: string, signal?: AbortSignal) =>
+      apiRequest<ActivateProfileResponse>(`/profiles/${encodeURIComponent(id)}/activate`, {
+        method: 'POST',
+        signal
+      })
   }
 };
+
+export interface AttachedFile {
+  name: string;
+  size: number;
+  mime: string;
+  path: string;
+}

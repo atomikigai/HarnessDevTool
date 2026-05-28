@@ -15,15 +15,42 @@ Lanzar una **request humana de alto nivel** ("construye una app TODO", "agrega p
 
 ## Entregables
 
+## Estado actual del slice F3
+
+Audit rápido del 2026-05-27:
+- Scheduler base ya existe en `harness-core::scheduler`: tick 2s, auto-unblock, asignación `queued → generator`, ruteo `pending_verify → evaluator`, cooldown tras verify-fail, cap global de concurrencia y spans `scheduling.*`.
+- Budget base ya existe: `harness-core::budget`, reporters Claude/Codex-stub, endpoint `/api/threads/:id/budget`, SSE `budget.warning` y hard-cap que activa `pause-all`.
+- Kill-switch base ya existe: `/api/pause-all`, `/api/resume-all`, store frontend y control en `TopBar`.
+- Zeus/sub-agentes está en estado puente: `kind=zeus` corre sobre Claude y el MCP expone `session_spawn_child/list/send_input/cancel/read_child_summary`.
+- Observación 2026-05-27: Claude pudo iniciar un subagente Codex y dejarlo trabajando. Bug pendiente: el panel derecho (`SessionRightPanel` / tab Agents) no mostró el agente activo aunque la orquestación sí funcionó.
+- Pendiente para cerrar F3 completo: policy/capability loader, `task.propose`, `spec.md` append-only, artifacts/events, roles por perfil con autorización fuerte, UI de spec/live cost, y test de aceptación "TODO app" end-to-end.
+
 ### Backend — scheduler
-- [ ] `harness-core::scheduler`:
-  - [ ] Loop con tick 2s.
-  - [ ] Recoge tasks `queued` con deps `done` → asigna a un generator idle.
-  - [ ] Recoge tasks `pending_verify` → asigna a evaluator idle.
+- [x] `harness-core::scheduler`:
+  - [x] Loop con tick 2s.
+  - [x] Recoge tasks `queued` con deps `done` → asigna a un generator idle.
+  - [x] Recoge tasks `pending_verify` → asigna a evaluator idle.
   - [ ] Affinity: prefiere asignar tasks del mismo archivo al mismo agente reciente.
-  - [ ] Concurrency cap: `thread.budget.max_concurrent_workers` (default 3).
-  - [ ] Cooldown tras `verify-fail`: no re-asignar misma task al mismo generator inmediatamente.
-- [ ] Logging del scheduler como spans `tracing`: `scheduling.tick { queued, in_progress, pending_verify, idle_agents }`.
+  - [x] Concurrency cap global `max_concurrent` (default 3). Pendiente: leerlo desde `thread.budget.max_concurrent_workers`.
+  - [x] Cooldown tras `verify-fail`: no re-asignar misma task al mismo generator inmediatamente.
+- [x] Logging del scheduler como spans `tracing`: `scheduling.tick { queued, in_progress, pending_verify, idle_agents }`.
+
+### Backend — Zeus orchestrator (work item)
+- [ ] Implementar el routing rol → CLI según la matriz canónica de [[agents/zeus-orchestrator]].
+- [ ] Selector con fallback uniforme a Claude (quota / binary missing / runtime error).
+- [ ] Audit log para cada fallback (`reason: quota_exceeded | binary_missing | runtime_error`).
+- [ ] `POST /api/threads/:tid/sessions { kind: "zeus" }` deja de devolver 400 BadRequest cuando esto esté listo.
+- [ ] UI: tab carrusel principal "Zeus session" + sub-tabs por hija con `parent_session_id`.
+- [ ] Test de aceptación: dado un goal sintético, verificar que cada rol se delega al CLI esperado y que el fallback dispara cuando el primario está bloqueado.
+
+### Backend — authorization (Q9 follow-ups)
+- [ ] **Capability policy loader**: el dispatcher del `harness-mcp-server` lee `capability-policy.yaml` al boot (ver matriz canónica en [[agents/role-capability-matrix]]).
+- [ ] **`check_capability(caller, tool, resource, scope)`**: middleware que envuelve cada handler de tool. Devuelve `Allow` o `Deny { reason }`. Deny se traduce a `permission_denied` para el CLI hijo.
+- [ ] **Nueva tool MCP `task.propose`**: workers no pueden `task.create`; en su lugar encolan propuestas que el planner convierte (o no) en tasks reales. Shape: `{ parent_task_id, discovered_by_role, rationale, suggested_title, suggested_acceptance_criteria }`.
+- [ ] **`spec.set_section` con version check**: exige `spec_version_required` que matchee la versión actual; rechazo si stale.
+- [ ] **`repo.write` path-gated**: la task lleva `write_paths` / `forbidden_paths`; el bridge rechaza writes fuera del allowlist aunque el rol tenga la capability.
+- [ ] **Audit log**: sink en `$HARNESS_HOME/.runtime/audit/bridge.jsonl` con rotación zstd. Una entrada por **cada** allow y deny, con `actor_id`, `actor_role`, `tool`, `resource`, `decision`, `reason`, `input_hash`, `result_hash`.
+- [ ] **Tests de invariantes**: los 12 invariantes de [[agents/role-capability-matrix]] §"Invariantes" como tests de integración del bridge (no unit tests del dispatcher).
 
 ### Backend — roles
 - [ ] Plantillas en `~/.harness/profiles/<p>/roles/{planner,generator,evaluator}.toml`:
@@ -38,16 +65,17 @@ Lanzar una **request humana de alto nivel** ("construye una app TODO", "agrega p
 - [ ] Cuando un rol llama a una tool MCP no permitida → respuesta `denied_by_role` (no error duro, mensaje claro al modelo).
 
 ### Backend — budget
-- [ ] Crate `harness-core::budget`:
+- [x] Crate `harness-core::budget`:
   - [ ] Schema `budget.v1.json`.
-  - [ ] Tracking en RAM y persistencia a `~/.harness/.../budget.toml` al cierre de cada turn (no diferido).
-  - [ ] Soft cap (80%) → notification `budget.warning`.
+  - [x] Tracking en RAM y persistencia a `~/.harness/.../budget.toml` desde el budget pass.
+  - [x] Soft cap → notification `budget.warning` (bandas 75/90/100).
   - [ ] Hard cap → pausa todas las tasks `in_progress`, marca `paused` con `why_paused="budget cap: usd"`.
-- [ ] Endpoint `POST /api/threads/:id/budget` para subir caps.
+  - [x] Hard cap activa `pause-all` global.
+- [x] Endpoint `POST /api/threads/:id/budget` para subir caps.
 
 ### Backend — kill-switch
-- [ ] `POST /api/pause-all` y `POST /api/resume-all`.
-- [ ] Persistente entre reboots.
+- [x] `POST /api/pause-all` y `POST /api/resume-all`.
+- [x] Persistente entre reboots.
 - [ ] UI atajo `Cmd/Ctrl+Shift+.`.
 
 ### Backend — sandbox

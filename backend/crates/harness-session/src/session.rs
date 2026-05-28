@@ -36,6 +36,10 @@ pub struct AgentSession {
     kind_static: AgentKind,
     thread_id_static: String,
     cwd_static: PathBuf,
+    /// Session-tree identity, cached for non-async readers (scheduler,
+    /// audit emit) — matches `meta.parent_session_id` / `meta.root_session_id`.
+    parent_session_id_static: Option<String>,
+    root_session_id_static: String,
 }
 
 impl AgentSession {
@@ -50,6 +54,12 @@ impl AgentSession {
     }
     pub fn cwd(&self) -> &std::path::Path {
         &self.cwd_static
+    }
+    pub fn parent_session_id_static(&self) -> Option<&str> {
+        self.parent_session_id_static.as_deref()
+    }
+    pub fn root_session_id_static(&self) -> &str {
+        &self.root_session_id_static
     }
 }
 
@@ -69,15 +79,24 @@ impl AgentSession {
         dir: PathBuf,
         extra_args: Vec<String>,
         role: Option<String>,
+        parent_session_id: Option<String>,
+        root_session_id: String,
+        initial_size: Option<(u16, u16)>,
         bus: broadcast::Sender<SessionEvent>,
     ) -> Result<Arc<Self>, SessionError> {
         std::fs::create_dir_all(&dir)?;
 
+        // Default to 80x24 when the caller didn't pass a size — matches the
+        // historical behaviour and what every TTY app expects. The frontend
+        // measures its container at mount and passes the real dimensions so
+        // the TUI never has to repaint after the first SIGWINCH, avoiding
+        // the "ugly initial frame" most users would see otherwise.
+        let (cols, rows) = initial_size.unwrap_or((80, 24));
         let pty_system = native_pty_system();
         let pty_pair = pty_system
             .openpty(PtySize {
-                rows: 24,
-                cols: 80,
+                rows,
+                cols,
                 pixel_width: 0,
                 pixel_height: 0,
             })
@@ -97,19 +116,24 @@ impl AgentSession {
         // C.UTF-8 is universally available without locale-gen. Only set if the
         // parent didn't already provide an explicit UTF-8 locale.
         let lang_ok = std::env::var("LANG")
-            .map(|v| v.to_ascii_uppercase().contains("UTF-8") || v.to_ascii_uppercase().contains("UTF8"))
+            .map(|v| {
+                v.to_ascii_uppercase().contains("UTF-8") || v.to_ascii_uppercase().contains("UTF8")
+            })
             .unwrap_or(false);
         if !lang_ok {
             cmd.env("LANG", "C.UTF-8");
         }
         let lc_all_ok = std::env::var("LC_ALL")
-            .map(|v| v.to_ascii_uppercase().contains("UTF-8") || v.to_ascii_uppercase().contains("UTF8"))
+            .map(|v| {
+                v.to_ascii_uppercase().contains("UTF-8") || v.to_ascii_uppercase().contains("UTF8")
+            })
             .unwrap_or(false);
         if !lc_all_ok {
             cmd.env("LC_ALL", "C.UTF-8");
         }
         if !extra_args.is_empty() {
             tracing::info!(
+                spawn_id = %id,
                 kind = %kind,
                 args = ?extra_args,
                 "spawning agent with extra args"
@@ -147,6 +171,10 @@ impl AgentSession {
             started_at: Utc::now().timestamp_millis(),
             exit_code: None,
             role,
+            parent_session_id: parent_session_id.clone(),
+            root_session_id: root_session_id.clone(),
+            detected_state: None,
+            has_transcript: matches!(kind, AgentKind::Claude),
         };
         persist_meta(&dir, &meta)?;
 
@@ -163,6 +191,8 @@ impl AgentSession {
             kind_static: kind,
             thread_id_static: thread_id.clone(),
             cwd_static: cwd.clone(),
+            parent_session_id_static: parent_session_id.clone(),
+            root_session_id_static: root_session_id.clone(),
         });
 
         // Emit started.
@@ -174,6 +204,7 @@ impl AgentSession {
         // PTY reader task: blocking reads in a dedicated thread, forwarded
         // through a channel into the async runtime.
         let (tx_bytes, mut rx_bytes) = tokio::sync::mpsc::channel::<Vec<u8>>(64);
+        let id_for_reader = id.clone();
         std::thread::spawn(move || {
             let mut reader = reader;
             let mut buf = vec![0u8; PTY_CHUNK_TARGET];
@@ -186,7 +217,7 @@ impl AgentSession {
                         }
                     }
                     Err(e) => {
-                        tracing::debug!(error = %e, "pty reader closed");
+                        tracing::debug!(spawn_id = %id_for_reader, error = %e, "pty reader closed");
                         break;
                     }
                 }
@@ -255,7 +286,7 @@ impl AgentSession {
             let exit_status = match child.wait() {
                 Ok(s) => s,
                 Err(e) => {
-                    tracing::warn!(error = %e, "child wait failed");
+                    tracing::warn!(spawn_id = %id_for_exit, error = %e, "child wait failed");
                     return;
                 }
             };
@@ -280,6 +311,51 @@ impl AgentSession {
                 code: Some(code),
                 signal,
             });
+        });
+
+        // Heuristic state detector — tails the output log every 600ms and
+        // classifies the CLI's interaction phase. Emits StateChanged on
+        // transitions; persists the latest detection on `meta.detected_state`.
+        let bus_for_state = bus.clone();
+        let session_for_state = session.clone();
+        let id_for_state = id.clone();
+        let kind_for_state = kind;
+        let dir_for_state = dir.clone();
+        tokio::spawn(async move {
+            use crate::detect::{detect as detect_fn, AgentState, TAIL_WINDOW_BYTES};
+            let mut prev: AgentState = AgentState::Unknown;
+            loop {
+                tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+
+                // Stop polling once the child exited.
+                let still_running = {
+                    let m = session_for_state.meta.lock().await;
+                    matches!(m.status, SessionStatus::Running)
+                };
+                if !still_running {
+                    break;
+                }
+
+                let tail = match read_output_tail(&dir_for_state, TAIL_WINDOW_BYTES).await {
+                    Ok(t) => t,
+                    Err(_) => continue,
+                };
+                let next = detect_fn(kind_for_state, &tail);
+                if next == prev {
+                    continue;
+                }
+                {
+                    let mut m = session_for_state.meta.lock().await;
+                    m.detected_state = Some(next);
+                    let _ = persist_meta(&dir_for_state, &m);
+                }
+                let _ = bus_for_state.send(SessionEvent::StateChanged {
+                    session_id: id_for_state.clone(),
+                    prev,
+                    next,
+                });
+                prev = next;
+            }
         });
 
         Ok(session)
@@ -368,6 +444,25 @@ fn pid_alive(_pid: i32) -> bool {
     true
 }
 
+/// Read up to `max` bytes from the end of the session's active `output.log`.
+/// Cheap seek+read; falls back to reading the whole file if it's smaller
+/// than `max`. The detector uses this on a 600ms tick so we keep it
+/// allocation-light.
+async fn read_output_tail(dir: &std::path::Path, max: usize) -> Result<Vec<u8>, std::io::Error> {
+    let path = dir.join("output.log");
+    let mut file = tokio::fs::File::open(&path).await?;
+    let len = file.metadata().await?.len();
+    let start = len.saturating_sub(max as u64);
+    if start > 0 {
+        use tokio::io::AsyncSeekExt;
+        file.seek(std::io::SeekFrom::Start(start)).await?;
+    }
+    let mut buf = Vec::with_capacity(max);
+    use tokio::io::AsyncReadExt;
+    file.read_to_end(&mut buf).await?;
+    Ok(buf)
+}
+
 fn flush_chunk(
     pending: &mut Vec<u8>,
     session: &Arc<AgentSession>,
@@ -377,7 +472,7 @@ fn flush_chunk(
 ) {
     use base64::Engine;
     if let Err(e) = session.writer.append(pending) {
-        tracing::warn!(error = %e, "output writer append failed");
+        tracing::warn!(spawn_id = %id, error = %e, "output writer append failed");
     }
     let seq = session.seq.fetch_add(1, Ordering::SeqCst);
     let encoded = b64.encode(&pending);

@@ -19,6 +19,7 @@
   import SessionMainView from '$lib/components/app/SessionMainView.svelte';
   import SessionRightPanel from '$lib/components/app/SessionRightPanel.svelte';
   import NewSessionDialog from '$lib/components/app/NewSessionDialog.svelte';
+  import WorkspaceSwitcher from '$lib/components/app/WorkspaceSwitcher.svelte';
   import { health } from '$lib/stores/health.svelte';
   import { sessionsState } from '$lib/stores/session.svelte';
   import { tasksState } from '$lib/stores/tasks.svelte';
@@ -27,10 +28,55 @@
   import { toast } from 'svelte-sonner';
 
   // ── Local UI state ────────────────────────────────────────────────────────
+  // Persisted in localStorage so reloading the browser keeps the user on the
+  // session they were inspecting. Scoped per active backend profile so each
+  // workspace remembers its own last session — switching workspaces and
+  // coming back leaves you where you were.
+  const SELECTED_SESSION_KEY = 'harness.selectedSessionId';
+  let activeProfile = $state<string>('default');
+
+  function sessionKey(profile: string): string {
+    return `${SELECTED_SESSION_KEY}.${profile}`;
+  }
+  function readPersistedSession(profile: string): string | null {
+    if (typeof window === 'undefined') return null;
+    // Fall back to legacy global key (pre-profile) so existing users don't
+    // see their selection vanish after the upgrade.
+    return (
+      localStorage.getItem(sessionKey(profile)) ?? localStorage.getItem(SELECTED_SESSION_KEY)
+    );
+  }
+  function writePersistedSession(profile: string, id: string | null) {
+    if (typeof window === 'undefined') return;
+    if (id) localStorage.setItem(sessionKey(profile), id);
+    else localStorage.removeItem(sessionKey(profile));
+  }
+
   let selectedSessionId = $state<string | null>(null);
+
+  // Resolve active profile on mount (without blocking) then load its scoped
+  // selection. Falls back to the legacy global key while the request races.
+  onMount(async () => {
+    selectedSessionId = readPersistedSession('default');
+    try {
+      const res = await api.profiles.active();
+      activeProfile = res.data.active;
+      const scoped = readPersistedSession(activeProfile);
+      if (scoped) selectedSessionId = scoped;
+    } catch {
+      // backend not up; keep legacy fallback.
+    }
+  });
   let collapsed = $state(false);
   let newDialogOpen = $state(false);
   let lastActiveIds = new Set<string>();
+
+  // Mirror selection into localStorage so reloads land back on the same
+  // session card. Scoped by active profile so each workspace remembers its
+  // own last session. Cleared when the session disappears (e.g. user killed).
+  $effect(() => {
+    writePersistedSession(activeProfile, selectedSessionId);
+  });
 
   // ── Derived ───────────────────────────────────────────────────────────────
   // Build a flat session list from the live `sessionsState.threads`. We show
@@ -73,6 +119,9 @@
       selectedSessionId = null;
       return;
     }
+    // Preserve the persisted/current selection if it still exists in the
+    // session list — only auto-pick the newest when the previous selection
+    // is gone (killed) or nothing was selected yet.
     if (!selectedSessionId || !allSessions.some((s) => s.id === selectedSessionId)) {
       selectedSessionId = allSessions[0].id;
     }
@@ -186,6 +235,7 @@
       </p>
     </div>
     <div class="flex items-center gap-2">
+      <WorkspaceSwitcher />
       {#if health.protocolVersion}
         <span
           class="inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-[11px] font-medium"
@@ -241,7 +291,10 @@
       {progressByThread}
     />
     <SessionMainView session={selectedSession} {onSessionReplaced} {onSessionKilled} />
-    <SessionRightPanel session={selectedSession} />
+    <SessionRightPanel
+      session={selectedSession}
+      onChildSelected={(cid) => (selectedSessionId = cid)}
+    />
   </div>
 </div>
 

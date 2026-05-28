@@ -186,7 +186,7 @@ fn store_password(user: &str, password: &str) -> DbResult<()> {
 
 fn delete_password(user: &str) -> DbResult<()> {
     let entry = keyring::Entry::new(KEYRING_SERVICE, user)?;
-    match entry.delete_password() {
+    match entry.delete_credential() {
         Ok(()) => Ok(()),
         Err(keyring::Error::NoEntry) => Ok(()),
         Err(e) => Err(DbError::Keyring(e.to_string())),
@@ -262,7 +262,11 @@ pub fn build_dsn(
             }
             // Force UTF-8 client encoding unless the user set it explicitly,
             // so accented values round-trip in the result grid / exports.
-            if !conn.params.keys().any(|k| k.eq_ignore_ascii_case("client_encoding")) {
+            if !conn
+                .params
+                .keys()
+                .any(|k| k.eq_ignore_ascii_case("client_encoding"))
+            {
                 url.push(sep);
                 sep = '&';
                 url.push_str("client_encoding=UTF8");
@@ -297,7 +301,11 @@ pub fn build_dsn(
                 url.push_str(&urlencoded(v));
             }
             // Force utf8mb4 unless the user set charset explicitly.
-            if !conn.params.keys().any(|k| k.eq_ignore_ascii_case("charset")) {
+            if !conn
+                .params
+                .keys()
+                .any(|k| k.eq_ignore_ascii_case("charset"))
+            {
                 url.push(sep);
                 sep = '&';
                 url.push_str("charset=utf8mb4");
@@ -374,10 +382,7 @@ pub fn redacted_summary(conn: &Connection) -> HashMap<&'static str, String> {
     let mut m = HashMap::new();
     m.insert("id", conn.id.clone());
     m.insert("engine", conn.engine.as_str().to_string());
-    m.insert(
-        "host",
-        conn.host.clone().unwrap_or_else(|| "-".to_string()),
-    );
+    m.insert("host", conn.host.clone().unwrap_or_else(|| "-".to_string()));
     m
 }
 

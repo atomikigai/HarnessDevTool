@@ -15,7 +15,7 @@ pub mod threads;
 pub use agents::{Agent, AgentDraft, AgentKind, AgentsRegistry};
 pub use budget::{
     ActiveSession, ActiveSessionsSource, Budget, BudgetStore, BudgetWarning, BudgetWarningSink,
-    ClaudeTranscriptReporter, CodexStubReporter, CostReporter, SessionCost, Usage,
+    ClaudeTranscriptReporter, CodexStubReporter, CostReporter, SessionCost, StubReporter, Usage,
 };
 pub use events::Event;
 pub use pause::PauseFlag;
@@ -53,6 +53,8 @@ pub enum Error {
     LeaseNotHeld(String),
     #[error("validation: {0}")]
     Validation(String),
+    #[error("limit exceeded: {0}")]
+    LimitExceeded(String),
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
     #[error("toml: {0}")]

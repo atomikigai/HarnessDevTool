@@ -169,6 +169,17 @@
     term.write(bytes);
   }
 
+  function focusGhosttyInput() {
+    const input = containerEl?.querySelector<HTMLTextAreaElement>(
+      'textarea[aria-label="Terminal input"]'
+    );
+    if (input) {
+      input.focus();
+      return;
+    }
+    containerEl?.focus();
+  }
+
   function openSSE() {
     if (!term) return;
     connState = reconnectAttempts > 0 ? 'reconnecting' : 'connecting';
@@ -235,7 +246,7 @@
     );
   }
 
-  async function fitAndResize(): Promise<boolean> {
+  function fitTerminal(): boolean {
     if (exited || killed) return false;
     if (!fitAddon || !term) return false;
     try {
@@ -247,6 +258,13 @@
     const cols = term.cols;
     const rows = term.rows;
     if (cols <= 0 || rows <= 0) return false;
+    return true;
+  }
+
+  async function fitAndResize(): Promise<boolean> {
+    if (!fitTerminal() || !term) return false;
+    const cols = term.cols;
+    const rows = term.rows;
     try {
       await api.sessions.resize(sessionId, cols, rows);
     } catch (err) {
@@ -328,9 +346,12 @@
       });
 
       term.attachCustomKeyEventHandler((ev) => {
-        if (ev.type !== 'keydown') return true;
+        // ghostty-web differs from xterm here: returning `true` means
+        // "handled; block the terminal's normal PTY encoding". Returning
+        // `false` lets printable keys, Enter, arrows, etc. flow to onData.
+        if (ev.type !== 'keydown') return false;
         const t = term;
-        if (!t) return true;
+        if (!t) return false;
         const isMac = navigator.platform.toUpperCase().startsWith('MAC');
         const key = ev.key.toLowerCase();
         const selection = t.getSelection();
@@ -356,7 +377,7 @@
               .then(() => toast.success('Copied to clipboard'))
               .catch(() => toast.error('Clipboard write blocked'));
           }
-          return false;
+          return true;
         }
         if (pasteCombo) {
           ev.preventDefault();
@@ -366,14 +387,14 @@
               if (txt) t.paste(txt);
             })
             .catch(() => toast.error('Clipboard read blocked'));
-          return false;
+          return true;
         }
-        return true;
+        return false;
       });
 
       term.open(containerEl);
       await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-      await fitAndResize();
+      fitTerminal();
       if (cancelled) return;
 
       // Char-at-a-time input forwarding — best UX for typical TTY apps.
@@ -395,6 +416,7 @@
       ro.observe(containerEl);
 
       openSSE();
+      void fitAndResize();
 
       window.addEventListener('keydown', onWindowKey, true);
 
@@ -404,7 +426,7 @@
       // and the focus we set during open() is long lost by the time we get
       // here. Without this the terminal renders output but `onData` never
       // fires — the keystrokes go to whatever was focused last.
-      term.focus();
+      focusGhosttyInput();
     }
 
     void boot().catch((err) => {
@@ -494,6 +516,14 @@
       </Button>
     </div>
   {/if}
+  <!--
+    Focus on click is delegated to ghostty-web: its canvas mousedown handler
+    `preventDefault()`s and focuses the hidden textarea inside the container.
+    We deliberately do NOT call `term.focus()` here — that wraps `element.focus()`
+    in a `setTimeout(0)`, which fires AFTER the canvas handler and snatches the
+    focus back to the container, leaving the textarea blurred and the
+    keystrokes going to whichever element the browser settles on.
+  -->
   <div
     bind:this={containerEl}
     role="application"

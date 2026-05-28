@@ -47,10 +47,7 @@ fn is_read_only(sql: &str) -> bool {
 pub fn query(mgr: &Manager, args: &Value) -> Result<Value, String> {
     let connection_id = str_arg(args, "connection")?;
     let sql = str_arg(args, "sql")?;
-    let limit = args
-        .get("limit")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(200) as usize;
+    let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(200) as usize;
     let approved = args
         .get("approved")
         .and_then(|v| v.as_bool())

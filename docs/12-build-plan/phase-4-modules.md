@@ -16,25 +16,28 @@ Habilitar **dos módulos verticales** que el usuario usa directamente desde la U
 ## Entregables — Module DB
 
 ### Backend (`module-db`)
-- [ ] Crate `module-db` con `sqlx` features `sqlite` (default), `postgres`, `mysql` (opt-in).
-- [ ] Schemas en `harness-core/schemas/db.connection.v1.json`.
-- [ ] Storage `~/.harness/profiles/<p>/modules/db/connections.db` (SQLite con conexiones guardadas; passwords en keyring).
-- [ ] `Manager` con `AnyPool` (SQLite | Postgres | MySQL).
-- [ ] Operaciones:
-  - [ ] `connection.list/add/remove/test`.
-  - [ ] `schema.tree` (introspección).
-  - [ ] `query.run` (paginado), `query.cancel`, `export`.
-- [ ] Tools MCP:
-  - [ ] `db.query { connection, sql, params?, limit? }`.
-  - [ ] `db.schema { connection, scope? }`.
-  - [ ] `db.explain { connection, sql }`.
+- [x] Crate `module-db` con `sqlx` features `sqlite` (default), `postgres`, `mysql` (opt-in). Pools per-engine (no `sqlx::Any`).
+- [x] Schemas en `harness-core/schemas/db.connection.v1.json`.
+- [x] Storage `~/.harness/profiles/<p>/modules/db/connections.db` (SQLite con conexiones guardadas; passwords en keyring).
+- [x] `Manager` con pools per-engine (SQLite | Postgres | MySQL) + routing per-database.
+- [x] Operaciones:
+  - [x] `connection.list/add/remove/test` (+ `update`).
+  - [x] `schema.tree` (introspección).
+  - [x] `query.run` (paginado), `query.cancel`, `export` (JSON/SQL/CSV).
+  - [x] `row.insert/update/delete/duplicate` (inline edit + RowEditor).
+- [x] Tools MCP:
+  - [x] `db_query { connection, sql, params?, limit? }` (gated por leading keyword).
+  - [x] `db_schema { connection, scope? }`.
+  - [x] `db_explain { connection, sql }`.
 
 ### Frontend
-- [ ] Ruta `/db` → lista de conexiones + botón Add.
-- [ ] Ruta `/db/[conn]` → árbol de schema (sidebar) + tabs Editor SQL / Browser tabla.
-- [ ] Componente `<SqlEditor>` (CodeMirror 6 + `@codemirror/lang-sql`).
-- [ ] `<ResultTable>` con TanStack Virtual.
-- [ ] Form "Add connection" con valibot (URL parsing, sslmode, etc.).
+- [x] Ruta `/db` → lista de conexiones + botón Add.
+- [x] Ruta `/db/[conn]` → árbol de schema (sidebar) + sub-tabs Data / Schema.
+- [x] Componente `<SqlEditor>` (CodeMirror 6 + `@codemirror/lang-sql`).
+- [x] `<ResultGrid>` con `@tanstack/svelte-virtual` (inline cell edit, pending-changes bar).
+- [x] `<RowEditorPanel>` slide-out lateral.
+- [x] `<ExportDialog>` para JSON/SQL/CSV (tablas + schemas via right-click).
+- [ ] Form "Add connection" con **valibot** (URL parsing, sslmode, etc.) — dialog existe pero sin schema valibot.
 
 ### Test de aceptación DB
 1. Add SQLite local (`/data/test.db`).

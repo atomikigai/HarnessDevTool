@@ -85,8 +85,14 @@ pub struct AgentsRegistry {
 }
 
 impl AgentsRegistry {
+    /// Backwards-compatible constructor: uses the `"default"` profile.
     pub fn new(home: &Path) -> Result<Self, Error> {
-        let dir = home.join("profiles/default/agents");
+        Self::with_profile(home, "default")
+    }
+
+    /// Open the agents registry for a specific profile (workspace).
+    pub fn with_profile(home: &Path, profile: &str) -> Result<Self, Error> {
+        let dir = home.join("profiles").join(profile).join("agents");
         fs::create_dir_all(&dir)?;
         let path = dir.join("registry.toml");
         let state = if path.exists() {

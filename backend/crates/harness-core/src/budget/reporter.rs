@@ -148,6 +148,33 @@ impl CostReporter for CodexStubReporter {
     }
 }
 
+/// Generic placeholder for CLIs whose cost/transcript format isn't wired yet.
+/// Logs once on first poll and returns $0.
+pub struct StubReporter {
+    cli_name: &'static str,
+}
+
+impl StubReporter {
+    pub const fn new(cli_name: &'static str) -> Self {
+        Self { cli_name }
+    }
+}
+
+impl CostReporter for StubReporter {
+    fn poll(&self, session_id: &str, _cwd: &Path) -> Result<SessionCost, Error> {
+        static ONCE: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+        ONCE.get_or_init(|| {
+            tracing::info!(
+                target: "budget",
+                cli = self.cli_name,
+                session = %session_id,
+                "cost reporting not implemented for this CLI; reporting $0"
+            );
+        });
+        Ok(SessionCost::default())
+    }
+}
+
 #[derive(Deserialize)]
 struct TranscriptLine {
     #[serde(default)]

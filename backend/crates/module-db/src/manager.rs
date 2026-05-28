@@ -8,29 +8,43 @@ use std::time::Instant;
 use sqlx::Row as _;
 
 use crate::error::{DbError, DbResult};
+use crate::lease::{classify_txn, spawn_reaper, PinnedTab, TabLeases, TxnIntent};
 use crate::pool::{build_pool_for_input, DbPool, PoolCache};
 use crate::query::{QueryRegistry, RunningQuery};
 use crate::row as row_ops;
 use crate::schema::introspect;
 use crate::storage::ConnectionsStore;
-use crate::types::{
-    Connection, ConnectionInput, Engine, QueryResult, Row, SchemaTree, TestResult,
-};
+use crate::types::{Connection, ConnectionInput, Engine, QueryResult, Row, SchemaTree, TestResult};
 use crate::value::Value;
 
 pub struct Manager {
     store: ConnectionsStore,
     pools: PoolCache,
     queries: Arc<QueryRegistry>,
+    leases: Arc<TabLeases>,
 }
 
 impl Manager {
     pub fn new(harness_home: &Path, profile: &str) -> DbResult<Self> {
         let store = ConnectionsStore::new(harness_home, profile)?;
+        let leases = Arc::new(TabLeases::new());
+        // Start the idle reaper — but only if a Tokio runtime is available.
+        // The harness-server has one (axum); the harness-mcp-server is a
+        // sync stdio loop and would panic on `tokio::spawn`. Without the
+        // reaper, leases simply never auto-expire — fine for short-lived
+        // MCP child processes that never pin tabs anyway.
+        if tokio::runtime::Handle::try_current().is_ok() {
+            std::mem::drop(spawn_reaper(leases.clone()));
+        } else {
+            tracing::debug!(
+                "module-db Manager: no tokio runtime detected, lease idle reaper disabled"
+            );
+        }
         Ok(Self {
             store,
             pools: PoolCache::new(),
             queries: QueryRegistry::new(),
+            leases,
         })
     }
 
@@ -149,14 +163,107 @@ impl Manager {
         page_size: usize,
         page: usize,
     ) -> DbResult<QueryResult> {
-        let conn = self.store.get(connection_id)?;
-        let pool = self
-            .pools
-            .get_or_init_for(&self.store, connection_id, database)
-            .await?;
-        let ps = if page_size == 0 { 100 } else { page_size.min(10_000) };
-        let _ = conn;
-        crate::query::run(&pool, sql, ps, page, &self.queries).await
+        self.query_run_with_tab(connection_id, database, None, sql, _params, page_size, page)
+            .await
+    }
+
+    /// Variant that participates in the per-tab lease system (Q13).
+    ///
+    /// When `tab_id` is `Some(_)`:
+    /// - If the SQL begins a transaction (`BEGIN` / `START TRANSACTION`), the
+    ///   tab is auto-pinned to a dedicated single-connection pool BEFORE the
+    ///   statement runs, so the transaction sticks to that connection.
+    /// - If the SQL ends a transaction (`COMMIT` / `ROLLBACK` / `END`), it
+    ///   runs on the leased pool (if any) and the lease is dropped AFTER.
+    /// - Any other SQL runs on the leased pool if one exists, else falls back
+    ///   to the shared pool.
+    ///
+    /// When `tab_id` is `None`, behaviour is identical to the legacy path —
+    /// always shared pool, no auto-pin.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn query_run_with_tab(
+        &self,
+        connection_id: &str,
+        database: Option<&str>,
+        tab_id: Option<&str>,
+        sql: &str,
+        _params: Option<Vec<Value>>,
+        page_size: usize,
+        page: usize,
+    ) -> DbResult<QueryResult> {
+        let ps = if page_size == 0 {
+            100
+        } else {
+            page_size.min(10_000)
+        };
+        let intent = classify_txn(sql);
+
+        // Auto-pin on BEGIN, before running the statement.
+        if let Some(tid) = tab_id {
+            if intent == TxnIntent::Begin && !self.leases.is_pinned(tid) {
+                self.leases
+                    .pin(&self.store, tid, connection_id, database)
+                    .await?;
+                tracing::info!(tab_id = tid, connection_id, "auto-pinned tab on BEGIN");
+            }
+        }
+
+        // Pick the pool: leased if the tab has one, else shared.
+        let pool = if let Some(tid) = tab_id {
+            match self.leases.pool_for(tid).await {
+                Some(p) => p,
+                None => {
+                    self.pools
+                        .get_or_init_for(&self.store, connection_id, database)
+                        .await?
+                }
+            }
+        } else {
+            self.pools
+                .get_or_init_for(&self.store, connection_id, database)
+                .await?
+        };
+
+        let result = crate::query::run(&pool, sql, ps, page, &self.queries).await;
+
+        // Auto-unpin on COMMIT/ROLLBACK, regardless of result — the txn is
+        // closed either way.
+        if let Some(tid) = tab_id {
+            if intent == TxnIntent::End && self.leases.is_pinned(tid) {
+                self.leases.unpin(tid);
+                tracing::info!(tab_id = tid, "auto-unpinned tab on COMMIT/ROLLBACK");
+            }
+        }
+
+        result
+    }
+
+    // ---- Tab leases (Q13) --------------------------------------------------
+
+    /// Manually pin a tab to a dedicated single-connection pool. Idempotent —
+    /// re-pinning the same `tab_id` replaces the old lease.
+    pub async fn tab_pin(
+        &self,
+        tab_id: &str,
+        connection_id: &str,
+        database: Option<&str>,
+    ) -> DbResult<()> {
+        self.leases
+            .pin(&self.store, tab_id, connection_id, database)
+            .await
+    }
+
+    /// Manually release a tab lease. Returns whether something was released.
+    pub fn tab_unpin(&self, tab_id: &str) -> bool {
+        self.leases.unpin(tab_id)
+    }
+
+    pub fn tabs_pinned(&self) -> Vec<PinnedTab> {
+        self.leases.snapshot()
+    }
+
+    pub fn tab_is_pinned(&self, tab_id: &str) -> bool {
+        self.leases.is_pinned(tab_id)
     }
 
     /// Best-effort query cancel. Returns Ok(true) if a cancel was attempted,
@@ -165,7 +272,10 @@ impl Manager {
         let Some((_, rq)) = self.queries.inner.remove(query_id) else {
             return Ok(false);
         };
-        let RunningQuery { engine, backend_pid } = rq;
+        let RunningQuery {
+            engine,
+            backend_pid,
+        } = rq;
         match (engine, backend_pid) {
             (Engine::Postgres, Some(pid)) => {
                 // Aux connection — not implemented in this slice.
@@ -273,11 +383,7 @@ impl Manager {
     }
 
     /// Run an `EXPLAIN`-style query. Engine-specific prefix.
-    pub async fn explain(
-        &self,
-        connection_id: &str,
-        sql: &str,
-    ) -> DbResult<QueryResult> {
+    pub async fn explain(&self, connection_id: &str, sql: &str) -> DbResult<QueryResult> {
         let conn = self.store.get(connection_id)?;
         let prefix = match conn.engine {
             Engine::Sqlite => "EXPLAIN QUERY PLAN",
@@ -309,5 +415,3 @@ async fn probe_server_version(pool: &DbPool) -> Option<String> {
             .and_then(|r| r.try_get::<String, _>(0).ok()),
     }
 }
-
-

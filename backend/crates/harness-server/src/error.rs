@@ -76,6 +76,7 @@ impl IntoResponse for ApiError {
                     }
                     harness_core::Error::Busy { .. } => (StatusCode::CONFLICT, e.to_string()),
                     harness_core::Error::Validation(_) => (StatusCode::BAD_REQUEST, e.to_string()),
+                    harness_core::Error::LimitExceeded(_) => (StatusCode::CONFLICT, e.to_string()),
                     harness_core::Error::LeaseNotHeld(_) => (StatusCode::FORBIDDEN, e.to_string()),
                     _ => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
                 };

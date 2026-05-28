@@ -100,6 +100,30 @@ Si el `harness-server` crashea durante un spawn activo:
 6. **Adquirir lease** sobre la task.
 7. Stream del PTY → SSE → UI; eventos estructurados → `events.jsonl`.
 
+## Subagentes iniciados por agentes
+
+Un agente activo puede iniciar subagentes cuando el trabajo lo justifica. Esto
+no es exclusivo de Zeus: cualquier sesión conectada al bridge MCP y autorizada
+puede pedir un `session_spawn_child` para abrir una sesión hija bajo su
+`parent_session_id`.
+
+Uso esperado:
+- El agente padre detecta un subproblema separable (tests, refactor mecánico,
+  revisión DB, frontend puntual).
+- Spawnea una hija con rol, CLI sugerido y prompt acotado.
+- La hija hereda el thread/cwd salvo override explícito.
+- El padre sigue siendo responsable de integrar, validar y cancelar la hija si
+  se sale de scope.
+
+Reglas:
+- Registrar relación `parent_session_id` / `root_session_id` en metadata.
+- Aplicar los mismos caps de budget y concurrencia del thread al árbol entero.
+- No contar una hija como "done" solo porque fue spawneada; el padre debe leer
+  su estado/salida y cerrar el handoff.
+- La UI debe mostrar las hijas activas en el panel de Agents del padre. Bug
+  conocido 2026-05-27: Claude pudo spawnear Codex y Codex quedó trabajando,
+  pero el panel derecho no mostró el agente activo.
+
 ## Cancelación
 
 - Humano: `DELETE /api/spawns/:id` o "Stop" en UI.

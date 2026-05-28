@@ -341,8 +341,7 @@ fn decode_mysql_cell(row: &sqlx::mysql::MySqlRow, idx: usize) -> Value {
                 return Value::decimal(v);
             }
         }
-        "VARCHAR" | "CHAR" | "TEXT" | "TINYTEXT" | "MEDIUMTEXT" | "LONGTEXT" | "ENUM"
-        | "SET" => {
+        "VARCHAR" | "CHAR" | "TEXT" | "TINYTEXT" | "MEDIUMTEXT" | "LONGTEXT" | "ENUM" | "SET" => {
             if let Ok(v) = row.try_get::<String, _>(idx) {
                 return Value::Text(v);
             }
@@ -378,8 +377,7 @@ fn decode_mysql_cell(row: &sqlx::mysql::MySqlRow, idx: usize) -> Value {
                 return Value::Int(v as i64);
             }
         }
-        "BINARY" | "VARBINARY" | "BLOB" | "TINYBLOB" | "MEDIUMBLOB" | "LONGBLOB"
-        | "GEOMETRY" => {
+        "BINARY" | "VARBINARY" | "BLOB" | "TINYBLOB" | "MEDIUMBLOB" | "LONGBLOB" | "GEOMETRY" => {
             if let Ok(v) = row.try_get::<Vec<u8>, _>(idx) {
                 // UUIDs in MySQL are often BINARY(16); surface as text best-effort.
                 if v.len() == 16 {

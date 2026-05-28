@@ -44,7 +44,10 @@ async fn list_threads(
     let mut by_thread: HashMap<String, Vec<SessionMeta>> = HashMap::new();
     for s in state.manager.all() {
         let meta = s.meta().await;
-        by_thread.entry(meta.thread_id.clone()).or_default().push(meta);
+        by_thread
+            .entry(meta.thread_id.clone())
+            .or_default()
+            .push(meta);
     }
     let enriched = threads
         .into_iter()

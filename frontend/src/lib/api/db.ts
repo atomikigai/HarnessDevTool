@@ -104,6 +104,24 @@ export interface QueryRequest {
   params?: unknown[];
   page_size?: number;
   page?: number;
+  /**
+   * Stable id of the editor tab firing the query (Q13). When present the
+   * backend will:
+   * - auto-pin the tab to a dedicated single-connection pool on `BEGIN`
+   *   / `START TRANSACTION`, so the transaction lives on that connection;
+   * - auto-unpin on `COMMIT` / `ROLLBACK` / `END`;
+   * - route any other SQL through the leased pool if pinned, else the shared
+   *   pool.
+   *
+   * Mint once per editor tab (UUID) and pass it on every query from that tab.
+   */
+  tab_id?: string;
+}
+
+export interface PinnedTab {
+  tab_id: string;
+  connection_id: string;
+  database?: string | null;
 }
 
 // ── Export (F4) ──────────────────────────────────────────────────────────────
@@ -200,6 +218,24 @@ export const dbApi = {
       method: 'POST',
       signal
     }),
+  tabs: {
+    list: (signal?: AbortSignal) => apiRequest<PinnedTab[]>(`${base}/tabs`, { signal }),
+    pin: (
+      tabId: string,
+      body: { connection_id: string; database?: string },
+      signal?: AbortSignal
+    ) =>
+      apiRequest<{ ok: boolean }>(`${base}/tabs/${encodeURIComponent(tabId)}/pin`, {
+        method: 'POST',
+        body,
+        signal
+      }),
+    unpin: (tabId: string, signal?: AbortSignal) =>
+      apiRequest<{ removed: boolean }>(`${base}/tabs/${encodeURIComponent(tabId)}/pin`, {
+        method: 'DELETE',
+        signal
+      })
+  },
   rows: {
     insert: (id: string, table: string, body: RowMutation, signal?: AbortSignal) =>
       apiRequest<{ pk?: Record<string, unknown> }>(

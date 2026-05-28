@@ -9,13 +9,23 @@ use harness_core::{
     ActiveSession, ActiveSessionsSource, AgentsRegistry, BudgetStore, BudgetWarning,
     BudgetWarningSink, BudgetWiring, ClaudeTranscriptReporter, CodexStubReporter, CostReporter,
     PauseFlag, RolesRegistry, Scheduler, SessionSpawner, SpawnRequest, SpawnResult, Store,
-    TaskStore,
+    StubReporter, TaskStore,
 };
 use harness_session::{AgentKind, Manager, SpawnOpts};
 use serde_json::json;
 use tokio::sync::broadcast;
 
 use crate::config::Config;
+use crate::transcript::{TranscriptEvent, TranscriptStore, WatcherHandle};
+
+/// Per-session transcript wiring. `bus` is cloned for each SSE subscriber;
+/// `store` reads from disk for catch-up replay; `handle` aborts the tail
+/// task when the session dies.
+pub struct TranscriptSlot {
+    pub store: Arc<TranscriptStore>,
+    pub bus: broadcast::Sender<TranscriptEvent>,
+    pub handle: WatcherHandle,
+}
 
 /// Shared application state.
 pub struct AppState {
@@ -35,6 +45,10 @@ pub struct AppState {
     /// `$HARNESS_HOME` — needed by the sessions route to generate per-session
     /// MCP config files.
     pub harness_home: PathBuf,
+    /// Active profile (workspace) id this AppState was built against. Used by
+    /// the profiles routes to report current state. Switching profiles
+    /// requires a backend restart today; see `routes/profiles.rs`.
+    pub profile: String,
     /// Path to the `harness-mcp-server` binary used by the bridge. `None` if
     /// it could not be located; spawn then proceeds without MCP injection.
     pub mcp_server_binary: Option<PathBuf>,
@@ -46,6 +60,11 @@ pub struct AppState {
     /// Keyed by session id; the file lives at `<harness_home>/.runtime/mcp-configs/<id>.json`
     /// where `<id>` is a UUID we generate at config-write time (NOT the session id).
     pub mcp_configs: Arc<DashMap<String, PathBuf>>,
+    /// Per-session transcript stream wiring. Keyed by session id. Present
+    /// only when the underlying CLI emits a JSONL transcript we can parse
+    /// (Claude/Zeus today). Each entry holds the store (for replay), the
+    /// live broadcast bus, and a handle to abort the watcher on kill.
+    pub transcripts: Arc<DashMap<String, TranscriptSlot>>,
     pub start_time: Instant,
     pub version: &'static str,
     pub tick_tx: broadcast::Sender<String>,
@@ -53,16 +72,19 @@ pub struct AppState {
 
 impl AppState {
     pub fn new(cfg: &Config) -> Result<Self> {
-        let store = Arc::new(Store::new(&cfg.home)?);
-        let sessions_root = cfg.home.join("profiles").join("default").join("sessions");
+        let profile = cfg.profile.as_str();
+        tracing::info!(profile = %profile, "AppState init: using profile");
+
+        let store = Arc::new(Store::with_profile(&cfg.home, profile)?);
+        let sessions_root = cfg.home.join("profiles").join(profile).join("sessions");
         let manager = Arc::new(Manager::new(sessions_root)?);
-        let task_store = TaskStore::new(&cfg.home)?;
-        let agents = Arc::new(AgentsRegistry::new(&cfg.home)?);
-        let roles = Arc::new(RolesRegistry::load(&cfg.home)?);
+        let task_store = TaskStore::with_profile(&cfg.home, profile)?;
+        let agents = Arc::new(AgentsRegistry::with_profile(&cfg.home, profile)?);
+        let roles = Arc::new(RolesRegistry::load_for_profile(&cfg.home, profile)?);
         let pause = Arc::new(PauseFlag::load(&cfg.home)?);
-        let budgets = Arc::new(BudgetStore::load(&cfg.home)?);
+        let budgets = Arc::new(BudgetStore::load_for_profile(&cfg.home, profile)?);
         let db = Arc::new(
-            module_db::Manager::new(&cfg.home, "default")
+            module_db::Manager::new(&cfg.home, profile)
                 .map_err(|e| anyhow::anyhow!("module-db init: {e}"))?,
         );
         let (tick_tx, _) = broadcast::channel(64);
@@ -78,6 +100,16 @@ impl AppState {
             AgentKind::Codex.as_str().to_string(),
             Arc::new(CodexStubReporter),
         );
+        reporters.insert(
+            AgentKind::Cursor.as_str().to_string(),
+            Arc::new(StubReporter::new("cursor")),
+        );
+        reporters.insert(
+            AgentKind::Antigravity.as_str().to_string(),
+            Arc::new(StubReporter::new("antigravity")),
+        );
+        // Zeus is virtual — no PTY of its own. Its underlying CLI today is
+        // Claude, so the Claude reporter already accounts for its usage.
 
         let budget_wiring = BudgetWiring {
             store: (*budgets).clone(),
@@ -140,9 +172,11 @@ impl AppState {
             scheduler,
             binaries,
             harness_home: cfg.home.clone(),
+            profile: cfg.profile.clone(),
             mcp_server_binary,
             server_url,
             mcp_configs,
+            transcripts: Arc::new(DashMap::new()),
             start_time: Instant::now(),
             version: env!("CARGO_PKG_VERSION"),
             tick_tx,
@@ -271,6 +305,9 @@ impl ManagerSpawner {
         match s {
             "claude" => Some(AgentKind::Claude),
             "codex" => Some(AgentKind::Codex),
+            "cursor" => Some(AgentKind::Cursor),
+            "antigravity" => Some(AgentKind::Antigravity),
+            "zeus" => Some(AgentKind::Zeus),
             _ => None,
         }
     }
@@ -318,10 +355,7 @@ impl SessionSpawner for ManagerSpawner {
         let binary = match self.binaries.get(&kind).cloned() {
             Some(b) => b,
             None => {
-                return SpawnResult::Failed(format!(
-                    "no binary detected for kind {}",
-                    req.kind
-                ))
+                return SpawnResult::Failed(format!("no binary detected for kind {}", req.kind))
             }
         };
 
@@ -375,9 +409,7 @@ impl SessionSpawner for ManagerSpawner {
                         }
                     }
                 });
-                if let Err(e) =
-                    std::fs::write(&path, serde_json::to_vec_pretty(&config).unwrap())
-                {
+                if let Err(e) = std::fs::write(&path, serde_json::to_vec_pretty(&config).unwrap()) {
                     return SpawnResult::Failed(format!("write mcp config: {e}"));
                 }
                 opts.mcp_config_path = Some(path.clone());
@@ -386,13 +418,10 @@ impl SessionSpawner for ManagerSpawner {
             }
         }
 
-        match self.manager.spawn_with_opts(
-            kind,
-            binary,
-            req.thread_id,
-            cwd,
-            opts,
-        ) {
+        match self
+            .manager
+            .spawn_with_opts(kind, binary, req.thread_id, cwd, opts)
+        {
             Ok(session) => {
                 let sid = session.id().to_string();
                 if let Some(p) = config_path {
@@ -407,7 +436,15 @@ impl SessionSpawner for ManagerSpawner {
 
 fn detect_binaries() -> HashMap<AgentKind, PathBuf> {
     let mut out = HashMap::new();
-    for (kind, name) in [(AgentKind::Claude, "claude"), (AgentKind::Codex, "codex")] {
+    let kinds = [
+        AgentKind::Claude,
+        AgentKind::Codex,
+        AgentKind::Cursor,
+        AgentKind::Antigravity,
+        // Zeus is virtual — skip discovery entirely.
+    ];
+    for kind in kinds {
+        let name = kind.default_binary();
         match which::which(name) {
             Ok(p) => {
                 tracing::info!(binary = name, path = %p.display(), "agent binary detected");
@@ -416,6 +453,7 @@ fn detect_binaries() -> HashMap<AgentKind, PathBuf> {
             Err(_) => {
                 tracing::warn!(
                     binary = name,
+                    kind = %kind,
                     "agent binary not found on PATH; spawn requests for this kind will fail"
                 );
             }

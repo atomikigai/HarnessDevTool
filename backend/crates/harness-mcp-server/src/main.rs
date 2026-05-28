@@ -25,6 +25,9 @@ use crate::protocol::{error_response, parse_request, RpcError};
 struct CliArgs {
     thread_id: String,
     agent_id: String,
+    /// Pre-minted session id owning this MCP server child. Lets
+    /// `session.spawn_child` attribute spawns to the right parent.
+    session_id: Option<String>,
     harness_home: PathBuf,
     /// Optional base URL of the harness HTTP server (e.g. `http://127.0.0.1:8787`).
     /// When set, `task_create` delegates to `POST /api/threads/:tid/tasks` so the
@@ -37,6 +40,7 @@ struct CliArgs {
 fn parse_args() -> Result<CliArgs, String> {
     let mut thread_id: Option<String> = None;
     let mut agent_id: Option<String> = None;
+    let mut session_id: Option<String> = None;
     let mut harness_home: Option<PathBuf> = None;
     let mut server_url: Option<String> = std::env::var("HARNESS_SERVER_URL").ok();
 
@@ -57,6 +61,10 @@ fn parse_args() -> Result<CliArgs, String> {
                 agent_id = Some(next(i)?.clone());
                 i += 2;
             }
+            "--session-id" => {
+                session_id = Some(next(i)?.clone());
+                i += 2;
+            }
             "--harness-home" => {
                 harness_home = Some(PathBuf::from(next(i)?));
                 i += 2;
@@ -67,7 +75,7 @@ fn parse_args() -> Result<CliArgs, String> {
             }
             "-h" | "--help" => {
                 eprintln!(
-                    "usage: harness-mcp-server --thread <tid> --agent-id <aid> --harness-home <path> [--server-url <url>]"
+                    "usage: harness-mcp-server --thread <tid> --agent-id <aid> [--session-id <sid>] --harness-home <path> [--server-url <url>]"
                 );
                 std::process::exit(0);
             }
@@ -77,6 +85,7 @@ fn parse_args() -> Result<CliArgs, String> {
     Ok(CliArgs {
         thread_id: thread_id.ok_or_else(|| "missing --thread".to_string())?,
         agent_id: agent_id.ok_or_else(|| "missing --agent-id".to_string())?,
+        session_id,
         harness_home: harness_home.ok_or_else(|| "missing --harness-home".to_string())?,
         server_url,
     })
@@ -110,6 +119,7 @@ fn main() -> ExitCode {
         args.harness_home.clone(),
         args.thread_id.clone(),
         args.agent_id.clone(),
+        args.session_id.clone(),
         args.server_url.clone(),
     ) {
         Ok(d) => d,

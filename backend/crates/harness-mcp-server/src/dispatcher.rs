@@ -9,9 +9,11 @@ use crate::protocol::{
     error_response, error_response_with, result_response, Request, RpcError, PROTOCOL_VERSION,
     SERVER_NAME, SERVER_VERSION,
 };
+use crate::tools::{
+    self, db as db_tools, session as session_tools, skills, spec, tasks, wrap_error, wrap_text,
+};
 use harness_core::TaskStore;
 use module_db::Manager as DbManager;
-use crate::tools::{self, db as db_tools, skills, spec, tasks, wrap_error, wrap_text};
 
 pub struct Dispatcher {
     store: TaskStore,
@@ -19,6 +21,10 @@ pub struct Dispatcher {
     harness_home: PathBuf,
     thread_id: String,
     agent_id: String,
+    /// Stable session id owning this MCP instance. Used to attribute
+    /// `session.spawn_child` calls to the right parent session in the tree.
+    /// `None` for legacy callers that pre-date the `--session-id` flag.
+    session_id: Option<String>,
     /// Base URL of the harness-server (e.g. `http://127.0.0.1:8787`). When
     /// `Some`, `task_create` delegates to the REST endpoint so the in-process
     /// broadcast bus emits `task.created` and the SSE stream pushes the new
@@ -28,18 +34,15 @@ pub struct Dispatcher {
 
 impl Dispatcher {
     #[allow(dead_code)]
-    pub fn new(
-        harness_home: PathBuf,
-        thread_id: String,
-        agent_id: String,
-    ) -> Result<Self, String> {
-        Self::new_with_server(harness_home, thread_id, agent_id, None)
+    pub fn new(harness_home: PathBuf, thread_id: String, agent_id: String) -> Result<Self, String> {
+        Self::new_with_server(harness_home, thread_id, agent_id, None, None)
     }
 
     pub fn new_with_server(
         harness_home: PathBuf,
         thread_id: String,
         agent_id: String,
+        session_id: Option<String>,
         server_url: Option<String>,
     ) -> Result<Self, String> {
         let store = TaskStore::new(&harness_home).map_err(|e| e.to_string())?;
@@ -50,6 +53,7 @@ impl Dispatcher {
             harness_home,
             thread_id,
             agent_id,
+            session_id,
             server_url,
         })
     }
@@ -116,17 +120,40 @@ impl Dispatcher {
                 &args,
             ),
             "task_list" => tasks::list(&self.store, &self.thread_id, &args),
-            "task_get" => tasks::get(&self.store, &args),
-            "task_claim" => tasks::claim(&self.store, &args),
-            "task_renew" => tasks::renew(&self.store, &args),
-            "task_update" => tasks::update(&self.store, &self.agent_id, &args),
-            "task_release" => tasks::release(&self.store, &args),
-            "task_submit" => tasks::submit(&self.store, &self.agent_id, &args),
+            "task_get" => tasks::get(&self.store, &self.thread_id, &args),
+            "task_claim" => tasks::claim(&self.store, &self.thread_id, &args),
+            "task_renew" => tasks::renew(&self.store, &self.thread_id, &args),
+            "task_update" => tasks::update(&self.store, &self.thread_id, &self.agent_id, &args),
+            "task_release" => tasks::release(&self.store, &self.thread_id, &args),
+            "task_submit" => tasks::submit(&self.store, &self.thread_id, &self.agent_id, &args),
             "spec_read" => spec::read(&self.harness_home, &self.thread_id, &args),
             "skills_search" => skills::search(&args),
             "db_query" => db_tools::query(&self.db, &args),
             "db_schema" => db_tools::schema(&self.db, &args),
             "db_explain" => db_tools::explain(&self.db, &args),
+            "session_spawn_child" => session_tools::spawn_child(
+                self.session_id.as_deref(),
+                self.server_url.as_deref(),
+                &args,
+            ),
+            "session_list_children" => {
+                session_tools::list_children(self.session_id.as_deref(), self.server_url.as_deref())
+            }
+            "session_read_child_summary" => session_tools::read_child_summary(
+                self.session_id.as_deref(),
+                self.server_url.as_deref(),
+                &args,
+            ),
+            "session_send_input" => session_tools::send_input(
+                self.session_id.as_deref(),
+                self.server_url.as_deref(),
+                &args,
+            ),
+            "session_cancel_child" => session_tools::cancel_child(
+                self.session_id.as_deref(),
+                self.server_url.as_deref(),
+                &args,
+            ),
             other => {
                 return error_response_with(
                     id,
@@ -175,8 +202,7 @@ mod tests {
 
     fn mk(thread: &str, agent: &str) -> (Dispatcher, PathBuf) {
         let home = tmp_home();
-        let d =
-            Dispatcher::new(home.clone(), thread.to_string(), agent.to_string()).unwrap();
+        let d = Dispatcher::new(home.clone(), thread.to_string(), agent.to_string()).unwrap();
         (d, home)
     }
 
@@ -184,8 +210,7 @@ mod tests {
     fn initialize_then_list_tools() {
         let (d, _) = mk("t1", "agent:1");
 
-        let init_line =
-            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#;
+        let init_line = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#;
         let req = parse_request(init_line).unwrap();
         let resp = d.handle(req).unwrap();
         assert_eq!(resp["result"]["protocolVersion"], PROTOCOL_VERSION);

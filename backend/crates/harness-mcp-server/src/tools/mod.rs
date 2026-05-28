@@ -1,4 +1,5 @@
 pub mod db;
+pub mod session;
 pub mod skills;
 pub mod spec;
 pub mod tasks;
@@ -61,23 +62,26 @@ pub fn list_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "task_get".into(),
-            description: "Fetch a single task by id within a thread.".into(),
+            description: "Fetch a single task by id within a thread. `thread_id` defaults to \
+                          the caller's thread when omitted."
+                .into(),
             input_schema: json!({
                 "type": "object",
-                "required": ["thread_id", "task_id"],
+                "required": ["task_id"],
                 "properties": {
                     "thread_id": { "type": "string" },
-                    "task_id": { "type": "string" }
+                    "task_id":   { "type": "string" }
                 }
             }),
         },
         ToolDescriptor {
             name: "task_claim".into(),
-            description: "Claim a lease on a task. Returns busy info if another agent holds it."
+            description: "Claim a lease on a task. Returns busy info if another agent holds it. \
+                          `thread_id` defaults to the caller's thread when omitted."
                 .into(),
             input_schema: json!({
                 "type": "object",
-                "required": ["thread_id", "task_id", "agent_id"],
+                "required": ["task_id", "agent_id"],
                 "properties": {
                     "thread_id": { "type": "string" },
                     "task_id":   { "type": "string" },
@@ -88,10 +92,12 @@ pub fn list_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "task_renew".into(),
-            description: "Renew the lease the caller holds on a task.".into(),
+            description: "Renew the lease the caller holds on a task. `thread_id` defaults to \
+                          the caller's thread when omitted."
+                .into(),
             input_schema: json!({
                 "type": "object",
-                "required": ["thread_id", "task_id", "agent_id"],
+                "required": ["task_id", "agent_id"],
                 "properties": {
                     "thread_id": { "type": "string" },
                     "task_id":   { "type": "string" },
@@ -101,11 +107,12 @@ pub fn list_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "task_update".into(),
-            description: "Patch a task's metadata (status, label, assignee, title, notes)."
+            description: "Patch a task's metadata (status, label, assignee, title, notes). \
+                          `thread_id` defaults to the caller's thread when omitted."
                 .into(),
             input_schema: json!({
                 "type": "object",
-                "required": ["thread_id", "task_id", "patch"],
+                "required": ["task_id", "patch"],
                 "properties": {
                     "thread_id": { "type": "string" },
                     "task_id":   { "type": "string" },
@@ -124,10 +131,12 @@ pub fn list_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "task_release".into(),
-            description: "Release the lease the caller holds on a task.".into(),
+            description: "Release the lease the caller holds on a task. `thread_id` defaults to \
+                          the caller's thread when omitted."
+                .into(),
             input_schema: json!({
                 "type": "object",
-                "required": ["thread_id", "task_id", "agent_id"],
+                "required": ["task_id", "agent_id"],
                 "properties": {
                     "thread_id": { "type": "string" },
                     "task_id":   { "type": "string" },
@@ -137,11 +146,12 @@ pub fn list_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "task_submit".into(),
-            description: "Submit task artifacts (files, turns, diff). Marks task as submitted."
+            description: "Submit task artifacts (files, turns, diff). Marks task as submitted. \
+                          `thread_id` defaults to the caller's thread when omitted."
                 .into(),
             input_schema: json!({
                 "type": "object",
-                "required": ["thread_id", "task_id", "artifacts"],
+                "required": ["task_id", "artifacts"],
                 "properties": {
                     "thread_id": { "type": "string" },
                     "task_id":   { "type": "string" },
@@ -221,6 +231,91 @@ pub fn list_descriptors() -> Vec<ToolDescriptor> {
                 "properties": {
                     "query": { "type": "string" },
                     "top_k": { "type": "integer", "minimum": 1 }
+                }
+            }),
+        },
+        // ── Session tree (Zeus orchestrator) ────────────────────────────
+        ToolDescriptor {
+            name: "session_spawn_child".into(),
+            description:
+                "Create a child session under the CURRENT session. Used by orchestrators \
+                 (Zeus) to delegate scoped work to a CLI specialised for the role. The \
+                 child inherits the current session as its root and as its parent."
+                    .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["kind", "role", "initial_prompt"],
+                "properties": {
+                    "kind": {
+                        "type": "string",
+                        "enum": ["claude", "codex", "cursor", "antigravity"],
+                        "description": "Which CLI backs the child PTY."
+                    },
+                    "role": {
+                        "type": "string",
+                        "description": "Free-form role label (backend/frontend/db/qa/refactor/etc.)."
+                    },
+                    "initial_prompt": {
+                        "type": "string",
+                        "description": "First user turn typed into the child PTY. Include scope, \
+                                        forbidden areas, expected output, test requirements."
+                    },
+                    "working_dir": {
+                        "type": "string",
+                        "description": "Optional cwd override; defaults to $HOME."
+                    }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "session_list_children".into(),
+            description:
+                "List direct children of the current session (one level only). Returns \
+                 [{ session_id, kind, role, status, ... }]."
+                    .into(),
+            input_schema: json!({ "type": "object", "properties": {} }),
+        },
+        ToolDescriptor {
+            name: "session_read_child_summary".into(),
+            description:
+                "Read the current meta/status of a child session by id. Pre-F3 this is a \
+                 meta snapshot; richer handoff summaries land with F3."
+                    .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["child_session_id"],
+                "properties": { "child_session_id": { "type": "string" } }
+            }),
+        },
+        ToolDescriptor {
+            name: "session_send_input".into(),
+            description:
+                "Write raw input bytes into a descendant session's PTY. Use this to unstick \
+                 a worker that's waiting for Enter (`text: \"\\r\"`), or to send a follow-up \
+                 message into an existing child session. The text is sent verbatim — embed \
+                 `\\r` to submit at the end."
+                    .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["child_session_id", "text"],
+                "properties": {
+                    "child_session_id": { "type": "string" },
+                    "text":             { "type": "string" }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "session_cancel_child".into(),
+            description:
+                "Kill a descendant of the current session. Errors if the target is not \
+                 inside the caller's session tree."
+                    .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["child_session_id"],
+                "properties": {
+                    "child_session_id": { "type": "string" },
+                    "reason": { "type": "string" }
                 }
             }),
         },

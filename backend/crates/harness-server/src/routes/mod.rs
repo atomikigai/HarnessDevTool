@@ -4,6 +4,8 @@ pub mod control;
 pub mod db;
 pub mod events;
 pub mod health;
+pub mod profiles;
 pub mod sessions;
 pub mod tasks;
 pub mod threads;
+pub mod transcript;

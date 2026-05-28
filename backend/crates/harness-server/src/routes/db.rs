@@ -10,7 +10,8 @@ use axum::response::Response;
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use module_db::{
-    Connection, ConnectionInput, ExportRequest, QueryResult, Row, SchemaTree, TestResult, Value,
+    Connection, ConnectionInput, ExportRequest, PinnedTab, QueryResult, Row, SchemaTree,
+    TestResult, Value,
 };
 use serde::Deserialize;
 
@@ -45,6 +46,8 @@ pub fn router() -> Router<Arc<AppState>> {
             post(duplicate_row),
         )
         .route("/api/db/connections/:id/export", post(export_data))
+        .route("/api/db/tabs", get(list_pinned_tabs))
+        .route("/api/db/tabs/:tab_id/pin", post(pin_tab).delete(unpin_tab))
 }
 
 async fn export_data(
@@ -83,9 +86,7 @@ fn map_db_err(e: module_db::DbError) -> ApiError {
     }
 }
 
-async fn list_connections(
-    State(s): State<Arc<AppState>>,
-) -> ApiResult<Json<Vec<Connection>>> {
+async fn list_connections(State(s): State<Arc<AppState>>) -> ApiResult<Json<Vec<Connection>>> {
     s.db.connections_list().map(Json).map_err(map_db_err)
 }
 
@@ -168,6 +169,11 @@ struct QueryBody {
     page_size: Option<usize>,
     #[serde(default)]
     page: Option<usize>,
+    /// Optional editor-tab id (Q13). When present, the query participates in
+    /// the per-tab lease system: auto-pins on `BEGIN`, auto-unpins on
+    /// `COMMIT`/`ROLLBACK`, and reuses the leased connection in between.
+    #[serde(default)]
+    tab_id: Option<String>,
 }
 
 async fn run_query(
@@ -175,9 +181,10 @@ async fn run_query(
     Path(id): Path<String>,
     Json(body): Json<QueryBody>,
 ) -> ApiResult<Json<QueryResult>> {
-    s.db.query_run(
+    s.db.query_run_with_tab(
         &id,
         body.database.as_deref(),
+        body.tab_id.as_deref(),
         &body.sql,
         body.params,
         body.page_size.unwrap_or(100),
@@ -258,12 +265,47 @@ async fn delete_row(
     Path((id, table)): Path<(String, String)>,
     Json(b): Json<RowDeleteBody>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let n = s
-        .db
-        .row_delete(&id, b.database.as_deref(), b.schema.as_deref(), &table, b.pk)
+    let n =
+        s.db.row_delete(
+            &id,
+            b.database.as_deref(),
+            b.schema.as_deref(),
+            &table,
+            b.pk,
+        )
         .await
         .map_err(map_db_err)?;
     Ok(Json(serde_json::json!({ "affected": n })))
+}
+
+#[derive(Deserialize)]
+struct PinTabBody {
+    connection_id: String,
+    #[serde(default)]
+    database: Option<String>,
+}
+
+async fn pin_tab(
+    State(s): State<Arc<AppState>>,
+    Path(tab_id): Path<String>,
+    Json(b): Json<PinTabBody>,
+) -> ApiResult<Json<serde_json::Value>> {
+    s.db.tab_pin(&tab_id, &b.connection_id, b.database.as_deref())
+        .await
+        .map_err(map_db_err)?;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+async fn unpin_tab(
+    State(s): State<Arc<AppState>>,
+    Path(tab_id): Path<String>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let removed = s.db.tab_unpin(&tab_id);
+    Ok(Json(serde_json::json!({ "removed": removed })))
+}
+
+async fn list_pinned_tabs(State(s): State<Arc<AppState>>) -> ApiResult<Json<Vec<PinnedTab>>> {
+    Ok(Json(s.db.tabs_pinned()))
 }
 
 async fn duplicate_row(
@@ -282,4 +324,3 @@ async fn duplicate_row(
     .map(Json)
     .map_err(map_db_err)
 }
-

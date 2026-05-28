@@ -96,6 +96,20 @@ sources: []
 | user_approval tras planning | **Default ON (confirm)** | Evita corridas largas sobre malas specs |
 | Drift minor | **Rust diff + Arbitrator LLM ligero** | Decisión barata, auditable |
 | Generator ≠ Evaluator | **`verified_by != assignee`** | Anti auto-elogio (Anthropic) |
+| Autorización MCP por rol | **`role + tool + resource + scope + ownership + thread_id + path_policy`** (ver [[agents/role-capability-matrix]]) | Q9 cerrada: `task.create` planner-only, `task.propose` para workers, `repo.write` atado a paths de la task, audit obligatorio en allow y deny |
+| CLIs soportados | **`claude`, `codex`, `cursor` (cursor-agent), `antigravity` (`agy`)** — set fijo, sin `agent_kind: custom` | Q5 cerrada. Cada CLI necesita detector + plantilla de spawn + mapeo de flags + smoke test. Matriz en [[agents/supported-clis]] |
+| Contexto inicial del repo del usuario | **`ARCHITECTURE.md` generado en el repo** por un agente repo-mapper en la primera apertura; corto, indexable, shards atómicos | Q2 reformulada: `AGENTS.md` global del usuario no es esencial; lo que importa es contexto por-repo, generado y refrescable. No pisa `AGENTS.md` si el repo ya tiene uno |
+| Multi-sesión en UI | **Vivas en backend independientes de la ruta UI activa** | Q4 cerrada. PTYs, pools DB, channels SSH no se cierran al navegar; tabs para sesiones de agentes con indicador "live"; cierre solo por acción explícita o TTL |
+| Multi-tab DB queries | **Shared pool default + pin opt-in (lease de conexión)** al detectar `BEGIN` o toggle manual | Q13 cerrada. Trigger automático en `BEGIN`, libera en `COMMIT`/`ROLLBACK`/timeout 5min. Cancelación usa conexión auxiliar del pool, ortogonal al lease |
+| Tracing cross-process | **`spawn_id` UUID v4** propagado en spans `tracing` + path `spawns/<sid>/output.log` | Q3 cerrada. Cross-ref por timestamp + id |
+| `spec.md` durante thread activo | **Append-only**; solo planner/orchestrator edita. `set_section` exige version check + section lock atómico | Q11 cerrada. Workers escriben en `task.notes`/`task.artifacts`/`qa.results`, nunca en spec |
+| SFTP transfer default policy | **`resume`**; fallback `ask` con modal por archivo si no es resumable. **Nunca `overwrite` silencioso** | Q14 cerrada |
+| GEPA tasks-target | **5 curated manual** al cierre de F3 en `tests/eval/targets/` (frontend simple, backend CRUD, bug fix, refactor, DB schema change) | Q18 cerrada. F6 puede ampliar a generated |
+| Distribución | **Self-hosted only** — Dockerfile + compose en el repo, usuario clona y builda. No publicar a registries públicos | Q19 cerrada. Re-abrir si surge demanda real |
+| `harness-mcp-server` runtime | **In-process** vía feature `embedded` por default; child process documentado como fallback | N1 cerrada. Interfaz MCP stdio JSONL idéntica en ambos modos |
+| Sandbox de tools del CLI hijo | **Confiamos en el sandbox del CLI** (`claude`/`codex`/`cursor`/`agy`); `harness-sandbox` envuelve solo lo que el bridge ejecuta directamente | N3 cerrada. Mayoría del bridge es read-only |
+| Auth bind-mount container | **Bind-mount RW compartido** de `~/.claude/`, `~/.codex/`, `~/.cursor/`, `~/.antigravity/`. Refresh tokens sobreviven destruir el container | N4 cerrada. Restricción documentada: no correr el mismo CLI con otra cuenta en host paralelo |
+| Adjuntos a sesiones | **`POST /api/sessions/:sid/attach`** multipart → `$HARNESS_HOME/.runtime/attach/<sid>/`. Tools MCP `attach.list/read` exponen archivos al CLI hijo | N5 cerrada. Habilita que CLIs vean imágenes/PDF/docs/archivos arbitrarios. Cleanup al cerrar sesión o TTL 24h |
 
 ## Memoria y profiles
 

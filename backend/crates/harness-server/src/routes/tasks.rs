@@ -1,4 +1,3 @@
-use std::sync::Arc;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::get;
@@ -6,6 +5,7 @@ use axum::{Json, Router};
 use harness_core::{AcceptanceCheck, ListFilters, Task, TaskDraft, TaskPatch, TaskStatus};
 use serde::Deserialize;
 use std::str::FromStr;
+use std::sync::Arc;
 
 use crate::error::{ApiError, ApiResult};
 use crate::state::AppState;
@@ -100,6 +100,13 @@ async fn create(
         created_by: body.created_by,
     };
     let task = s.tasks.create(&tid, draft)?;
+    tracing::info!(
+        thread_id = %tid,
+        task_id = %task.id,
+        title = %task.title,
+        created_by = %task.created_by,
+        "task created via REST (will emit task.created on broadcast)"
+    );
     Ok((StatusCode::CREATED, Json(task)))
 }
 

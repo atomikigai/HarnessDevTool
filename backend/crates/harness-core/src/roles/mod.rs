@@ -42,9 +42,15 @@ pub struct RolesRegistry {
 
 impl RolesRegistry {
     /// Scan `<home>/profiles/default/roles/*.toml`. If the directory is empty
-    /// or missing, write three baseline templates and load them.
+    /// or missing, write three baseline templates and load them. Kept for
+    /// backwards compatibility with tests; prefer [`Self::load_for_profile`].
     pub fn load(home: &Path) -> Result<Self, Error> {
-        let dir = home.join("profiles/default/roles");
+        Self::load_for_profile(home, "default")
+    }
+
+    /// Load roles for a specific profile (workspace).
+    pub fn load_for_profile(home: &Path, profile: &str) -> Result<Self, Error> {
+        let dir = home.join("profiles").join(profile).join("roles");
         fs::create_dir_all(&dir)?;
 
         let mut roles = read_roles(&dir)?;
@@ -107,8 +113,7 @@ fn baseline_roles() -> Vec<Role> {
             name: "planner".into(),
             cli: AgentKind::Claude,
             prompt_template:
-                "You are the planner. Read spec.md and create tasks via task.* MCP tools."
-                    .into(),
+                "You are the planner. Read spec.md and create tasks via task.* MCP tools.".into(),
             enabled_tools: vec!["task.*".into(), "spec.*".into()],
             disabled_tools: vec![],
         },
@@ -127,11 +132,7 @@ fn baseline_roles() -> Vec<Role> {
             prompt_template:
                 "You are the evaluator. Verify submitted artifacts against acceptance checks."
                     .into(),
-            enabled_tools: vec![
-                "task.*".into(),
-                "spec.read".into(),
-                "artifact.read".into(),
-            ],
+            enabled_tools: vec!["task.*".into(), "spec.read".into(), "artifact.read".into()],
             disabled_tools: vec![],
         },
     ]

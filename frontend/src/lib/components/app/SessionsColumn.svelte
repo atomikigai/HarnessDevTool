@@ -17,7 +17,7 @@
 <script lang="ts">
   import type { SessionMeta } from '$lib/api/client';
   import HarnessIcons from './HarnessIcons.svelte';
-  import { Plus, ChevronRight, ChevronLeft, Bot, Trash2 } from '$lib/icons';
+  import { Plus, ChevronRight, ChevronLeft, ChevronDown, Bot, Trash2 } from '$lib/icons';
   import { confirmDialog } from '$lib/components/ui/confirm-dialog';
   import {
     kindChip,
@@ -60,6 +60,75 @@
   /// Per-card "deleting" guard so a slow DELETE can't be re-issued by an
   /// impatient user.
   let deleting = $state<string | null>(null);
+
+  // ── Session tree grouping ────────────────────────────────────────────────
+  // Sessions form a tree via `parent_session_id` + `root_session_id`. Group
+  // children under their root so Zeus orchestrators visually own the worker
+  // sessions they spawned. Roots without children render as a single card.
+  interface SessionGroup {
+    root: SessionMeta;
+    children: SessionMeta[];
+  }
+  const groups = $derived.by<SessionGroup[]>(() => {
+    const childrenByRoot = new Map<string, SessionMeta[]>();
+    const roots: SessionMeta[] = [];
+    for (const s of sessions) {
+      const isRoot = !s.parent_session_id || s.parent_session_id === s.id;
+      if (isRoot) {
+        roots.push(s);
+      } else {
+        // Anchor on `root_session_id` if present (carries the topmost
+        // ancestor); fall back to direct parent so legacy sessions still
+        // appear under something sensible.
+        const anchor = s.root_session_id ?? s.parent_session_id ?? s.id;
+        const arr = childrenByRoot.get(anchor) ?? [];
+        arr.push(s);
+        childrenByRoot.set(anchor, arr);
+      }
+    }
+    return roots.map((root) => ({
+      root,
+      children: (childrenByRoot.get(root.id) ?? []).sort((a, b) =>
+        a.started_at < b.started_at ? -1 : 1
+      )
+    }));
+  });
+
+  // Expand/collapse state per root, persisted across reloads. Default: all
+  // expanded so newly-spawned children are visible without an extra click.
+  const EXPAND_KEY = 'harness.expandedRoots';
+  function readExpanded(): Set<string> {
+    if (typeof window === 'undefined') return new Set();
+    try {
+      const raw = localStorage.getItem(EXPAND_KEY);
+      if (!raw) return new Set();
+      const arr = JSON.parse(raw) as string[];
+      return new Set(arr);
+    } catch {
+      return new Set();
+    }
+  }
+  function writeExpanded(set: Set<string>) {
+    if (typeof window === 'undefined') return;
+    localStorage.setItem(EXPAND_KEY, JSON.stringify([...set]));
+  }
+  // `null` means "not yet persisted, default expanded". Anything in the set
+  // is explicitly collapsed (negation logic is cheaper for the common case).
+  let collapsedRoots = $state<Set<string>>(readExpanded());
+  function isExpanded(rootId: string): boolean {
+    return !collapsedRoots.has(rootId);
+  }
+  function toggleRoot(rootId: string) {
+    const next = new Set(collapsedRoots);
+    if (next.has(rootId)) next.delete(rootId);
+    else next.add(rootId);
+    collapsedRoots = next;
+    writeExpanded(next);
+  }
+
+  function runningChildren(g: SessionGroup): number {
+    return g.children.filter((c) => uiStatus(c) === 'active').length;
+  }
 
   async function handleDelete(ev: MouseEvent, s: SessionMeta) {
     ev.stopPropagation();
@@ -219,12 +288,48 @@
         </div>
       {:else}
         <ul class="flex flex-col">
-          {#each sessions as s (s.id)}
+          {#each groups as g (g.root.id)}
+            {@const expanded = isExpanded(g.root.id)}
+            {@const runningKids = runningChildren(g)}
+            {@render sessionCard(g.root, false, g.children.length, expanded, runningKids)}
+            {#if expanded && g.children.length > 0}
+              {#each g.children as c (c.id)}
+                {@render sessionCard(c, true, 0, false, 0)}
+              {/each}
+            {/if}
+          {/each}
+        </ul>
+      {/if}
+    </div>
+
+{#snippet sessionCard(
+  s: SessionMeta,
+  isChild: boolean,
+  childCount: number,
+  rootExpanded: boolean,
+  runningKids: number
+)}
             {@const u = uiStatus(s)}
             {@const k = kindChip(s.kind)}
             {@const selected = s.id === selectedSessionId}
             {@const prog = progressFor(s)}
-            <li class="group relative">
+            <li
+              class="group relative"
+              style={isChild ? 'padding-left: 18px;' : ''}
+            >
+              {#if isChild}
+                <!-- Tree spine: a vertical line + horizontal arm drawn over
+                     the padded-left area so children visually hang from their
+                     root. Cheap absolute-positioned divs — no extra DOM per row. -->
+                <div
+                  class="pointer-events-none absolute left-[10px] top-0 h-full w-px"
+                  style="background: var(--border-subtle);"
+                ></div>
+                <div
+                  class="pointer-events-none absolute left-[10px] top-[18px] h-px w-[10px]"
+                  style="background: var(--border-subtle);"
+                ></div>
+              {/if}
               <!-- Destructive affordance — hidden until row hover/selection so
                    it doesn't compete with the primary "select session" tap
                    target. Stops propagation so clicking it doesn't also
@@ -240,11 +345,35 @@
               >
                 <Trash2 class="h-3 w-3" />
               </button>
+              {#if !isChild && childCount > 0}
+                <!-- Expand / collapse caret. Lives outside the card button so
+                     clicking it doesn't also select the root. -->
+                <button
+                  type="button"
+                  onclick={(e) => {
+                    e.stopPropagation();
+                    toggleRoot(s.id);
+                  }}
+                  aria-label={rootExpanded ? 'Collapse children' : 'Expand children'}
+                  title={rootExpanded
+                    ? `Collapse ${childCount} child${childCount === 1 ? '' : 'ren'}`
+                    : `Expand ${childCount} child${childCount === 1 ? '' : 'ren'}`}
+                  class="absolute left-1 top-3 z-10 flex h-5 w-5 items-center justify-center rounded transition-colors hover:bg-[var(--accent-soft)]"
+                  style="color: var(--fg-muted);"
+                >
+                  {#if rootExpanded}
+                    <ChevronDown class="h-3 w-3" />
+                  {:else}
+                    <ChevronRight class="h-3 w-3" />
+                  {/if}
+                </button>
+              {/if}
               <button
                 type="button"
                 onclick={() => onSelect(s.id)}
-                class="flex w-full flex-col gap-2 px-3.5 py-3 text-left transition-colors"
+                class="flex w-full flex-col gap-2 py-3 pr-3.5 text-left transition-colors"
                 style="
+                  padding-left: {!isChild && childCount > 0 ? '26px' : '14px'};
                   background: {selected ? 'var(--accent-soft)' : 'transparent'};
                   border-left: 2px solid {selected ? 'var(--accent)' : 'transparent'};
                 "
@@ -281,7 +410,7 @@
                     {relTime(s.started_at)}
                   </span>
                 </div>
-                <!-- Row 2: kind chip + stats -->
+                <!-- Row 2: kind chip + role + stats -->
                 <div class="flex items-center gap-2">
                   <span
                     class="inline-flex items-center rounded px-1.5 py-0.5 font-mono text-[10px] font-semibold"
@@ -289,6 +418,70 @@
                   >
                     {k.label}
                   </span>
+                  {#if s.role === 'zeus-orchestrator'}
+                    <span
+                      class="inline-flex items-center rounded border px-1.5 py-0.5 font-mono text-[10px] font-bold uppercase"
+                      style="color: rgb(74 222 128); border-color: rgba(74 222 128 / 0.5); background: rgba(74 222 128 / 0.1);"
+                      title="Zeus orchestrator"
+                    >
+                      Zeus
+                    </span>
+                  {:else if s.parent_session_id}
+                    <span
+                      class="inline-flex items-center rounded border px-1.5 py-0.5 font-mono text-[10px] font-semibold"
+                      style="color: var(--fg-default); border-color: var(--border-subtle); background: var(--surface-titlebar);"
+                      title={`Child of ${s.parent_session_id}`}
+                    >
+                      ↳ {s.role ?? 'child'}
+                    </span>
+                  {:else if s.role}
+                    <span
+                      class="inline-flex items-center rounded border px-1.5 py-0.5 font-mono text-[10px]"
+                      style="color: var(--fg-muted); border-color: var(--border-subtle);"
+                    >
+                      {s.role}
+                    </span>
+                  {/if}
+                  {#if !isChild && childCount > 0}
+                    <span
+                      class="inline-flex items-center gap-1 rounded border px-1.5 py-0.5 font-mono text-[10px] font-semibold"
+                      style="color: var(--accent); border-color: var(--accent-soft-border); background: var(--accent-soft);"
+                      title={`${childCount} child session${childCount === 1 ? '' : 's'} · ${runningKids} running`}
+                    >
+                      ▾ {runningKids}/{childCount}
+                    </span>
+                  {/if}
+                  {#if s.detected_state && s.detected_state !== 'unknown' && uiStatus(s) === 'active'}
+                    {@const ds = s.detected_state}
+                    <span
+                      class="inline-flex items-center gap-1 rounded border px-1.5 py-0.5 font-mono text-[10px] font-semibold"
+                      style="
+                        color: {ds === 'working'
+                        ? 'rgb(96 165 250)'
+                        : ds === 'blocked'
+                          ? 'rgb(251 191 36)'
+                          : 'rgb(148 163 184)'};
+                        border-color: {ds === 'working'
+                        ? 'rgba(96 165 250 / 0.4)'
+                        : ds === 'blocked'
+                          ? 'rgba(251 191 36 / 0.4)'
+                          : 'rgba(148 163 184 / 0.3)'};
+                        background: {ds === 'working'
+                        ? 'rgba(96 165 250 / 0.08)'
+                        : ds === 'blocked'
+                          ? 'rgba(251 191 36 / 0.1)'
+                          : 'transparent'};
+                      "
+                      title={ds === 'working'
+                        ? 'Agent is thinking / running a tool'
+                        : ds === 'blocked'
+                          ? 'Agent is waiting for input (approval / prompt)'
+                          : 'Agent is idle, ready for the next message'}
+                    >
+                      {ds === 'working' ? '⋯' : ds === 'blocked' ? '⏸' : '✓'}
+                      {ds}
+                    </span>
+                  {/if}
                   <span class="font-mono text-[10px]" style="color: var(--fg-muted);">
                     {uptime(s.started_at)} · {tokensLabel(null)}
                   </span>
@@ -317,10 +510,7 @@
               </button>
               <div class="mx-3.5 h-px" style="background: var(--row-divider);"></div>
             </li>
-          {/each}
-        </ul>
-      {/if}
-    </div>
+{/snippet}
 
     <!-- Footer link to the registry -->
     <a

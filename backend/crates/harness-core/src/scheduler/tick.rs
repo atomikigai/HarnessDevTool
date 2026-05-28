@@ -398,9 +398,7 @@ fn run_assign_pass(
         let queued_unblocked: Vec<&_> = tasks
             .iter()
             .filter(|t| {
-                t.status == TaskStatus::Queued
-                    && t.blocked_by.is_empty()
-                    && t.assignee.is_none()
+                t.status == TaskStatus::Queued && t.blocked_by.is_empty() && t.assignee.is_none()
             })
             .collect();
         let pending_verify: Vec<&_> = tasks
@@ -843,7 +841,10 @@ mod tests {
         run_assign_pass(&store, &agents, &pause, 3, &mut prev, &cd, &NoopSpawner).unwrap();
         let t = store.get("thr", "T-0001").unwrap();
         assert_eq!(t.assignee.as_deref(), Some(e1.id.as_str()));
-        assert_eq!(t.previous_assignees.last().map(|s| s.as_str()), Some(first_gen.as_str()));
+        assert_eq!(
+            t.previous_assignees.last().map(|s| s.as_str()),
+            Some(first_gen.as_str())
+        );
 
         // Evaluator rejects: pending_verify -> in_progress.
         store
@@ -862,7 +863,10 @@ mod tests {
         // for first_gen on this task.
         run_assign_pass(&store, &agents, &pause, 3, &mut prev, &cd, &NoopSpawner).unwrap();
         let key = ("thr".to_string(), "T-0001".to_string(), first_gen.clone());
-        assert!(cd.lock().unwrap().contains_key(&key), "cooldown not recorded");
+        assert!(
+            cd.lock().unwrap().contains_key(&key),
+            "cooldown not recorded"
+        );
 
         // Simulate the human/scheduler releasing the task and re-queueing it so
         // the assignment pass picks the OTHER generator.
@@ -878,8 +882,15 @@ mod tests {
         run_assign_pass(&store, &agents, &pause, 3, &mut prev, &cd, &NoopSpawner).unwrap();
         let t = store.get("thr", "T-0001").unwrap();
         let second_gen = t.assignee.clone().unwrap();
-        let other = if first_gen == g1.id { g2.id.clone() } else { g1.id.clone() };
-        assert_eq!(second_gen, other, "cooldown should have forced the other generator");
+        let other = if first_gen == g1.id {
+            g2.id.clone()
+        } else {
+            g1.id.clone()
+        };
+        assert_eq!(
+            second_gen, other,
+            "cooldown should have forced the other generator"
+        );
     }
 
     // ----- budget pass -----
@@ -958,7 +969,11 @@ mod tests {
         run_budget_pass(&wiring, &pause, &mut bands).unwrap();
 
         let emitted = sink.0.lock().unwrap();
-        assert_eq!(emitted.len(), 1, "warning should fire exactly once per band");
+        assert_eq!(
+            emitted.len(),
+            1,
+            "warning should fire exactly once per band"
+        );
         assert_eq!(emitted[0].thread_id, "thr-1");
         assert_eq!(emitted[0].pct, 80);
         assert!(!pause.is_paused(), "soft cross must not trip pause");
@@ -1165,8 +1180,14 @@ mod tests {
 
         let calls = spawner.0.lock().unwrap();
         let roles: Vec<&str> = calls.iter().map(|c| c.role.as_str()).collect();
-        assert!(roles.contains(&"generator"), "generator spawn missing: {roles:?}");
-        assert!(roles.contains(&"evaluator"), "evaluator spawn missing: {roles:?}");
+        assert!(
+            roles.contains(&"generator"),
+            "generator spawn missing: {roles:?}"
+        );
+        assert!(
+            roles.contains(&"evaluator"),
+            "evaluator spawn missing: {roles:?}"
+        );
         let eval_call = calls.iter().find(|c| c.role == "evaluator").unwrap();
         assert_eq!(eval_call.agent_id, evaluator.id);
         assert_eq!(eval_call.thread_id, "thr-eval");

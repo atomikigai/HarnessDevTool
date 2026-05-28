@@ -212,4 +212,3 @@ pub struct Row {
 pub struct AffectedResult {
     pub affected: u64,
 }
-

@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+use crate::detect::AgentState;
 use crate::kind::AgentKind;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -30,4 +31,26 @@ pub struct SessionMeta {
     /// metadata only — the prompt itself is written to the PTY at spawn time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
+
+    // ── Session tree (Zeus / orchestrator) ────────────────────────────────
+    /// Parent session id when this session was spawned as a child of another
+    /// (e.g. a Zeus worker). `None` for root sessions created directly by
+    /// the user. Stable for the lifetime of the session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_session_id: Option<String>,
+    /// Topmost ancestor in the session tree — the root supervisor. For a
+    /// root session this equals `id`. Always present so cost / lifecycle
+    /// queries can group by tree without traversing the full parent chain.
+    #[serde(default)]
+    pub root_session_id: String,
+    /// Heuristic interaction state derived from the PTY scrollback tail
+    /// (working / blocked / idle / unknown). Updated periodically by a
+    /// background task; `None` until the first detection pass runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detected_state: Option<AgentState>,
+    /// Whether the harness is tailing a structured JSONL transcript for
+    /// this session (Chat view available). True for Claude/Zeus today;
+    /// false for CLIs whose transcript format isn't wired yet.
+    #[serde(default)]
+    pub has_transcript: bool,
 }

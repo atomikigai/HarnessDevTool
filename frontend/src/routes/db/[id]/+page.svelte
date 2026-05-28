@@ -779,6 +779,30 @@
           <!-- Editor / table -->
           {#if activeTab.kind === 'sql'}
             <div class="flex min-h-0 flex-1 flex-col">
+              <!-- Pin toggle (Q13) — visual lock when the tab is leased to a
+                   dedicated connection. Backend auto-pins on BEGIN; this
+                   toggle lets the user pin manually for session state. -->
+              <div
+                class="flex shrink-0 items-center justify-end gap-2 border-b px-2 py-1"
+                style="border-color: var(--border-subtle); background: var(--surface-titlebar);"
+              >
+                <button
+                  type="button"
+                  onclick={() =>
+                    activeTab.pinned
+                      ? dbStore.unpinTab(connId, activeTab.id)
+                      : dbStore.pinTab(connId, activeTab.id)}
+                  class="inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[11px] font-medium transition-colors"
+                  style={activeTab.pinned
+                    ? 'border-color: var(--accent); background: var(--accent-soft); color: var(--accent);'
+                    : 'border-color: var(--border-input); background: transparent; color: var(--fg-muted);'}
+                  title={activeTab.pinned
+                    ? 'Tab is pinned to a dedicated DB connection (transactions / session state). Click to release.'
+                    : 'Pin this tab to a dedicated DB connection. Auto-enabled on BEGIN.'}
+                >
+                  {activeTab.pinned ? '🔒 pinned' : '🔓 shared'}
+                </button>
+              </div>
               <div class="h-2/5 min-h-[140px] border-b" style="border-color: var(--border-subtle);">
                 <SqlEditor
                   value={activeTab.sql ?? ''}

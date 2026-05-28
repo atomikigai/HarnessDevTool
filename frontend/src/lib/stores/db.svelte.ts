@@ -18,6 +18,7 @@ import {
   type SchemaTree,
   type TableMeta
 } from '$lib/api/db';
+import { ApiError } from '$lib/api/client';
 
 /**
  * Comment-aware extraction of the first SQL keyword, uppercase. Mirrors
@@ -463,14 +464,25 @@ class DbStore {
     }
   }
 
-  async cancelTab(connId: string, tabId: string): Promise<void> {
+  async cancelTab(connId: string, tabId: string): Promise<{ ok: boolean; message: string }> {
     const ws = this.workspace(connId);
     const tab = ws.tabs.find((t) => t.id === tabId);
-    if (!tab?.lastQueryId) return;
+    if (!tab?.lastQueryId) return { ok: false, message: 'No query is currently tracked.' };
     try {
-      await dbApi.cancel(connId, tab.lastQueryId);
-    } catch {
-      // best-effort
+      const res = await dbApi.cancel(connId, tab.lastQueryId);
+      return res.data.ok
+        ? { ok: true, message: 'Cancel requested.' }
+        : { ok: false, message: 'Query already finished or was not found.' };
+    } catch (err) {
+      return {
+        ok: false,
+        message:
+          err instanceof ApiError
+            ? ((err.body as { error?: string } | undefined)?.error ?? err.message)
+            : err instanceof Error
+              ? err.message
+              : String(err)
+      };
     }
   }
 

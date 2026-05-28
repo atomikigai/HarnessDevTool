@@ -295,6 +295,11 @@ pub struct SpawnOpts {
     /// Absolute path to a JSON file consumed by the agent's `--mcp-config`
     /// flag (or its kind-specific equivalent). `None` disables MCP injection.
     pub mcp_config_path: Option<PathBuf>,
+    /// Stdio MCP command for CLIs that accept per-invocation config overrides
+    /// instead of a config-file flag (Codex).
+    pub mcp_server_command: Option<String>,
+    /// Stdio MCP args paired with [`Self::mcp_server_command`].
+    pub mcp_server_args: Vec<String>,
     /// Optional initial prompt to write into the PTY after spawn. Used by the
     /// role-template system to seed the agent.
     pub role_prompt: Option<String>,
@@ -332,8 +337,9 @@ pub struct SpawnOpts {
 ///   `--disallowed-tools TodoWrite TodoRead` so claude can't satisfy task-
 ///   shaped requests with its in-process todo list (which never reaches the
 ///   harness TaskStore and so leaves the right-side Tasks panel empty).
-/// - `Codex`: no equivalent flags exist in this version; skipped. Codex
-///   integration is deferred (likely via `$CODEX_HOME/config.toml` or `-c`).
+/// - `Codex`: injects the harness MCP with per-invocation `-c
+///   mcp_servers.harness.*` overrides. Codex does not have a `--mcp-config`
+///   file flag, so we avoid mutating `~/.codex/config.toml`.
 fn build_extra_args(kind: AgentKind, opts: &SpawnOpts, session_id: &str) -> Vec<String> {
     let mut out = Vec::new();
     if matches!(kind, AgentKind::Claude) {
@@ -358,14 +364,33 @@ fn build_extra_args(kind: AgentKind, opts: &SpawnOpts, session_id: &str) -> Vec<
             out.push("never".to_string());
             out.push("--sandbox".to_string());
             out.push("workspace-write".to_string());
+            if let Some(command) = opts.mcp_server_command.as_ref() {
+                out.push("-c".to_string());
+                out.push(format!(
+                    "mcp_servers.harness.command={}",
+                    toml_string(command)
+                ));
+                out.push("-c".to_string());
+                out.push(format!(
+                    "mcp_servers.harness.args={}",
+                    toml_string_array(&opts.mcp_server_args)
+                ));
+            }
             // Pass the role/initial prompt as Codex's positional `[PROMPT]`
             // arg. That's how Codex's CLI accepts the first user turn —
             // typing into its Ink TUI via bracketed paste is racey because
             // the TUI takes ~1s to mount and Ink doesn't always honor the
             // paste-end + CR sequence. As a positional arg it's submitted
             // before the TUI even renders.
+            let mut prompt_parts = Vec::new();
+            if let Some(intro) = opts.auto_intro.as_ref() {
+                prompt_parts.push(intro.as_str());
+            }
             if let Some(prompt) = opts.role_prompt.as_ref() {
-                out.push(prompt.clone());
+                prompt_parts.push(prompt.as_str());
+            }
+            if !prompt_parts.is_empty() {
+                out.push(prompt_parts.join("\n\n"));
             }
         }
         AgentKind::Cursor => {
@@ -408,7 +433,11 @@ fn build_extra_args(kind: AgentKind, opts: &SpawnOpts, session_id: &str) -> Vec<
                     out.push(intro.clone());
                 }
             }
-            AgentKind::Codex | AgentKind::Cursor | AgentKind::Antigravity => {
+            AgentKind::Codex => {
+                // Codex consumes `mcp_server_command` via `-c` above. It has
+                // no `--mcp-config <file>` equivalent.
+            }
+            AgentKind::Cursor | AgentKind::Antigravity => {
                 tracing::warn!(
                     kind = %kind,
                     path = %path.display(),
@@ -427,10 +456,31 @@ fn build_extra_args(kind: AgentKind, opts: &SpawnOpts, session_id: &str) -> Vec<
     out
 }
 
+fn toml_string(value: &str) -> String {
+    serde_json::to_string(value).unwrap_or_else(|_| "\"\"".into())
+}
+
+fn toml_string_array(values: &[String]) -> String {
+    let parts = values
+        .iter()
+        .map(|v| toml_string(v))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("[{parts}]")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[cfg(unix)]
+    fn temp_test_dir(name: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("harness-session-{name}-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("create temp test dir");
+        dir
+    }
 
     #[test]
     fn claude_without_mcp_only_pins_session_id() {
@@ -501,28 +551,134 @@ mod tests {
     }
 
     #[test]
-    fn codex_never_gets_disallowed_tools() {
+    fn codex_gets_mcp_overrides_and_prompt() {
         let opts = SpawnOpts {
             mcp_config_path: Some(PathBuf::from("/tmp/cfg.json")),
+            mcp_server_command: Some("/tmp/harness-mcp-server".into()),
+            mcp_server_args: vec![
+                "--thread".into(),
+                "t1".into(),
+                "--agent-id".into(),
+                "agent:codex-1".into(),
+            ],
+            auto_intro: Some("Harness tools are available.".into()),
+            role_prompt: Some("Inspect the database.".into()),
             ..SpawnOpts::default()
         };
         let args = build_extra_args(AgentKind::Codex, &opts, "sid-c");
-        assert_eq!(
-            args,
-            vec![
-                "--ask-for-approval".to_string(),
-                "never".to_string(),
-                "--sandbox".to_string(),
-                "workspace-write".to_string(),
-            ]
-        );
+        assert!(args
+            .windows(2)
+            .any(|w| w[0] == "--ask-for-approval" && w[1] == "never"));
+        assert!(args
+            .windows(2)
+            .any(|w| w[0] == "--sandbox" && w[1] == "workspace-write"));
         assert!(
             !args.iter().any(|a| a == "--mcp-config"),
-            "codex MCP injection is still deferred"
+            "Codex uses -c config overrides, not --mcp-config"
         );
+        assert!(args
+            .iter()
+            .any(|a| a == "mcp_servers.harness.command=\"/tmp/harness-mcp-server\""));
+        assert!(args.iter().any(|a| {
+            a
+            == "mcp_servers.harness.args=[\"--thread\", \"t1\", \"--agent-id\", \"agent:codex-1\"]"
+        }));
+        assert!(args
+            .last()
+            .unwrap()
+            .contains("Harness tools are available.\n\nInspect the database."));
         assert!(
             !args.iter().any(|a| a == "--disallowed-tools"),
             "Todo tool disabling is Claude-only"
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn session_tree_tracks_active_and_exited_direct_children() {
+        let root = temp_test_dir("tree");
+        let sessions_root = root.join("sessions");
+        let cwd = root.join("workspace");
+        std::fs::create_dir_all(&cwd).expect("create cwd");
+        let manager = Manager::new(&sessions_root).expect("manager");
+
+        // Cursor currently contributes no extra CLI args, so these ordinary
+        // POSIX binaries can stand in for real agent processes in the PTY.
+        let shell = PathBuf::from("/bin/sh");
+        let true_bin = PathBuf::from("/bin/true");
+
+        let parent = manager
+            .spawn_with_opts(
+                AgentKind::Cursor,
+                shell.clone(),
+                "thread-1".to_string(),
+                cwd.clone(),
+                SpawnOpts {
+                    session_id_override: Some("parent".to_string()),
+                    ..SpawnOpts::default()
+                },
+            )
+            .expect("spawn parent");
+        let active_child = manager
+            .spawn_with_opts(
+                AgentKind::Cursor,
+                shell,
+                "thread-1".to_string(),
+                cwd.clone(),
+                SpawnOpts {
+                    session_id_override: Some("active-child".to_string()),
+                    parent_session_id: Some(parent.id().to_string()),
+                    role: Some("worker".to_string()),
+                    ..SpawnOpts::default()
+                },
+            )
+            .expect("spawn active child");
+        let exited_child = manager
+            .spawn_with_opts(
+                AgentKind::Cursor,
+                true_bin,
+                "thread-1".to_string(),
+                cwd,
+                SpawnOpts {
+                    session_id_override: Some("exited-child".to_string()),
+                    parent_session_id: Some(parent.id().to_string()),
+                    role: Some("quick-worker".to_string()),
+                    ..SpawnOpts::default()
+                },
+            )
+            .expect("spawn exited child");
+
+        for _ in 0..20 {
+            if exited_child.meta().await.status != crate::meta::SessionStatus::Running {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+
+        let active_meta = active_child.meta().await;
+        assert_eq!(active_meta.parent_session_id.as_deref(), Some(parent.id()));
+        assert_eq!(active_meta.root_session_id, parent.id());
+        assert_eq!(active_meta.role.as_deref(), Some("worker"));
+
+        let exited_meta = exited_child.meta().await;
+        assert_eq!(exited_meta.parent_session_id.as_deref(), Some(parent.id()));
+        assert_eq!(exited_meta.root_session_id, parent.id());
+        assert_eq!(exited_meta.status, crate::meta::SessionStatus::Exited);
+
+        let child_ids: std::collections::HashSet<String> = manager
+            .children_of(parent.id())
+            .into_iter()
+            .map(|s| s.id().to_string())
+            .collect();
+        assert_eq!(child_ids.len(), 2);
+        assert!(child_ids.contains(active_child.id()));
+        assert!(child_ids.contains(exited_child.id()));
+        assert!(manager.is_in_tree(parent.id(), active_child.id()));
+        assert!(manager.is_in_tree(parent.id(), exited_child.id()));
+        assert!(!manager.is_in_tree(active_child.id(), parent.id()));
+
+        let _ = active_child.kill().await;
+        let _ = parent.kill().await;
+        let _ = std::fs::remove_dir_all(root);
     }
 }

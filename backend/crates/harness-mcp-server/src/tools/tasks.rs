@@ -21,8 +21,201 @@ fn opt_str<'a>(args: &'a Value, key: &str) -> Option<&'a str> {
     args.get(key).and_then(|v| v.as_str())
 }
 
+fn string_array_arg(args: &Value, key: &str) -> Vec<String> {
+    args.get(key)
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn map_err(e: harness_core::Error) -> String {
     e.to_string()
+}
+
+fn brief_field<'a>(brief: &'a Value, spanish: &str, english: &str) -> Option<&'a str> {
+    brief
+        .get(spanish)
+        .or_else(|| brief.get(english))
+        .and_then(|v| v.as_str())
+}
+
+fn brief_list(brief: &Value, spanish: &str, english: &str) -> Vec<String> {
+    brief
+        .get(spanish)
+        .or_else(|| brief.get(english))
+        .map(|v| match v {
+            Value::Array(items) => items
+                .iter()
+                .filter_map(|item| item.as_str().map(String::from))
+                .collect(),
+            Value::String(s) => vec![s.clone()],
+            _ => Vec::new(),
+        })
+        .unwrap_or_default()
+}
+
+fn validate_task_brief_object(brief: &Value) -> Result<(), String> {
+    let objetivo = brief_field(brief, "objetivo", "objective")
+        .unwrap_or("")
+        .trim();
+    let contexto = brief_field(brief, "contexto", "context")
+        .unwrap_or("")
+        .trim();
+    let tareas = brief_list(brief, "tarea", "tasks")
+        .into_iter()
+        .filter(|s| !s.trim().is_empty())
+        .collect::<Vec<_>>();
+    let reglas = brief_list(brief, "reglas", "rules")
+        .into_iter()
+        .filter(|s| !s.trim().is_empty())
+        .collect::<Vec<_>>();
+    let resultado = brief_field(brief, "resultado_esperado", "expected_result")
+        .unwrap_or("")
+        .trim();
+
+    let mut missing = Vec::new();
+    if objetivo.is_empty() {
+        missing.push("objetivo");
+    }
+    if contexto.is_empty() {
+        missing.push("contexto");
+    }
+    if tareas.is_empty() {
+        missing.push("tarea");
+    }
+    if reglas.is_empty() {
+        missing.push("reglas");
+    }
+    if resultado.is_empty() {
+        missing.push("resultado_esperado");
+    }
+
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "brief incomplete; missing required field(s): {}. Retry task_create with brief using this exact shape: \
+             {{ \"objetivo\": \"Que quieres lograr\", \"contexto\": \"stack, archivos, restricciones\", \
+             \"tarea\": [\"paso 1\", \"paso 2\"], \"reglas\": [\"No romper\", \"Cambios mínimos\", \
+             \"Seguir estilo existente\", \"Agregar test\"], \"resultado_esperado\": \"que debe funcionar\" }}",
+            missing.join(", ")
+        ))
+    }
+}
+
+fn render_task_brief(brief: &Value) -> Result<Option<String>, String> {
+    let Some(brief) = brief.as_object().map(|_| brief) else {
+        return match brief.as_str() {
+            Some(s) if !s.trim().is_empty() => Ok(Some(s.trim().to_string())),
+            Some(_) => Ok(None),
+            None => Err("brief must be an object or string".into()),
+        };
+    };
+
+    validate_task_brief_object(brief)?;
+
+    let objetivo = brief_field(brief, "objetivo", "objective")
+        .unwrap_or("")
+        .trim();
+    let contexto = brief_field(brief, "contexto", "context")
+        .unwrap_or("")
+        .trim();
+    let tareas = brief_list(brief, "tarea", "tasks");
+    let reglas = brief_list(brief, "reglas", "rules");
+    let resultado = brief_field(brief, "resultado_esperado", "expected_result")
+        .unwrap_or("")
+        .trim();
+
+    if objetivo.is_empty()
+        && contexto.is_empty()
+        && tareas.is_empty()
+        && reglas.is_empty()
+        && resultado.is_empty()
+    {
+        return Ok(None);
+    }
+
+    let mut out = String::new();
+    out.push_str("Objetivo:\n");
+    out.push_str(if objetivo.is_empty() {
+        "(sin objetivo)"
+    } else {
+        objetivo
+    });
+    out.push_str("\n\nContexto:\n");
+    out.push_str(if contexto.is_empty() {
+        "(sin contexto)"
+    } else {
+        contexto
+    });
+    out.push_str("\n\nTarea:\n");
+    if tareas.is_empty() {
+        out.push_str("1. (sin pasos)\n");
+    } else {
+        for (idx, tarea) in tareas.iter().enumerate() {
+            out.push_str(&format!("{}. {}\n", idx + 1, tarea.trim()));
+        }
+    }
+    out.push_str("\nReglas:\n");
+    if reglas.is_empty() {
+        out.push_str(
+            "- No romper.\n- Cambios mínimos.\n- Seguir estilo existente.\n- Agregar test.\n",
+        );
+    } else {
+        for regla in reglas {
+            out.push_str(&format!("- {}\n", regla.trim()));
+        }
+    }
+    out.push_str("\nResultado esperado:\n");
+    out.push_str(if resultado.is_empty() {
+        "(sin resultado esperado)"
+    } else {
+        resultado
+    });
+
+    Ok(Some(out))
+}
+
+fn acceptance_from_args(args: &Value) -> Result<Vec<AcceptanceCheck>, String> {
+    let mut checks: Vec<AcceptanceCheck> = Vec::new();
+
+    if let Some(brief) = args.get("brief") {
+        if let Some(rendered) = render_task_brief(brief)? {
+            checks.push(AcceptanceCheck {
+                id: "BRIEF".into(),
+                text: rendered,
+                verified: false,
+                verified_by: None,
+            });
+        }
+    }
+
+    if let Some(arr) = args
+        .get("acceptance")
+        .and_then(|v| v.get("checks"))
+        .and_then(|v| v.as_array())
+    {
+        checks.extend(arr.iter().filter_map(|c| {
+            let text = c.get("text").and_then(|v| v.as_str())?.to_string();
+            let id = c
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            Some(AcceptanceCheck {
+                id,
+                text,
+                verified: false,
+                verified_by: None,
+            })
+        }));
+    }
+
+    Ok(checks)
 }
 
 /// `task_create` — primary path: delegate to the harness-server REST endpoint
@@ -45,47 +238,9 @@ pub fn create(
         .to_string();
     let title = str_arg(args, "title")?.to_string();
     let parent = opt_str(args, "parent").map(String::from);
-    let depends_on: Vec<String> = args
-        .get("depends_on")
-        .and_then(|v| v.as_array())
-        .map(|a| {
-            a.iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect()
-        })
-        .unwrap_or_default();
-    let labels: Vec<String> = args
-        .get("labels")
-        .and_then(|v| v.as_array())
-        .map(|a| {
-            a.iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect()
-        })
-        .unwrap_or_default();
-    let acceptance: Vec<AcceptanceCheck> = args
-        .get("acceptance")
-        .and_then(|v| v.get("checks"))
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|c| {
-                    let text = c.get("text").and_then(|v| v.as_str())?.to_string();
-                    let id = c
-                        .get("id")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or_default()
-                        .to_string();
-                    Some(AcceptanceCheck {
-                        id,
-                        text,
-                        verified: false,
-                        verified_by: None,
-                    })
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+    let depends_on = string_array_arg(args, "depends_on");
+    let labels = string_array_arg(args, "labels");
+    let acceptance = acceptance_from_args(args)?;
 
     if let Some(base) = server_url {
         // Delegate to harness-server so the in-process broadcast bus emits

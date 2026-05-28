@@ -39,6 +39,8 @@ export {
   Send,
   Copy,
   Database,
+  Eye,
+  Layers,
   Table as TableIcon,
   Key,
   ChevronDown,
@@ -47,6 +49,13 @@ export {
   PlusCircle,
   Download,
   FileJson,
+  FileSpreadsheet,
   FileText,
-  FileCode2
+  FileCode2,
+  Maximize2,
+  Minimize2,
+  PanelLeftClose,
+  PanelLeftOpen,
+  PanelRightClose,
+  PanelRightOpen
 } from 'lucide-svelte';

@@ -29,21 +29,26 @@
   } from '$lib/components/ui/dialog';
   import { Button } from '$lib/components/ui/button';
   import { Label } from '$lib/components/ui/label';
-  import { Loader2, Download, Key, FileJson, FileCode2, FileText } from '$lib/icons';
+  import { Loader2, Download, Key, FileJson, FileCode2, FileSpreadsheet, FileText } from '$lib/icons';
   import { toast } from 'svelte-sonner';
   import {
     dbApi,
     type Column,
+    type DbEngine,
     type ExportFormat,
     type ExportScope,
     type ExportRequest,
     type ExportTarget
   } from '$lib/api/db';
+  import { resultToMarkdown, resultToXlsxBlob, selectTableQuery } from './tableActions';
+
+  type UiExportFormat = ExportFormat | 'xlsx' | 'markdown';
 
   interface Props {
     open: boolean;
     connectionId: string;
     database?: string | null;
+    engine?: DbEngine;
     target: ExportDialogTarget | null;
   }
 
@@ -51,12 +56,13 @@
     open = $bindable(false),
     connectionId,
     database = null,
+    engine,
     target
   }: Props = $props();
 
   // ── Local form state ───────────────────────────────────────────────────────
-  let format = $state<ExportFormat>('Json');
-  let scope = $state<ExportScope>('SchemaAndData');
+  let format = $state<UiExportFormat>('json');
+  let scope = $state<ExportScope>('schema_and_data');
   let selectedCols = $state<Record<string, boolean>>({});
   let submitting = $state(false);
   let error = $state<string | null>(null);
@@ -79,8 +85,8 @@
     lastKey = key;
     error = null;
     submitting = false;
-    format = 'Json';
-    scope = 'SchemaAndData';
+    format = 'json';
+    scope = 'schema_and_data';
     if (target.kind === 'table') {
       const next: Record<string, boolean> = {};
       for (const c of target.columns) next[c.name] = true;
@@ -93,14 +99,14 @@
     if (!open) lastKey = '';
   });
 
-  // CSV constraints: schema → invalid; on table CSV scope is forced to DataOnly.
+  // Row-only formats force data scope.
   $effect(() => {
-    if (format === 'Csv') {
-      if (scope !== 'DataOnly') scope = 'DataOnly';
+    if (format === 'csv' || format === 'xlsx' || format === 'markdown') {
+      if (scope !== 'data_only') scope = 'data_only';
     }
   });
   $effect(() => {
-    if (isSchema && format === 'Csv') format = 'Json';
+    if (isSchema && (format === 'csv' || format === 'xlsx' || format === 'markdown')) format = 'json';
   });
 
   const selectedColCount = $derived(
@@ -109,7 +115,7 @@
   const canSubmit = $derived.by(() => {
     if (!target || submitting) return false;
     if (isTable && selectedColCount === 0) return false;
-    if (isSchema && format === 'Csv') return false;
+    if (isSchema && (format === 'csv' || format === 'xlsx' || format === 'markdown')) return false;
     return true;
   });
 
@@ -138,27 +144,48 @@
       // lets the backend treat it as "default = all".
       const subset = picked.length === all.length ? undefined : picked;
       exportTarget = {
-        type: 'Table',
+        kind: 'table',
         schema: target.schema,
         name: target.name,
         columns: subset
       };
     } else {
-      exportTarget = { type: 'Schema', name: target.name };
+      exportTarget = { kind: 'schema', name: target.name };
     }
 
-    const body: ExportRequest = {
-      database: database ?? undefined,
-      target: exportTarget,
-      format,
-      scope
-    };
-
     try {
-      // database is propagated from the active workspace; do not remove
-      const { blob, filename } = await dbApi.export(connectionId, body);
-      triggerDownload(blob, filename);
-      toast.success(`Exported ${filename}`);
+      if ((format === 'xlsx' || format === 'markdown') && target.kind === 'table') {
+        const all = target.columns.map((c) => c.name);
+        const picked = all.filter((n) => selectedCols[n]);
+        const sql = selectTableQuery(engine, target.schema, target.name, picked, 5000);
+        const res = await dbApi.query(connectionId, {
+          database: database ?? undefined,
+          sql,
+          page: 0,
+          page_size: 5000
+        });
+        const base = `${database ?? 'db'}.${target.schema ?? 'schema'}.${target.name}`;
+        if (format === 'markdown') {
+          triggerDownload(
+            new Blob([resultToMarkdown(res.data)], { type: 'text/markdown;charset=utf-8' }),
+            `${base}.md`
+          );
+        } else {
+          triggerDownload(resultToXlsxBlob(res.data), `${base}.xlsx`);
+        }
+        if (res.data.truncated) toast.warning('Exported first page only; result was truncated');
+        else toast.success(`Exported ${base}.${format === 'markdown' ? 'md' : 'xlsx'}`);
+      } else {
+        const body: ExportRequest = {
+          database: database ?? undefined,
+          target: exportTarget,
+          format: format as ExportFormat,
+          scope
+        };
+        const { blob, filename } = await dbApi.export(connectionId, body);
+        triggerDownload(blob, filename);
+        toast.success(`Exported ${filename}`);
+      }
       open = false;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -181,23 +208,26 @@
   }
 
   // ── UI helpers ────────────────────────────────────────────────────────────
-  const FORMATS: { value: ExportFormat; label: string; icon: typeof FileJson }[] = [
-    { value: 'Json', label: 'JSON', icon: FileJson },
-    { value: 'SqlInsert', label: 'SQL', icon: FileCode2 },
-    { value: 'Csv', label: 'CSV', icon: FileText }
+  const FORMATS: { value: UiExportFormat; label: string; icon: typeof FileJson }[] = [
+    { value: 'json', label: 'JSON', icon: FileJson },
+    { value: 'sql_insert', label: 'SQL', icon: FileCode2 },
+    { value: 'csv', label: 'CSV', icon: FileText },
+    { value: 'xlsx', label: 'XLSX', icon: FileSpreadsheet },
+    { value: 'markdown', label: 'Markdown', icon: FileText }
   ];
   const SCOPES: { value: ExportScope; label: string }[] = [
-    { value: 'SchemaOnly', label: 'Schema only' },
-    { value: 'SchemaAndData', label: 'Schema + data' },
-    { value: 'DataOnly', label: 'Data only' }
+    { value: 'schema_only', label: 'Schema only' },
+    { value: 'schema_and_data', label: 'Schema + data' },
+    { value: 'data_only', label: 'Data only' }
   ];
 
   function isScopeDisabled(s: ExportScope): boolean {
-    if (format === 'Csv' && s !== 'DataOnly') return true;
+    if ((format === 'csv' || format === 'xlsx' || format === 'markdown') && s !== 'data_only')
+      return true;
     return false;
   }
-  function isFormatDisabled(f: ExportFormat): boolean {
-    if (isSchema && f === 'Csv') return true;
+  function isFormatDisabled(f: UiExportFormat): boolean {
+    if (isSchema && (f === 'csv' || f === 'xlsx' || f === 'markdown')) return true;
     return false;
   }
 
@@ -214,7 +244,7 @@
     <DialogHeader>
       <DialogTitle>{titleText}</DialogTitle>
       <DialogDescription>
-        Download as JSON, SQL inserts, or CSV. The file is delivered as a download.
+        Choose format, scope, and columns. The file is delivered as a download.
       </DialogDescription>
     </DialogHeader>
 
@@ -282,9 +312,9 @@
               </button>
             {/each}
           </div>
-          {#if format === 'Csv'}
+          {#if format === 'csv' || format === 'xlsx' || format === 'markdown'}
             <p class="text-[11px]" style="color: var(--fg-muted);">
-              CSV exports rows only — scope is fixed to data.
+              This format exports rows only — scope is fixed to data.
             </p>
           {/if}
         </div>

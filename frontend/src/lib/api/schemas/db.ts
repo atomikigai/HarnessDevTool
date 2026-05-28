@@ -8,13 +8,7 @@
 import * as v from 'valibot';
 
 const engineSchema = v.picklist(['sqlite', 'postgres', 'mysql'] as const);
-const sslModeSchema = v.picklist([
-  'disable',
-  'prefer',
-  'require',
-  'verify-ca',
-  'verify-full'
-] as const);
+const sslModeSchema = v.picklist(['disable', 'prefer', 'require'] as const);
 
 const portSchema = v.pipe(
   v.number('Port must be a number'),

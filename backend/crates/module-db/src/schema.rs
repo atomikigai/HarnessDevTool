@@ -53,13 +53,20 @@ async fn sqlite_tree(pool: &sqlx::SqlitePool) -> DbResult<SchemaTree> {
                 let notnull: i64 = c.try_get(2).unwrap_or(0);
                 let dflt: Option<String> = c.try_get(3).ok();
                 let pk: i64 = c.try_get(4).unwrap_or(0);
+                let kind = if ctype.to_ascii_lowercase().starts_with("enum(") {
+                    Some(ColumnKind::Enum {
+                        variants: parse_enum_column_type(&ctype),
+                    })
+                } else {
+                    None
+                };
                 Column {
                     name: cname,
                     r#type: ctype,
                     nullable: notnull == 0,
                     pk: pk > 0,
                     default: dflt,
-                    kind: None,
+                    kind,
                 }
             })
             .collect();
@@ -207,7 +214,7 @@ async fn postgres_tree(pool: &sqlx::PgPool) -> DbResult<SchemaTree> {
                 .iter()
                 .map(|c| {
                     let cname: String = c.try_get(0).unwrap_or_default();
-                    let ctype: String = c.try_get(1).unwrap_or_default();
+                    let data_type: String = c.try_get(1).unwrap_or_default();
                     let nul: String = c.try_get(2).unwrap_or_default();
                     let dflt: Option<String> = c.try_get(3).ok();
                     let udt_name: String = c.try_get(4).unwrap_or_default();
@@ -216,6 +223,7 @@ async fn postgres_tree(pool: &sqlx::PgPool) -> DbResult<SchemaTree> {
                         .map(|variants| ColumnKind::Enum {
                             variants: variants.clone(),
                         });
+                    let ctype = if kind.is_some() { udt_name } else { data_type };
                     Column {
                         pk: pk_set.contains(&cname),
                         name: cname,

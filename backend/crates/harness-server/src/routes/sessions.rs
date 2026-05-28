@@ -94,6 +94,7 @@ async fn create_session(
             thread_id: tid,
             cwd,
             role: req.role,
+            auto_intro: None,
             initial_prompt: None,
             parent_session_id: None,
             initial_size,
@@ -115,6 +116,10 @@ pub struct SpawnArgs {
     pub thread_id: String,
     pub cwd: PathBuf,
     pub role: Option<String>,
+    /// Optional system-prompt addendum for context that must be available
+    /// before the first user turn. Claude receives this through
+    /// `--append-system-prompt` when MCP injection is active.
+    pub auto_intro: Option<String>,
     /// Optional initial user-typed prompt to feed into the PTY after spawn.
     /// Used by child spawns to seed worker context (Zeus passes the worker
     /// briefing through here).
@@ -188,6 +193,12 @@ pub async fn spawn_session_internal(
         build_spawn_opts(state, underlying, &args.thread_id, &session_id)?;
     opts.session_id_override = Some(session_id.clone());
     opts.initial_size = args.initial_size;
+    if let Some(auto_intro) = args.auto_intro.as_deref() {
+        opts.auto_intro = Some(match opts.auto_intro.take() {
+            Some(existing) if !existing.is_empty() => format!("{existing}\n\n{auto_intro}"),
+            _ => auto_intro.to_string(),
+        });
+    }
 
     // Zeus: inject the orchestrator briefing as `auto_intro` (silent via
     // --append-system-prompt). Pre-F3 the orchestrator delegates mentally;
@@ -238,6 +249,10 @@ pub async fn spawn_session_internal(
     // done/abandoned, leave the prompt empty — the user gets a blank session.
     // This is the harness's continuity story: state lives in tasks, not in
     // CLI transcripts.
+    if args.parent_session_id.is_none() && opts.role_prompt.is_none() {
+        opts.role_prompt = args.initial_prompt.clone();
+    }
+
     if args.parent_session_id.is_none() && opts.role_prompt.is_none() {
         match state.tasks.latest_active(&args.thread_id) {
             Ok(Some(task)) => {
@@ -330,7 +345,7 @@ fn start_claude_transcript_watcher(
     Ok(())
 }
 
-/// Build `SpawnOpts` carrying the per-session MCP config path. Returns
+/// Build `SpawnOpts` carrying the per-session MCP config. Returns
 /// `Ok(SpawnOpts::default())` if MCP injection is disabled (no binary, or
 /// the kind doesn't support it yet). `session_id` is pre-minted by the
 /// caller so the MCP child can be told its own sid via `--session-id`.
@@ -340,12 +355,10 @@ fn build_spawn_opts(
     thread_id: &str,
     session_id: &str,
 ) -> Result<(SpawnOpts, Option<PathBuf>), ApiError> {
-    // Only Claude has a confirmed `--mcp-config` flag today; the other CLIs
-    // (codex/cursor/antigravity) skip MCP injection until their equivalents
-    // are reverse-engineered. See [[agents/supported-clis]].
     // `kind` here is the **underlying** CLI (Zeus → Claude), so the Claude
-    // arm covers Zeus too.
-    if !matches!(kind, AgentKind::Claude) {
+    // arm covers Zeus too. Codex does not support `--mcp-config`, but it does
+    // support per-invocation `-c mcp_servers.*` overrides.
+    if !matches!(kind, AgentKind::Claude | AgentKind::Codex) {
         return Ok((SpawnOpts::default(), None));
     }
     let mcp_bin = match state.mcp_server_binary.as_ref() {
@@ -369,6 +382,21 @@ fn build_spawn_opts(
         .map_err(|e| ApiError::Internal(format!("create mcp-configs dir: {e}")))?;
     let config_path = configs_dir.join(format!("{mcp_id}.json"));
 
+    let mcp_args = vec![
+        "--thread".to_string(),
+        thread_id.to_string(),
+        "--agent-id".to_string(),
+        agent_id.clone(),
+        "--session-id".to_string(),
+        session_id.to_string(),
+        "--harness-home".to_string(),
+        state.harness_home.display().to_string(),
+        "--profile".to_string(),
+        state.profile.clone(),
+        "--server-url".to_string(),
+        state.server_url.clone(),
+    ];
+
     // `--server-url` lets the MCP child delegate `task_create` back to the
     // harness HTTP server so the in-process broadcast bus emits the SSE
     // `task.created` event the right-panel relies on.
@@ -376,13 +404,7 @@ fn build_spawn_opts(
         "mcpServers": {
             "harness": {
                 "command": mcp_bin.display().to_string(),
-                "args": [
-                    "--thread", thread_id,
-                    "--agent-id", agent_id,
-                    "--session-id", session_id,
-                    "--harness-home", state.harness_home.display().to_string(),
-                    "--server-url", state.server_url,
-                ]
+                "args": mcp_args,
             }
         }
     });
@@ -397,6 +419,11 @@ fn build_spawn_opts(
     Ok((
         SpawnOpts {
             mcp_config_path: Some(config_path.clone()),
+            mcp_server_command: Some(mcp_bin.display().to_string()),
+            mcp_server_args: serde_json::from_value(
+                config["mcpServers"]["harness"]["args"].clone(),
+            )
+            .unwrap_or_default(),
             auto_intro: Some(harness_mcp_intro().to_string()),
             ..SpawnOpts::default()
         },
@@ -598,6 +625,7 @@ async fn spawn_child_route(
             thread_id,
             cwd,
             role: Some(body.role.clone()),
+            auto_intro: None,
             initial_prompt: Some(body.initial_prompt),
             parent_session_id: Some(parent_sid.clone()),
             // Children spawned by Zeus inherit the default size; the UI will
@@ -902,7 +930,16 @@ Example:
 - Do not claim a child completed unless `session_read_child_summary` confirms
   it (status = exited with code 0).
 - Plan first, spawn second. Use `task_create` to record the plan; tag each
-  task with the worker that will execute it.
+  task with the worker that will execute it. Every `task_create` call should
+  include a `brief` object with this shape so workers and resumed sessions can
+  recover the contract with `task_get`:
+    {
+      objetivo: "...",
+      contexto: "...",
+      tarea: ["...", "..."],
+      reglas: ["No romper", "Cambios mínimos", "Seguir estilo existente", "Agregar test"],
+      resultado_esperado: "..."
+    }
 - Validate child outputs before integrating. You are also the evaluator.
 
 == HARNESS TOOLS AVAILABLE ==

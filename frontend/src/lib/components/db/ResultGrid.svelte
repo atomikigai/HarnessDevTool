@@ -25,6 +25,7 @@
   import { Edit3, Trash2, Copy, X } from '$lib/icons';
   import type { Column } from '$lib/api/db';
   import JsonCellEditor from './JsonCellEditor.svelte';
+  import { editTextForDbValue, formatDbValue, titleForDbValue } from './valueFormat';
 
   type PendingRowMap = Record<
     number,
@@ -154,12 +155,7 @@
   async function startEdit(rowIndex: number, colIndex: number) {
     if (!isCellEditable(colIndex)) return;
     const current = cellDisplay(rowIndex, colIndex, rows[rowIndex]?.[colIndex]);
-    editingValue =
-      current === null || current === undefined
-        ? ''
-        : typeof current === 'object'
-          ? JSON.stringify(current, null, 2)
-          : String(current);
+    editingValue = editTextForDbValue(current);
     editingError = null;
     editing = { kind: 'row', rowIndex, colIndex };
     await tick();
@@ -185,12 +181,7 @@
     if (!col || !isInsertCellEditable(col)) return;
     const ins = pendingInserts.find((p) => p.tempId === tempId);
     const current = ins?.values?.[col.name];
-    editingValue =
-      current === null || current === undefined
-        ? ''
-        : typeof current === 'object'
-          ? JSON.stringify(current, null, 2)
-          : String(current);
+    editingValue = editTextForDbValue(current);
     editingError = null;
     editing = { kind: 'insert', tempId, colIndex };
     await tick();
@@ -260,6 +251,11 @@
     return dt.toLowerCase().includes('json');
   }
 
+  function isBoolColumn(colIndex: number, meta?: Column | null): boolean {
+    const dt = meta?.data_type ?? cols[colIndex]?.data_type ?? '';
+    return dt.toLowerCase().includes('bool');
+  }
+
   function isEnumColumn(
     meta?: Column | null
   ): meta is Column & { kind: { kind: 'Enum'; variants: string[] } } {
@@ -276,6 +272,20 @@
       const colName = cols[colIndex]?.name;
       if (colName) onCellCommit?.(editing.rowIndex, colName, value);
     } else {
+      onInsertCellCommit?.(editing.tempId, meta.name, value);
+    }
+    cancelEdit();
+  }
+
+  function commitBoolValue(raw: string) {
+    if (editing.kind === 'none') return;
+    const colIndex = editing.colIndex;
+    const meta = columnMetaFor(colIndex) ?? columnsMeta?.[colIndex];
+    const value = raw === '' ? null : raw === 'true';
+    if (editing.kind === 'row') {
+      const colName = cols[colIndex]?.name;
+      if (colName) onCellCommit?.(editing.rowIndex, colName, value);
+    } else if (meta) {
       onInsertCellCommit?.(editing.tempId, meta.name, value);
     }
     cancelEdit();
@@ -440,9 +450,7 @@
   });
 
   function fmt(v: unknown): string {
-    if (v === null || v === undefined) return 'NULL';
-    if (typeof v === 'object') return JSON.stringify(v);
-    return String(v);
+    return formatDbValue(v);
   }
 
   function isNull(v: unknown): boolean {
@@ -529,7 +537,7 @@
                   ? `background: ${ERROR_BG}; box-shadow: inset 2px 0 0 0 ${ERROR_BORDER};`
                   : ''} {cellEditable && !editingThis ? 'cursor: text;' : ''}"
               title={pending
-                ? `was: ${fmt(originalFor(ri, ci))}`
+                ? `was: ${titleForDbValue(originalFor(ri, ci))}`
                 : jsonEditing && editingError
                   ? editingError
                   : cellEditable && !editingThis
@@ -538,7 +546,20 @@
               onclick={() => cellEditable && !editingThis && startEdit(ri, ci)}
             >
               {#if editingThis}
-                {#if isEnumColumn(meta)}
+                {#if isBoolColumn(ci, meta)}
+                  <select
+                    bind:this={editingInputEl}
+                    bind:value={editingValue}
+                    onkeydown={onCellKey}
+                    onchange={(e) => commitBoolValue((e.currentTarget as HTMLSelectElement).value)}
+                    class="w-full rounded-sm border px-1 py-0.5 text-[13px] outline-none"
+                    style="background: var(--surface-titlebar); border-color: var(--accent); color: var(--fg-default); font-family: var(--font-mono);"
+                  >
+                    {#if meta?.nullable ?? true}<option value="">NULL</option>{/if}
+                    <option value="true">TRUE</option>
+                    <option value="false">FALSE</option>
+                  </select>
+                {:else if isEnumColumn(meta)}
                   <select
                     bind:this={editingInputEl}
                     bind:value={editingValue}
@@ -573,7 +594,9 @@
               {:else if isNull(displayed)}
                 <span style="color: var(--fg-muted); font-style: italic; opacity: 0.6;">NULL</span>
               {:else}
-                <span style="color: var(--fg-default);">{fmt(displayed)}</span>
+                <span style="color: var(--fg-default);" title={titleForDbValue(displayed)}
+                  >{fmt(displayed)}</span
+                >
               {/if}
             </td>
           {/each}
@@ -606,7 +629,20 @@
               onclick={() => cellEditable && !editingThis && startInsertEdit(ins.tempId, ci)}
             >
               {#if editingThis}
-                {#if isEnumColumn(col)}
+                {#if isBoolColumn(ci, col)}
+                  <select
+                    bind:this={editingInputEl}
+                    bind:value={editingValue}
+                    onkeydown={onCellKey}
+                    onchange={(e) => commitBoolValue((e.currentTarget as HTMLSelectElement).value)}
+                    class="w-full rounded-sm border px-1 py-0.5 text-[13px] outline-none"
+                    style="background: var(--surface-titlebar); border-color: var(--accent); color: var(--fg-default); font-family: var(--font-mono);"
+                  >
+                    {#if col.nullable}<option value="">NULL</option>{/if}
+                    <option value="true">TRUE</option>
+                    <option value="false">FALSE</option>
+                  </select>
+                {:else if isEnumColumn(col)}
                   <select
                     bind:this={editingInputEl}
                     bind:value={editingValue}
@@ -647,7 +683,7 @@
                     : '(required)'}
                 </span>
               {:else}
-                <span style="color: var(--fg-default);">{fmt(val)}</span>
+                <span style="color: var(--fg-default);" title={titleForDbValue(val)}>{fmt(val)}</span>
               {/if}
             </td>
           {/each}

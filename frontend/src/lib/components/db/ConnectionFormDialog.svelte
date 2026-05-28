@@ -110,7 +110,7 @@
   function buildInput(): ConnectionInput | null {
     const paramsResult = parseParamsJson(paramsText);
     if (!paramsResult.ok) {
-      fieldErrors = { ...fieldErrors, params: paramsResult.error };
+      fieldErrors = { params: paramsResult.error };
       return null;
     }
     const body: ConnectionInput = {
@@ -267,6 +267,9 @@
           <div class="flex flex-col gap-1.5">
             <Label for="db-port">Port</Label>
             <Input id="db-port" type="number" bind:value={port} />
+            {#if fieldErrors.port}
+              <p class="text-[11px] text-[var(--dot-danger)]">{fieldErrors.port}</p>
+            {/if}
           </div>
         </div>
 
@@ -284,6 +287,11 @@
               placeholder={existing ? '(unchanged)' : '••••••••'}
               autocomplete="new-password"
             />
+            {#if existing}
+              <p class="text-[11px]" style="color: var(--fg-muted);">
+                Leave empty to keep the saved password.
+              </p>
+            {/if}
           </div>
         </div>
 
@@ -295,7 +303,7 @@
               bind:value={sslMode}
               class="h-9 rounded-md border border-[var(--border-input)] bg-[var(--surface-titlebar)] px-3 text-sm text-[var(--fg-default)]"
             >
-              {#each ['disable', 'prefer', 'require', 'verify-ca', 'verify-full'] as m (m)}
+              {#each ['disable', 'prefer', 'require'] as m (m)}
                 <option value={m}>{m}</option>
               {/each}
             </select>

@@ -15,8 +15,10 @@ pub fn list_descriptors() -> Vec<ToolDescriptor> {
         ToolDescriptor {
             name: "task_create".into(),
             description: "Create a new task in the current (or named) thread. Emits a \
-                          task.created SSE event so the UI updates immediately. Returns \
-                          the created Task object."
+                          task.created SSE event so the UI updates immediately. Orchestrators \
+                          should pass `brief` using Objetivo/Contexto/Tarea/Reglas/Resultado \
+                          esperado; the brief is persisted in acceptance checks so workers can \
+                          recover it with task_get across sessions. Returns the created Task object."
                 .into(),
             input_schema: json!({
                 "type": "object",
@@ -24,6 +26,27 @@ pub fn list_descriptors() -> Vec<ToolDescriptor> {
                 "properties": {
                     "thread_id":  { "type": "string" },
                     "title":      { "type": "string" },
+                    "brief": {
+                        "oneOf": [
+                            { "type": "string" },
+                            {
+                                "type": "object",
+                                "properties": {
+                                    "objetivo": { "type": "string" },
+                                    "contexto": { "type": "string" },
+                                    "tarea": {
+                                        "type": "array",
+                                        "items": { "type": "string" }
+                                    },
+                                    "reglas": {
+                                        "type": "array",
+                                        "items": { "type": "string" }
+                                    },
+                                    "resultado_esperado": { "type": "string" }
+                                }
+                            }
+                        ]
+                    },
                     "parent":     { "type": "string" },
                     "depends_on": { "type": "array", "items": { "type": "string" } },
                     "labels":     { "type": "array", "items": { "type": "string" } },
@@ -206,6 +229,7 @@ pub fn list_descriptors() -> Vec<ToolDescriptor> {
                 "required": ["connection", "sql"],
                 "properties": {
                     "connection": { "type": "string", "description": "connection id" },
+                    "database":   { "type": "string" },
                     "sql":        { "type": "string" },
                     "limit":      { "type": "integer", "minimum": 1 },
                     "approved":   { "type": "boolean" }
@@ -235,6 +259,50 @@ pub fn list_descriptors() -> Vec<ToolDescriptor> {
                     "connection": { "type": "string" },
                     "database":   { "type": "string" },
                     "sql":        { "type": "string" }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "db_backup".into(),
+            description: "Write a SQL backup for a DB connection before approved modifications. \
+                With schema+table it backs up that table; with schema only it backs up the schema; \
+                with no target it backs up every schema from the current schema tree."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["connection"],
+                "properties": {
+                    "connection": { "type": "string" },
+                    "database":   { "type": "string" },
+                    "schema":     { "type": "string" },
+                    "table":      { "type": "string" }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "db_memory_read".into(),
+            description: "Read the persistent architecture/structure memory for a saved DB connection and database."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["connection"],
+                "properties": {
+                    "connection": { "type": "string" },
+                    "database":   { "type": "string" }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "db_memory_write".into(),
+            description: "Overwrite the persistent architecture/structure memory for a saved DB connection and database. Use it to improve indexed DB documentation across sessions."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["connection", "content"],
+                "properties": {
+                    "connection": { "type": "string" },
+                    "database":   { "type": "string" },
+                    "content":    { "type": "string", "maxLength": 1048576 }
                 }
             }),
         },

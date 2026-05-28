@@ -7,7 +7,7 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{DbError, DbResult};
-use crate::types::{Connection, ConnectionInput};
+use crate::types::{Connection, ConnectionInput, Engine};
 
 const KEYRING_SERVICE: &str = "harness-db";
 
@@ -152,6 +152,43 @@ fn validate_input(input: &ConnectionInput) -> DbResult<()> {
     }
     if input.database.trim().is_empty() {
         return Err(DbError::Validation("database is required".into()));
+    }
+    match input.engine {
+        Engine::Sqlite => {
+            if input.host.as_deref().is_some_and(|s| !s.trim().is_empty()) {
+                return Err(DbError::Validation(
+                    "sqlite connections must not include host".into(),
+                ));
+            }
+            if input.port.is_some() {
+                return Err(DbError::Validation(
+                    "sqlite connections must not include port".into(),
+                ));
+            }
+            if input.ssl_mode.is_some() {
+                return Err(DbError::Validation(
+                    "sqlite connections must not include ssl_mode".into(),
+                ));
+            }
+        }
+        Engine::Postgres | Engine::Mysql => {
+            if input.host.as_deref().is_none_or(|s| s.trim().is_empty()) {
+                return Err(DbError::Validation(format!(
+                    "{} host is required",
+                    input.engine.as_str()
+                )));
+            }
+            if input.port == Some(0) {
+                return Err(DbError::Validation(
+                    "port must be between 1 and 65535".into(),
+                ));
+            }
+            if matches!(input.engine, Engine::Mysql) && input.ssl_mode.is_some() {
+                return Err(DbError::Validation(
+                    "mysql connections must not include ssl_mode".into(),
+                ));
+            }
+        }
     }
     Ok(())
 }
@@ -409,6 +446,50 @@ mod tests {
             created_at: now,
             updated_at: now,
         }
+    }
+
+    fn input(engine: Engine) -> ConnectionInput {
+        ConnectionInput {
+            name: "conn".into(),
+            engine,
+            host: Some("localhost".into()),
+            port: None,
+            database: "appdb".into(),
+            username: None,
+            password: None,
+            ssl_mode: None,
+            params: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn validate_input_requires_host_for_network_engines() {
+        let mut pg = input(Engine::Postgres);
+        pg.host = None;
+        let err = validate_input(&pg).unwrap_err();
+        assert!(err.to_string().contains("postgres host is required"));
+
+        let mut mysql = input(Engine::Mysql);
+        mysql.host = Some(" ".into());
+        let err = validate_input(&mysql).unwrap_err();
+        assert!(err.to_string().contains("mysql host is required"));
+    }
+
+    #[test]
+    fn validate_input_rejects_engine_specific_fields() {
+        let mut sqlite = input(Engine::Sqlite);
+        sqlite.database = "/tmp/app.sqlite".into();
+        let err = validate_input(&sqlite).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("sqlite connections must not include host"));
+
+        let mut mysql = input(Engine::Mysql);
+        mysql.ssl_mode = Some(SslMode::Require);
+        let err = validate_input(&mysql).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("mysql connections must not include ssl_mode"));
     }
 
     #[test]

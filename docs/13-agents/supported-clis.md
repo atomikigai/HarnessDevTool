@@ -17,7 +17,7 @@ sources: []
 | CLI            | `AgentKind` enum  | Binario default     | Notas                                                              |
 |----------------|-------------------|---------------------|--------------------------------------------------------------------|
 | Claude Code    | `Claude`          | `claude`            | Reference implementation; MCP wired.                               |
-| Codex          | `Codex`           | `codex`             | OpenAI; MCP injection deferred.                                    |
+| Codex          | `Codex`           | `codex`             | OpenAI; MCP wired via per-invocation `-c mcp_servers.*` overrides. |
 | Cursor Agent   | `Cursor`          | `cursor-agent`      | Sin MCP injection todavía.                                         |
 | Antigravity    | `Antigravity`     | `agy`               | Cubre el rol de cloud/Workspace/context (sin MCP injection).       |
 | **Zeus**       | `Zeus`            | *(virtual → Claude)*| **No es un CLI** — orquestador. Corre un Claude PTY con el briefing de Zeus hasta F3. Ver [[agents/zeus-orchestrator]]. |
@@ -28,7 +28,7 @@ sources: []
 |----------------------------------|--------|-------|--------|-------------|-----------------|
 | Spawn vía PTY                    | ✅     | ✅    | ✅     | ✅          | ✅ (via Claude) |
 | `--session-id` pin               | ✅     | ✗     | ✗      | ✗           | ✅              |
-| `--mcp-config` injection         | ✅     | ✗     | ✗      | ✗           | ✅              |
+| MCP injection                    | ✅ `--mcp-config` | ✅ `-c mcp_servers.*` | ✗      | ✗           | ✅              |
 | `--append-system-prompt` silent  | ✅     | ✗     | ✗      | ✗           | ✅              |
 | `--disallowed-tools`             | ✅     | ✗     | ✗      | ✗           | ✅              |
 | `--dangerously-skip-permissions` | ✅     | ✗     | ✗      | ✗           | ✅              |

@@ -83,10 +83,14 @@ exposes only:
 - `codex mcp-server`     — run codex itself as an MCP server (the opposite direction)
 - `-c key=value`         — config overrides
 
-For F2 we therefore inject MCP only into `claude` sessions. Codex sessions
-spawn unchanged (no MCP tools). Codex MCP integration is deferred to F3+; the
-likely path is writing into `$CODEX_HOME/config.toml` per session using `-c`
-overrides, but that needs its own spike.
+Update: Codex MCP injection is now wired without mutating global config. The
+harness passes per-invocation overrides:
+
+- `-c mcp_servers.harness.command="..."`
+- `-c mcp_servers.harness.args=[...]`
+
+This keeps each session pointed at its own `harness-mcp-server` instance while
+leaving `$CODEX_HOME/config.toml` untouched.
 
 ## Decisions locked in
 
@@ -95,4 +99,5 @@ overrides, but that needs its own spike.
 3. Server name on the wire: `harness`.
 4. Tool names use underscores not dots (claude restriction); JSON shape per tool
    matches the brief's contract.
-5. `codex` gets nothing this phase.
+5. `codex` receives equivalent MCP wiring through `-c mcp_servers.harness.*`
+   overrides.

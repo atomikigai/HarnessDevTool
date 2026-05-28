@@ -71,7 +71,8 @@ async fn pg_decodes_engine_specific_types() {
             "SELECT gen_random_uuid() AS u, \
                     '{\"k\":1}'::jsonb AS j, \
                     123.456::numeric AS n, \
-                    now() AS ts",
+                    now() AS ts, \
+                    ARRAY['one', 'two']::text[] AS labels",
             None,
             10,
             0,
@@ -96,4 +97,52 @@ async fn pg_decodes_engine_specific_types() {
         "timestamptz: {:?}",
         row[3]
     );
+    assert!(
+        matches!(row[4], Value::Tagged(TaggedValue::Json(ref v)) if v == &serde_json::json!(["one", "two"])),
+        "text[]: {:?}",
+        row[4]
+    );
+
+    mgr.query_run(
+        &conn.id,
+        None,
+        "DROP TYPE IF EXISTS harness_text_direction",
+        None,
+        10,
+        0,
+    )
+    .await
+    .expect("drop enum type");
+    mgr.query_run(
+        &conn.id,
+        None,
+        "CREATE TYPE harness_text_direction AS ENUM ('ltr', 'rtl')",
+        None,
+        10,
+        0,
+    )
+    .await
+    .expect("create enum type");
+    let enum_res = mgr
+        .query_run(
+            &conn.id,
+            None,
+            "SELECT 'ltr'::harness_text_direction AS direction",
+            None,
+            10,
+            0,
+        )
+        .await
+        .expect("enum query");
+    assert_eq!(enum_res.rows[0][0], Value::Text("ltr".to_string()));
+    mgr.query_run(
+        &conn.id,
+        None,
+        "DROP TYPE harness_text_direction",
+        None,
+        10,
+        0,
+    )
+    .await
+    .expect("cleanup enum type");
 }

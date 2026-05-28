@@ -11,10 +11,13 @@
   import { onMount } from 'svelte';
   import { page } from '$app/stores';
   import { Button } from '$lib/components/ui/button';
+  import type { SessionKind } from '$lib/api/client';
   import { dbStore, type DbTab } from '$lib/stores/db.svelte';
   import { engineLabel, type Column, type TableMeta } from '$lib/api/db';
   import SchemaTree, {
-    type SchemaTreeExportTarget
+    type SchemaTreeExportTarget,
+    type SchemaTreeQueryGenerate,
+    type SchemaTreeTableExport
   } from '$lib/components/db/SchemaTree.svelte';
   import ExportDialog, {
     type ExportDialogTarget
@@ -23,6 +26,13 @@
   import ResultGrid from '$lib/components/db/ResultGrid.svelte';
   import RowEditorPanel from '$lib/components/db/RowEditorPanel.svelte';
   import TableSchemaView from '$lib/components/db/TableSchemaView.svelte';
+  import TerminalView from '$lib/components/app/TerminalView.svelte';
+  import {
+    generatedQuery,
+    qualifiedTableName,
+    resultToMarkdown,
+    resultToXlsxBlob
+  } from '$lib/components/db/tableActions';
   import {
     Play,
     Plus,
@@ -32,7 +42,14 @@
     ChevronLeft,
     ChevronRight,
     MoreHorizontal,
-    AlertTriangle
+    AlertTriangle,
+    Bot,
+    Maximize2,
+    Minimize2,
+    PanelLeftClose,
+    PanelLeftOpen,
+    PanelRightClose,
+    PanelRightOpen
   } from '$lib/icons';
   import { dbApi } from '$lib/api/db';
   import { confirmDialog } from '$lib/components/ui/confirm-dialog';
@@ -48,10 +65,26 @@
   const activePkCols = $derived<string[]>(
     activeMeta ? activeMeta.columns.filter((c) => c.pk).map((c) => c.name) : []
   );
+  const MAX_VISIBLE_TABS = 5;
+  const shouldGroupTabs = $derived(ws.tabs.length > MAX_VISIBLE_TABS);
+  const visibleTabs = $derived.by(() => {
+    if (!shouldGroupTabs) return ws.tabs;
+    const first = ws.tabs.slice(0, MAX_VISIBLE_TABS);
+    const active = ws.tabs.find((t) => t.id === ws.activeTabId);
+    if (!active || first.some((t) => t.id === active.id)) return first;
+    return [...first.slice(0, MAX_VISIBLE_TABS - 1), active];
+  });
 
   // Export dialog state (driven by SchemaTree right-click).
   let exportOpen = $state(false);
   let exportTarget = $state<ExportDialogTarget | null>(null);
+  let startingDbAgent = $state(false);
+  let schemaPanelCollapsed = $state(false);
+  let dbAgentPanelCollapsed = $state(false);
+  let dbAgentFullscreen = $state(false);
+  let dbAgentThreadId = $state<string | null>(null);
+  let dbAgentSessionId = $state<string | null>(null);
+  let dbAgentKind = $state<SessionKind>('claude');
 
   function onSchemaTreeExport(t: SchemaTreeExportTarget) {
     if (t.kind === 'table') {
@@ -65,6 +98,71 @@
       exportTarget = { kind: 'schema', name: t.name, tables: t.tables };
     }
     exportOpen = true;
+  }
+
+  function triggerDownload(blob: Blob, filename: string) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1_000);
+  }
+
+  function safeName(value: string): string {
+    return value.replace(/[^A-Za-z0-9_.-]+/g, '_').replace(/^_+|_+$/g, '') || 'export';
+  }
+
+  async function onSchemaTreeTableExport(t: SchemaTreeTableExport) {
+    const baseName = safeName(`${t.schema}.${t.table.name}`);
+    try {
+      if (t.format === 'json' || t.format === 'csv') {
+        const { blob, filename } = await dbApi.export(connId, {
+          database: ws.database ?? undefined,
+          target: {
+            kind: 'table',
+            schema: t.schema,
+            name: t.table.name
+          },
+          format: t.format,
+          scope: 'data_only'
+        });
+        triggerDownload(blob, filename);
+        toast.success(`Exported ${filename}`);
+        return;
+      }
+
+      const sql = `SELECT * FROM ${qualifiedTableName(conn?.engine, t.schema, t.table.name)}`;
+      const res = await dbApi.query(connId, {
+        database: ws.database ?? undefined,
+        sql,
+        page: 0,
+        page_size: 5000
+      });
+      if (t.format === 'markdown') {
+        const blob = new Blob([resultToMarkdown(res.data)], { type: 'text/markdown;charset=utf-8' });
+        triggerDownload(blob, `${baseName}.md`);
+      } else {
+        triggerDownload(resultToXlsxBlob(res.data), `${baseName}.xlsx`);
+      }
+      if (res.data.truncated) {
+        toast.warning('Exported first page only; result was truncated by the query endpoint');
+      } else {
+        toast.success(`Exported ${baseName}.${t.format === 'markdown' ? 'md' : 'xlsx'}`);
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Export failed');
+    }
+  }
+
+  function onSchemaTreeGenerateQuery(t: SchemaTreeQueryGenerate) {
+    const sql = generatedQuery(conn?.engine, t.schema, t.table, t.query);
+    const id = dbStore.openSqlTab(connId, sql);
+    dbStore.patchTab(connId, id, {
+      title: `${t.query.toUpperCase()} ${t.schema}.${t.table.name}`
+    });
   }
 
   // Row editor state
@@ -401,6 +499,13 @@
     await dbStore.runTab(connId, activeTab.id);
   }
 
+  async function cancelActive() {
+    if (!activeTab) return;
+    const result = await dbStore.cancelTab(connId, activeTab.id);
+    if (result.ok) toast.success(result.message);
+    else toast.error(result.message);
+  }
+
   function setPageSize(n: number) {
     if (!activeTab) return;
     dbStore.patchTab(connId, activeTab.id, { pageSize: n, page: 0 });
@@ -479,6 +584,33 @@
     editorInitial = undefined;
     editorOpen = true;
   }
+
+  async function startDbAgent() {
+    if (startingDbAgent) return;
+    startingDbAgent = true;
+    try {
+      const res = await dbApi.startAgent(connId, {
+        database: ws.database ?? undefined,
+        kind: dbAgentKind
+      });
+      dbAgentThreadId = res.data.thread_id;
+      dbAgentSessionId = res.data.session_id;
+      dbAgentPanelCollapsed = false;
+      dbAgentFullscreen = false;
+      toast.success('DB agent started in read-only mode');
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to start DB agent');
+    } finally {
+      startingDbAgent = false;
+    }
+  }
+
+  function closeDbAgentPanel() {
+    dbAgentPanelCollapsed = false;
+    dbAgentFullscreen = false;
+    dbAgentThreadId = null;
+    dbAgentSessionId = null;
+  }
 </script>
 
 <div class="flex h-full min-h-0 flex-col">
@@ -510,6 +642,28 @@
       {/if}
     </div>
     <div class="flex items-center gap-2">
+      <select
+        value={dbAgentKind}
+        onchange={(e) => (dbAgentKind = (e.currentTarget as HTMLSelectElement).value as SessionKind)}
+        disabled={startingDbAgent || !conn}
+        class="h-8 rounded-md border px-2 text-xs"
+        style="border-color: var(--border-input); background: var(--surface-titlebar); color: var(--fg-default);"
+        title="DB agent kind"
+      >
+        <option value="claude">Claude</option>
+        <option value="codex">Codex</option>
+        <option value="cursor">Cursor</option>
+        <option value="antigravity">Antigravity</option>
+        <option value="zeus">Zeus</option>
+      </select>
+      <Button variant="outline" size="sm" onclick={startDbAgent} disabled={startingDbAgent || !conn}>
+        {#if startingDbAgent}
+          <Loader2 class="h-3.5 w-3.5 animate-spin" />
+        {:else}
+          <Bot class="h-3.5 w-3.5" />
+        {/if}
+        DB Agent
+      </Button>
       <Button
         variant="outline"
         size="sm"
@@ -578,77 +732,139 @@
   {/if}
 
   <div class="flex min-h-0 flex-1">
-    <!-- Sidebar -->
-    <aside
-      class="flex w-72 shrink-0 flex-col border-r"
-      style="background: var(--surface-panel); border-color: var(--border-subtle);"
-    >
-      <!-- Database selector -->
-      <div class="px-3 pt-3">
-        <div class="h-eyebrow mb-1.5">Database</div>
-        <select
-          value={ws.database ?? ''}
-          onchange={(e) => changeDatabase((e.currentTarget as HTMLSelectElement).value)}
-          disabled={ws.databases.length === 0 ||
-            (conn?.engine === 'sqlite' && ws.databases.length <= 1)}
-          class="h-8 w-full rounded-md border px-2 text-xs"
-          style="border-color: var(--border-input); background: var(--surface-titlebar); color: var(--fg-default);"
+    {#if schemaPanelCollapsed}
+      <aside
+        class="flex w-10 shrink-0 flex-col items-center border-r py-2"
+        style="background: var(--surface-panel); border-color: var(--border-subtle);"
+      >
+        <button
+          type="button"
+          class="rounded p-1.5 hover:bg-[var(--accent-soft)]"
+          title="Expand schema panel"
+          aria-label="Expand schema panel"
+          onclick={() => (schemaPanelCollapsed = false)}
         >
-          {#if ws.databases.length === 0}
-            <option value="">{conn?.database ?? '(default)'}</option>
-          {:else}
-            {#each ws.databases as d (d)}
-              <option value={d}>{d}</option>
-            {/each}
-          {/if}
-        </select>
-      </div>
+          <PanelLeftOpen class="h-4 w-4" />
+        </button>
+      </aside>
+    {:else}
+      <!-- Sidebar -->
+      <aside
+        class="flex w-72 shrink-0 flex-col border-r"
+        style="background: var(--surface-panel); border-color: var(--border-subtle);"
+      >
+        <div
+          class="flex h-9 shrink-0 items-center justify-between border-b px-3"
+          style="border-color: var(--border-subtle);"
+        >
+          <span class="h-eyebrow">Schema</span>
+          <button
+            type="button"
+            class="rounded p-1 hover:bg-[var(--accent-soft)]"
+            title="Collapse schema panel"
+            aria-label="Collapse schema panel"
+            onclick={() => (schemaPanelCollapsed = true)}
+          >
+            <PanelLeftClose class="h-4 w-4" />
+          </button>
+        </div>
 
-      <SchemaTree
-        tree={ws.schema}
-        loading={ws.schemaLoading}
-        error={ws.schemaError}
-        {onOpenTable}
-        onExport={onSchemaTreeExport}
-        activeTable={activeTab?.kind === 'table'
-          ? { schema: activeTab.schema ?? '', name: activeTab.table ?? '' }
-          : null}
-      />
-    </aside>
+        <!-- Database selector -->
+        <div class="px-3 pt-3">
+          <div class="h-eyebrow mb-1.5">Database</div>
+          <select
+            value={ws.database ?? ''}
+            onchange={(e) => changeDatabase((e.currentTarget as HTMLSelectElement).value)}
+            disabled={ws.databases.length === 0 ||
+              (conn?.engine === 'sqlite' && ws.databases.length <= 1)}
+            class="h-8 w-full rounded-md border px-2 text-xs"
+            style="border-color: var(--border-input); background: var(--surface-titlebar); color: var(--fg-default);"
+          >
+            {#if ws.databases.length === 0}
+              <option value="">{conn?.database ?? '(default)'}</option>
+            {:else}
+              {#each ws.databases as d (d)}
+                <option value={d}>{d}</option>
+              {/each}
+            {/if}
+          </select>
+        </div>
+
+        <SchemaTree
+          tree={ws.schema}
+          loading={ws.schemaLoading}
+          error={ws.schemaError}
+          {onOpenTable}
+          onExport={onSchemaTreeExport}
+          onTableExport={onSchemaTreeTableExport}
+          onGenerateQuery={onSchemaTreeGenerateQuery}
+          activeTable={activeTab?.kind === 'table'
+            ? { schema: activeTab.schema ?? '', name: activeTab.table ?? '' }
+            : null}
+        />
+      </aside>
+    {/if}
 
     <!-- Main -->
     <section class="flex min-w-0 flex-1 flex-col" style="background: var(--surface-canvas);">
       <!-- Tab bar -->
       <div
-        class="flex h-10 shrink-0 items-center gap-1 border-b px-2"
+        class="flex h-10 shrink-0 items-center gap-2 border-b px-2"
         style="border-color: var(--border-subtle); background: var(--surface-titlebar);"
       >
-        {#each ws.tabs as t (t.id)}
-          {@const active = t.id === ws.activeTabId}
-          <div
-            class="flex h-8 items-center gap-1.5 rounded-md border px-3 text-[12px]"
-            style={active
-              ? 'background: var(--surface-canvas); border-color: var(--border-subtle); color: var(--accent); font-weight: 600;'
-              : 'background: transparent; border-color: transparent; color: var(--fg-muted);'}
-          >
-            <button type="button" onclick={() => dbStore.setActiveTab(connId, t.id)}>
-              <span class="font-mono text-[11px]">{t.kind === 'sql' ? '⌥' : '⊞'}</span>
-              <span class="ml-1.5">{t.title}</span>
-            </button>
-            <button
-              type="button"
-              onclick={() => closeTab(t.id)}
-              class="rounded p-0.5 hover:bg-[var(--accent-soft)]"
-              title="Close tab"
+        <div class="flex min-w-0 flex-1 items-center gap-1 overflow-hidden">
+          {#each visibleTabs as t (t.id)}
+            {@const active = t.id === ws.activeTabId}
+            <div
+              class="flex h-8 max-w-[150px] shrink-0 items-center gap-1.5 rounded-md border px-2.5 text-[12px]"
+              style={active
+                ? 'background: var(--surface-canvas); border-color: var(--border-subtle); color: var(--accent); font-weight: 600;'
+                : 'background: transparent; border-color: transparent; color: var(--fg-muted);'}
             >
-              <X class="h-3 w-3" />
-            </button>
+              <button
+                type="button"
+                onclick={() => dbStore.setActiveTab(connId, t.id)}
+                class="min-w-0 truncate"
+                title={t.title}
+              >
+                <span class="font-mono text-[11px]">{t.kind === 'sql' ? '⌥' : '⊞'}</span>
+                <span class="ml-1.5 truncate">{t.title}</span>
+              </button>
+              <button
+                type="button"
+                onclick={() => closeTab(t.id)}
+                class="shrink-0 rounded p-0.5 hover:bg-[var(--accent-soft)]"
+                title="Close tab"
+              >
+                <X class="h-3 w-3" />
+              </button>
+            </div>
+          {/each}
+        </div>
+        {#if shouldGroupTabs}
+          <div class="flex shrink-0 items-center gap-1.5">
+            <span class="text-[11px]" style="color: var(--fg-muted);">
+              Open tabs ({ws.tabs.length})
+            </span>
+            <select
+              value={ws.activeTabId ?? ''}
+              onchange={(e) => dbStore.setActiveTab(connId, (e.currentTarget as HTMLSelectElement).value)}
+              class="h-7 max-w-[260px] rounded-md border px-2 text-[11px] outline-none"
+              style="border-color: var(--border-input); background: var(--surface-window); color: var(--fg-default);"
+              title="All open DB tabs"
+            >
+              {#each ws.tabs as t (t.id)}
+                <option value={t.id}>
+                  {t.kind === 'sql' ? 'Query' : 'Table'} · {t.title}
+                </option>
+              {/each}
+            </select>
           </div>
-        {/each}
+        {/if}
         <button
           type="button"
           onclick={onNewSqlTab}
-          class="ml-1 inline-flex h-7 items-center gap-1 rounded-md border border-dashed px-2 text-[11px]"
+          class="inline-flex h-7 shrink-0 items-center gap-1 rounded-md border border-dashed px-2 text-[11px]"
           style="border-color: var(--border-input); color: var(--fg-muted);"
           title="New SQL tab"
         >
@@ -684,6 +900,12 @@
                   {/if}
                   Run
                 </Button>
+                {#if activeTab.loading}
+                  <Button size="sm" variant="outline" onclick={cancelActive}>
+                    <X class="h-3.5 w-3.5" />
+                    Cancel
+                  </Button>
+                {/if}
                 {#if activeTab.kind === 'table'}
                   <div class="inline-flex items-stretch">
                     <Button
@@ -859,10 +1081,92 @@
       {/if}
     </section>
 
+    {#if dbAgentThreadId && dbAgentSessionId}
+      {#if dbAgentPanelCollapsed}
+        <aside
+          class="flex w-10 shrink-0 flex-col items-center border-l py-2"
+          style="background: var(--surface-panel); border-color: var(--border-subtle);"
+        >
+          <button
+            type="button"
+            class="rounded p-1.5 hover:bg-[var(--accent-soft)]"
+            title="Expand DB agent"
+            aria-label="Expand DB agent"
+            onclick={() => (dbAgentPanelCollapsed = false)}
+          >
+            <PanelRightOpen class="h-4 w-4" />
+          </button>
+          <Bot class="mt-3 h-4 w-4" style="color: var(--accent);" />
+        </aside>
+      {:else}
+        <aside
+          class="flex w-[420px] shrink-0 flex-col border-l"
+          style="background: var(--surface-panel); border-color: var(--border-subtle);"
+        >
+          <div
+            class="flex h-10 shrink-0 items-center justify-between gap-2 border-b px-3"
+            style="border-color: var(--border-subtle);"
+          >
+            <div class="flex min-w-0 items-center gap-2">
+              <Bot class="h-4 w-4 shrink-0" style="color: var(--accent);" />
+              <span class="truncate text-xs font-semibold" style="color: var(--fg-default);">
+                DB Agent
+              </span>
+              <span class="font-mono text-[10px]" style="color: var(--fg-muted);">
+                {dbAgentSessionId.slice(0, 8)}
+              </span>
+            </div>
+            <div class="flex shrink-0 items-center gap-1">
+              <button
+                type="button"
+                class="rounded p-1 hover:bg-[var(--accent-soft)]"
+                title="Collapse DB agent"
+                aria-label="Collapse DB agent"
+                onclick={() => (dbAgentPanelCollapsed = true)}
+              >
+                <PanelRightClose class="h-4 w-4" />
+              </button>
+              <button
+                type="button"
+                class="rounded p-1 hover:bg-[var(--accent-soft)]"
+                title="Fullscreen"
+                aria-label="Fullscreen DB agent"
+                onclick={() => (dbAgentFullscreen = true)}
+              >
+                <Maximize2 class="h-4 w-4" />
+              </button>
+              <button
+                type="button"
+                class="rounded p-1 hover:bg-[var(--accent-soft)]"
+                title="Close DB agent panel"
+                aria-label="Close DB agent panel"
+                onclick={closeDbAgentPanel}
+              >
+                <X class="h-4 w-4" />
+              </button>
+            </div>
+          </div>
+          <div class="min-h-0 flex-1">
+            {#if dbAgentFullscreen}
+              <div
+                class="flex h-full items-center justify-center px-4 text-xs"
+                style="color: var(--fg-muted);"
+              >
+                DB agent is open in fullscreen.
+              </div>
+            {:else}
+              <TerminalView threadId={dbAgentThreadId} sessionId={dbAgentSessionId} embedded />
+            {/if}
+          </div>
+        </aside>
+      {/if}
+    {/if}
+
     <ExportDialog
       bind:open={exportOpen}
       connectionId={connId}
       database={ws.database}
+      engine={conn?.engine}
       target={exportTarget}
     />
 
@@ -879,4 +1183,39 @@
       />
     {/if}
   </div>
+
+  {#if dbAgentFullscreen && dbAgentThreadId && dbAgentSessionId}
+    <div
+      class="fixed inset-0 z-50 flex flex-col"
+      style="background: var(--surface-window);"
+    >
+      <div
+        class="flex h-11 shrink-0 items-center justify-between border-b px-4"
+        style="border-color: var(--border-subtle); background: var(--surface-panel);"
+      >
+        <div class="flex min-w-0 items-center gap-2">
+          <Bot class="h-4 w-4 shrink-0" style="color: var(--accent);" />
+          <span class="truncate text-sm font-semibold" style="color: var(--fg-default);">
+            DB Agent
+          </span>
+          <span class="font-mono text-[11px]" style="color: var(--fg-muted);">
+            {dbAgentSessionId.slice(0, 8)}
+          </span>
+        </div>
+        <div class="flex items-center gap-1">
+          <Button variant="outline" size="sm" onclick={() => (dbAgentFullscreen = false)}>
+            <Minimize2 class="h-3.5 w-3.5" />
+            Exit fullscreen
+          </Button>
+          <Button variant="outline" size="sm" onclick={closeDbAgentPanel}>
+            <X class="h-3.5 w-3.5" />
+            Close
+          </Button>
+        </div>
+      </div>
+      <div class="min-h-0 flex-1">
+        <TerminalView threadId={dbAgentThreadId} sessionId={dbAgentSessionId} embedded />
+      </div>
+    </div>
+  {/if}
 </div>

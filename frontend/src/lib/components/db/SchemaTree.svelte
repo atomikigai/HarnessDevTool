@@ -5,6 +5,10 @@
 -->
 <script lang="ts" module>
   import type { TableMeta as _TableMeta } from '$lib/api/db';
+  import type {
+    GeneratedQueryKind as _GeneratedQueryKind,
+    TableExportFormat as _TableExportFormat
+  } from './tableActions';
   /**
    * Public target shape for the export menu — keeps the consumer free
    * to mount whatever dialog it wants without depending on this file.
@@ -12,10 +16,33 @@
   export type SchemaTreeExportTarget =
     | { kind: 'table'; schema: string; table: _TableMeta }
     | { kind: 'schema'; name: string; tables: _TableMeta[] };
+  export type SchemaTreeTableExport = {
+    schema: string;
+    table: _TableMeta;
+    format: _TableExportFormat;
+  };
+  export type SchemaTreeQueryGenerate = {
+    schema: string;
+    table: _TableMeta;
+    query: _GeneratedQueryKind;
+  };
 </script>
 
 <script lang="ts">
-  import { ChevronRight, ChevronLeft, Download } from '$lib/icons';
+  import {
+    ChevronRight,
+    ChevronLeft,
+    Database,
+    Download,
+    Eye,
+    FileCode2,
+    FileJson,
+    FileSpreadsheet,
+    FileText,
+    Layers,
+    TableIcon,
+    Trash2
+  } from '$lib/icons';
   import type { SchemaTree, TableMeta } from '$lib/api/db';
   import { ContextMenu, type ContextMenuItem } from '$lib/components/ui/context-menu';
 
@@ -27,6 +54,8 @@
     activeTable?: { schema: string; name: string } | null;
     /** Called when the user picks Export… on a table or schema row. */
     onExport?: (target: SchemaTreeExportTarget) => void;
+    onTableExport?: (target: SchemaTreeTableExport) => void;
+    onGenerateQuery?: (target: SchemaTreeQueryGenerate) => void;
   }
 
   let {
@@ -35,7 +64,9 @@
     error = null,
     onOpenTable,
     activeTable,
-    onExport
+    onExport,
+    onTableExport,
+    onGenerateQuery
   }: Props = $props();
 
   // ── Context menu state ────────────────────────────────────────────────────
@@ -46,6 +77,7 @@
 
   function openSchemaMenu(e: MouseEvent, schemaName: string, tables: TableMeta[]) {
     e.preventDefault();
+    e.stopPropagation();
     menuX = e.clientX;
     menuY = e.clientY;
     menuItems = [
@@ -60,13 +92,60 @@
 
   function openTableMenu(e: MouseEvent, schemaName: string, table: TableMeta) {
     e.preventDefault();
+    e.stopPropagation();
     menuX = e.clientX;
     menuY = e.clientY;
+    const canMutate = table.kind === 'table';
+    const canUpdate = canMutate && table.columns.some((col) => !col.pk);
     menuItems = [
       {
-        label: 'Export table…',
+        label: 'Export JSON',
+        icon: FileJson,
+        onSelect: () => onTableExport?.({ schema: schemaName, table, format: 'json' })
+      },
+      {
+        label: 'Export CSV',
+        icon: FileText,
+        onSelect: () => onTableExport?.({ schema: schemaName, table, format: 'csv' })
+      },
+      {
+        label: 'Export XLSX',
+        icon: FileSpreadsheet,
+        onSelect: () => onTableExport?.({ schema: schemaName, table, format: 'xlsx' })
+      },
+      {
+        label: 'Export Markdown',
+        icon: FileText,
+        onSelect: () => onTableExport?.({ schema: schemaName, table, format: 'markdown' })
+      },
+      {
+        label: 'Export options…',
         icon: Download,
         onSelect: () => onExport?.({ kind: 'table', schema: schemaName, table })
+      },
+      {
+        label: 'Generate SELECT',
+        icon: FileCode2,
+        onSelect: () => onGenerateQuery?.({ schema: schemaName, table, query: 'select' })
+      },
+      {
+        label: 'Generate INSERT',
+        icon: FileCode2,
+        disabled: !canMutate,
+        onSelect: () => onGenerateQuery?.({ schema: schemaName, table, query: 'insert' })
+      },
+      {
+        label: 'Generate UPDATE',
+        icon: FileCode2,
+        disabled: !canUpdate,
+        onSelect: () => onGenerateQuery?.({ schema: schemaName, table, query: 'update' })
+      },
+      {
+        label: 'Generate DELETE',
+        icon: Trash2,
+        destructive: true,
+        disabled: !canMutate,
+        onSelect: () => onGenerateQuery?.({ schema: schemaName, table, query: 'delete' })
       }
     ];
     menuOpen = true;
@@ -107,6 +186,12 @@
     const q = filter.trim().toLowerCase();
     if (!q) return tables;
     return tables.filter((t) => t.name.toLowerCase().includes(q));
+  }
+
+  function iconForTable(table: TableMeta) {
+    if (table.kind === 'view') return Eye;
+    if (table.kind === 'materialized_view') return Layers;
+    return TableIcon;
   }
 </script>
 
@@ -155,6 +240,7 @@
               <ChevronRight class="h-3 w-3" />
             {/if}
           </span>
+          <Database class="h-3.5 w-3.5 shrink-0" style="color: var(--fg-muted);" />
           <span class="font-medium">{schema.name}</span>
           <span class="ml-auto font-mono text-[10px]" style="color: var(--fg-muted);">
             {schema.tables.length}
@@ -176,6 +262,7 @@
             {#each matches as t (t.name)}
               {@const active =
                 activeTable && activeTable.schema === schema.name && activeTable.name === t.name}
+              {@const EntityIcon = iconForTable(t)}
               <button
                 type="button"
                 class="flex w-full items-center gap-2 py-1 pr-3 pl-7 text-left text-[12.5px] transition-colors"
@@ -185,8 +272,16 @@
                 onclick={() => onOpenTable?.(schema.name, t)}
                 oncontextmenu={(e) => openTableMenu(e, schema.name, t)}
               >
-                <span style="color: {active ? 'var(--accent)' : 'var(--fg-muted)'};">
-                  {t.kind === 'view' ? 'ʌ' : '⊞'}
+                <span
+                  class="inline-flex h-4 w-4 shrink-0 items-center justify-center"
+                  style="color: {active ? 'var(--accent)' : 'var(--fg-muted)'};"
+                  title={t.kind === 'materialized_view'
+                    ? 'materialized view'
+                    : t.kind === 'view'
+                      ? 'view'
+                      : 'table'}
+                >
+                  <EntityIcon class="h-3.5 w-3.5" />
                 </span>
                 <span class="truncate">{t.name}</span>
                 {#if t.row_estimate != null}

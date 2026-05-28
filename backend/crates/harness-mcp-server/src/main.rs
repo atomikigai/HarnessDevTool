@@ -29,6 +29,7 @@ struct CliArgs {
     /// `session.spawn_child` attribute spawns to the right parent.
     session_id: Option<String>,
     harness_home: PathBuf,
+    profile: String,
     /// Optional base URL of the harness HTTP server (e.g. `http://127.0.0.1:8787`).
     /// When set, `task_create` delegates to `POST /api/threads/:tid/tasks` so the
     /// in-process broadcast bus emits `task.created` and SSE consumers see the
@@ -42,6 +43,7 @@ fn parse_args() -> Result<CliArgs, String> {
     let mut agent_id: Option<String> = None;
     let mut session_id: Option<String> = None;
     let mut harness_home: Option<PathBuf> = None;
+    let mut profile: Option<String> = None;
     let mut server_url: Option<String> = std::env::var("HARNESS_SERVER_URL").ok();
 
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -69,13 +71,17 @@ fn parse_args() -> Result<CliArgs, String> {
                 harness_home = Some(PathBuf::from(next(i)?));
                 i += 2;
             }
+            "--profile" => {
+                profile = Some(next(i)?.clone());
+                i += 2;
+            }
             "--server-url" => {
                 server_url = Some(next(i)?.clone());
                 i += 2;
             }
             "-h" | "--help" => {
                 eprintln!(
-                    "usage: harness-mcp-server --thread <tid> --agent-id <aid> [--session-id <sid>] --harness-home <path> [--server-url <url>]"
+                    "usage: harness-mcp-server --thread <tid> --agent-id <aid> [--session-id <sid>] --harness-home <path> [--profile <profile>] [--server-url <url>]"
                 );
                 std::process::exit(0);
             }
@@ -87,6 +93,7 @@ fn parse_args() -> Result<CliArgs, String> {
         agent_id: agent_id.ok_or_else(|| "missing --agent-id".to_string())?,
         session_id,
         harness_home: harness_home.ok_or_else(|| "missing --harness-home".to_string())?,
+        profile: profile.unwrap_or_else(|| "default".to_string()),
         server_url,
     })
 }
@@ -112,6 +119,7 @@ fn main() -> ExitCode {
         thread = %args.thread_id,
         agent = %args.agent_id,
         home = %args.harness_home.display(),
+        profile = %args.profile,
         "harness-mcp-server starting"
     );
 
@@ -120,6 +128,7 @@ fn main() -> ExitCode {
         args.thread_id.clone(),
         args.agent_id.clone(),
         args.session_id.clone(),
+        args.profile.clone(),
         args.server_url.clone(),
     ) {
         Ok(d) => d,

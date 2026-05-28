@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use module_db::{ConnectionInput, Engine, Manager, Value};
+use module_db::{ColumnKind, ConnectionInput, Engine, Manager, Value};
 use tempfile::TempDir;
 
 fn fresh_manager() -> (Manager, TempDir) {
@@ -98,6 +98,59 @@ async fn schema_and_query_pagination() {
         .unwrap();
     assert_eq!(p2.rows.len(), 5);
     assert!(!p2.truncated);
+}
+
+#[tokio::test]
+async fn sqlite_declared_enum_columns_surface_variants() {
+    let (mgr, dir) = fresh_manager();
+    let db_path = dir.path().join("enum.db");
+    let c = mgr.connections_add(sqlite_input(&db_path, "enum")).unwrap();
+
+    mgr.query_run(
+        &c.id,
+        None,
+        "CREATE TABLE docs (id INTEGER PRIMARY KEY, direction \"enum('ltr','rtl')\" NOT NULL)",
+        None,
+        10,
+        0,
+    )
+    .await
+    .unwrap();
+    mgr.query_run(
+        &c.id,
+        None,
+        "INSERT INTO docs (direction) VALUES ('ltr')",
+        None,
+        10,
+        0,
+    )
+    .await
+    .unwrap();
+
+    let tree = mgr.schema_tree(&c.id, None).await.unwrap();
+    let table = tree
+        .schemas
+        .iter()
+        .flat_map(|s| s.tables.iter())
+        .find(|t| t.name == "docs")
+        .expect("table present");
+    let col = table
+        .columns
+        .iter()
+        .find(|c| c.name == "direction")
+        .expect("enum column");
+    assert_eq!(
+        col.kind,
+        Some(ColumnKind::Enum {
+            variants: vec!["ltr".to_string(), "rtl".to_string()]
+        })
+    );
+
+    let res = mgr
+        .query_run(&c.id, None, "SELECT direction FROM docs", None, 10, 0)
+        .await
+        .unwrap();
+    assert_eq!(res.rows[0][0], Value::Text("ltr".to_string()));
 }
 
 #[tokio::test]

@@ -20,6 +20,7 @@ pub struct Dispatcher {
     store: TaskStore,
     db: DbManager,
     harness_home: PathBuf,
+    profile: String,
     thread_id: String,
     agent_id: String,
     /// Stable session id owning this MCP instance. Used to attribute
@@ -36,7 +37,14 @@ pub struct Dispatcher {
 impl Dispatcher {
     #[allow(dead_code)]
     pub fn new(harness_home: PathBuf, thread_id: String, agent_id: String) -> Result<Self, String> {
-        Self::new_with_server(harness_home, thread_id, agent_id, None, None)
+        Self::new_with_server(
+            harness_home,
+            thread_id,
+            agent_id,
+            None,
+            "default".into(),
+            None,
+        )
     }
 
     pub fn new_with_server(
@@ -44,14 +52,16 @@ impl Dispatcher {
         thread_id: String,
         agent_id: String,
         session_id: Option<String>,
+        profile: String,
         server_url: Option<String>,
     ) -> Result<Self, String> {
-        let store = TaskStore::new(&harness_home).map_err(|e| e.to_string())?;
-        let db = DbManager::new(&harness_home, "default").map_err(|e| e.to_string())?;
+        let store = TaskStore::with_profile(&harness_home, &profile).map_err(|e| e.to_string())?;
+        let db = DbManager::new(&harness_home, &profile).map_err(|e| e.to_string())?;
         Ok(Self {
             store,
             db,
             harness_home,
+            profile,
             thread_id,
             agent_id,
             session_id,
@@ -137,6 +147,9 @@ impl Dispatcher {
             "db_query" => db_tools::query(&self.db, &args),
             "db_schema" => db_tools::schema(&self.db, &args),
             "db_explain" => db_tools::explain(&self.db, &args),
+            "db_backup" => db_tools::backup(&self.db, &self.harness_home, &args),
+            "db_memory_read" => db_tools::memory_read(&self.harness_home, &self.profile, &args),
+            "db_memory_write" => db_tools::memory_write(&self.harness_home, &self.profile, &args),
             "session_spawn_child" => session_tools::spawn_child(
                 self.session_id.as_deref(),
                 self.server_url.as_deref(),
@@ -269,6 +282,7 @@ mod tests {
         let tools = resp["result"]["tools"].as_array().unwrap();
         let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
         for expected in [
+            "task_create",
             "task_list",
             "task_get",
             "task_claim",
@@ -278,6 +292,8 @@ mod tests {
             "task_submit",
             "spec_read",
             "spec_write",
+            "db_memory_read",
+            "db_memory_write",
             "skills_search",
         ] {
             assert!(names.contains(&expected), "missing tool: {expected}");
@@ -292,6 +308,113 @@ mod tests {
         let resp = d.handle(req).unwrap();
         let text = resp["result"]["content"][0]["text"].as_str().unwrap();
         assert_eq!(text, "[]");
+    }
+
+    #[test]
+    fn task_create_with_brief_persists_worker_contract() {
+        let (d, _home) = mk("t-brief", "agent:planner");
+        let create_line = r#"{
+            "jsonrpc":"2.0",
+            "id":31,
+            "method":"tools/call",
+            "params":{
+                "name":"task_create",
+                "arguments":{
+                    "title":"Wire task brief",
+                    "brief":{
+                        "objetivo":"Permitir handoff claro al worker.",
+                        "contexto":"MCP task_create debe conservar memoria entre sesiones.",
+                        "tarea":["Crear task con brief","Recuperar task con task_get"],
+                        "reglas":["No romper","Cambios mínimos","Seguir estilo existente","Agregar test"],
+                        "resultado_esperado":"El worker puede leer el contrato completo."
+                    },
+                    "labels":["backend","brief"]
+                }
+            }
+        }"#;
+        let resp = d.handle(parse_request(create_line).unwrap()).unwrap();
+        assert_ne!(resp["result"]["isError"], true);
+        let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+        let created: serde_json::Value = serde_json::from_str(text).unwrap();
+        assert_eq!(created["title"], "Wire task brief");
+        assert_eq!(created["acceptance"]["checks"][0]["id"], "BRIEF");
+        let brief_text = created["acceptance"]["checks"][0]["text"].as_str().unwrap();
+        assert!(brief_text.contains("Objetivo:\nPermitir handoff claro al worker."));
+        assert!(
+            brief_text.contains("Tarea:\n1. Crear task con brief\n2. Recuperar task con task_get")
+        );
+        assert!(
+            brief_text.contains("Resultado esperado:\nEl worker puede leer el contrato completo.")
+        );
+
+        let task_id = created["id"].as_str().unwrap();
+        let get_line = format!(
+            r#"{{"jsonrpc":"2.0","id":32,"method":"tools/call","params":{{"name":"task_get","arguments":{{"task_id":"{task_id}"}}}}}}"#
+        );
+        let resp = d.handle(parse_request(&get_line).unwrap()).unwrap();
+        let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+        let fetched: serde_json::Value = serde_json::from_str(text).unwrap();
+        assert_eq!(fetched["id"], task_id);
+        assert_eq!(
+            fetched["acceptance"]["checks"][0]["text"],
+            created["acceptance"]["checks"][0]["text"]
+        );
+    }
+
+    #[test]
+    fn task_create_rejects_incomplete_structured_brief() {
+        let (d, _home) = mk("t-brief-invalid", "agent:planner");
+        let create_line = r#"{
+            "jsonrpc":"2.0",
+            "id":33,
+            "method":"tools/call",
+            "params":{
+                "name":"task_create",
+                "arguments":{
+                    "title":"Vague task",
+                    "brief":{
+                        "objetivo":"Arreglar cosas"
+                    }
+                }
+            }
+        }"#;
+        let resp = d.handle(parse_request(create_line).unwrap()).unwrap();
+        assert_eq!(resp["result"]["isError"], true);
+        let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("brief incomplete"));
+        assert!(text.contains("contexto"));
+        assert!(text.contains("tarea"));
+        assert!(text.contains("reglas"));
+        assert!(text.contains("resultado_esperado"));
+        assert!(text.contains("Retry task_create with brief using this exact shape"));
+        assert!(text.contains("\"objetivo\""));
+        assert!(text.contains("\"contexto\""));
+    }
+
+    #[test]
+    fn task_create_accepts_legacy_string_brief() {
+        let (d, _home) = mk("t-brief-string", "agent:planner");
+        let create_line = r#"{
+            "jsonrpc":"2.0",
+            "id":34,
+            "method":"tools/call",
+            "params":{
+                "name":"task_create",
+                "arguments":{
+                    "title":"Legacy brief",
+                    "brief":"Plain text brief from an older caller."
+                }
+            }
+        }"#;
+        let resp = d.handle(parse_request(create_line).unwrap()).unwrap();
+        assert_ne!(resp["result"]["isError"], true);
+        let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+        let created: serde_json::Value = serde_json::from_str(text).unwrap();
+        assert_eq!(created["acceptance"]["checks"][0]["id"], "BRIEF");
+        assert_eq!(
+            created["acceptance"]["checks"][0]["text"],
+            "Plain text brief from an older caller."
+        );
     }
 
     #[test]

@@ -8,13 +8,14 @@
  */
 
 import { apiRequest, API_BASE, ApiError } from './client';
+import type { SessionKind } from './client';
 
 // ────────────────────────────────────────────────────────────────────────────
 // Types
 // ────────────────────────────────────────────────────────────────────────────
 
 export type DbEngine = 'sqlite' | 'postgres' | 'mysql';
-export type SslMode = 'disable' | 'prefer' | 'require' | 'verify-ca' | 'verify-full';
+export type SslMode = 'disable' | 'prefer' | 'require';
 
 export interface Connection {
   id: string;
@@ -130,12 +131,12 @@ export interface PinnedTab {
 
 // ── Export (F4) ──────────────────────────────────────────────────────────────
 
-export type ExportFormat = 'Json' | 'SqlInsert' | 'Csv';
-export type ExportScope = 'SchemaOnly' | 'SchemaAndData' | 'DataOnly';
+export type ExportFormat = 'json' | 'sql_insert' | 'csv';
+export type ExportScope = 'schema_only' | 'schema_and_data' | 'data_only';
 
 export type ExportTarget =
-  | { type: 'Table'; schema?: string; name: string; columns?: string[] }
-  | { type: 'Schema'; name: string };
+  | { kind: 'table'; schema?: string; name: string; columns?: string[] }
+  | { kind: 'schema'; name: string };
 
 export interface ExportRequest {
   database?: string;
@@ -147,6 +148,21 @@ export interface ExportRequest {
 export interface ExportResponse {
   blob: Blob;
   filename: string;
+}
+
+export interface CancelQueryResponse {
+  ok: boolean;
+}
+
+export interface StartDbAgentRequest {
+  database?: string | null;
+  kind?: SessionKind;
+  cwd?: string;
+}
+
+export interface StartDbAgentResponse {
+  thread_id: string;
+  session_id: string;
 }
 
 export interface RowMutation {
@@ -183,6 +199,12 @@ export const dbApi = {
     const qs = database ? `?database=${encodeURIComponent(database)}` : '';
     return apiRequest<SchemaTree>(`${base}/connections/${id}/schema${qs}`, { signal });
   },
+  startAgent: (id: string, body: StartDbAgentRequest, signal?: AbortSignal) =>
+    apiRequest<StartDbAgentResponse>(`${base}/connections/${id}/agent`, {
+      method: 'POST',
+      body,
+      signal
+    }),
   query: (id: string, req: QueryRequest, signal?: AbortSignal) =>
     apiRequest<QueryResult>(`${base}/connections/${id}/query`, {
       method: 'POST',
@@ -213,12 +235,16 @@ export const dbApi = {
     }
     const blob = await res.blob();
     const cd = res.headers.get('content-disposition') ?? '';
-    const m = cd.match(/filename\*?="?([^";]+)"?/i);
-    const filename = m?.[1] ?? `export-${Date.now()}.bin`;
+    const encoded = cd.match(/filename\*=(?:UTF-8'')?([^;]+)/i)?.[1];
+    const plain = cd.match(/filename="?([^";]+)"?/i)?.[1];
+    const rawFilename = encoded ?? plain;
+    const filename = rawFilename
+      ? decodeURIComponent(rawFilename.trim().replace(/^"|"$/g, ''))
+      : `export-${Date.now()}.bin`;
     return { blob, filename };
   },
   cancel: (id: string, queryId: string, signal?: AbortSignal) =>
-    apiRequest<null>(`${base}/connections/${id}/query/${queryId}/cancel`, {
+    apiRequest<CancelQueryResponse>(`${base}/connections/${id}/query/${queryId}/cancel`, {
       method: 'POST',
       signal
     }),

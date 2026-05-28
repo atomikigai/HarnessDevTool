@@ -148,6 +148,19 @@ export interface SessionMeta {
   has_transcript?: boolean;
 }
 
+export interface ChildSessionSummary {
+  session_id: string;
+  parent_session_id?: string | null;
+  root_session_id: string;
+  kind: SessionKind;
+  role?: string | null;
+  status: SessionStatus;
+  /** Unix epoch ms. */
+  started_at: number;
+  pid: number;
+  detected_state?: AgentState | null;
+}
+
 export type TranscriptKind =
   | 'message'
   | 'thinking'
@@ -358,6 +371,8 @@ export const api = {
       }),
     get: (sessionId: string, signal?: AbortSignal) =>
       apiRequest<SessionMeta>(`/sessions/${sessionId}`, { signal }),
+    children: (sessionId: string, signal?: AbortSignal) =>
+      apiRequest<ChildSessionSummary[]>(`/sessions/${sessionId}/children`, { signal }),
     kill: (sessionId: string, signal?: AbortSignal) =>
       apiRequest<null>(`/sessions/${sessionId}`, { method: 'DELETE', signal }),
     resize: (sessionId: string, cols: number, rows: number, signal?: AbortSignal) =>

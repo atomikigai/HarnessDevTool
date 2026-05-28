@@ -234,6 +234,41 @@ fn decode_postgres_cell(row: &sqlx::postgres::PgRow, idx: usize) -> Value {
                 return Value::bytes(&v);
             }
         }
+        "TEXT[]" | "VARCHAR[]" | "BPCHAR[]" | "NAME[]" | "CHAR[]" | "CITEXT[]" => {
+            if let Ok(v) = row.try_get::<Vec<Option<String>>, _>(idx) {
+                return Value::json(json_array(v));
+            }
+        }
+        "BOOL[]" => {
+            if let Ok(v) = row.try_get::<Vec<Option<bool>>, _>(idx) {
+                return Value::json(json_array(v));
+            }
+        }
+        "INT2[]" => {
+            if let Ok(v) = row.try_get::<Vec<Option<i16>>, _>(idx) {
+                return Value::json(json_array(v));
+            }
+        }
+        "INT4[]" => {
+            if let Ok(v) = row.try_get::<Vec<Option<i32>>, _>(idx) {
+                return Value::json(json_array(v));
+            }
+        }
+        "INT8[]" => {
+            if let Ok(v) = row.try_get::<Vec<Option<i64>>, _>(idx) {
+                return Value::json(json_array(v));
+            }
+        }
+        "FLOAT4[]" => {
+            if let Ok(v) = row.try_get::<Vec<Option<f32>>, _>(idx) {
+                return Value::json(json_array(v));
+            }
+        }
+        "FLOAT8[]" => {
+            if let Ok(v) = row.try_get::<Vec<Option<f64>>, _>(idx) {
+                return Value::json(json_array(v));
+            }
+        }
         _ => {}
     }
     // Fallback ladder for less-common types.
@@ -252,8 +287,26 @@ fn decode_postgres_cell(row: &sqlx::postgres::PgRow, idx: usize) -> Value {
     if let Ok(v) = row.try_get::<Vec<u8>, _>(idx) {
         return Value::bytes(&v);
     }
-    // Arrays, hstore, ranges, enums, composites, etc. land here.
+    // Postgres custom ENUMs expose their type name as the user-defined type
+    // (e.g. `text_direction`) and are not compatible with `String`'s TEXT
+    // decoder. The raw value is still the UTF-8 enum label.
+    if let Ok(v) = raw.as_str() {
+        return Value::Text(v.to_string());
+    }
+    // Arrays, hstore, ranges, composites, etc. land here.
     Value::Text(format!("<unsupported:{type_name}>"))
+}
+
+fn json_array<T: Serialize>(items: Vec<Option<T>>) -> serde_json::Value {
+    serde_json::Value::Array(
+        items
+            .into_iter()
+            .map(|item| match item {
+                Some(value) => serde_json::to_value(value).unwrap_or(serde_json::Value::Null),
+                None => serde_json::Value::Null,
+            })
+            .collect(),
+    )
 }
 
 // ---- MySQL -----------------------------------------------------------------

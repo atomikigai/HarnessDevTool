@@ -11,24 +11,12 @@
     • Info           — session metadata (id, kind, pid, cwd, …).
 -->
 <script lang="ts">
-  import { apiRequest, type SessionMeta, type SessionKind } from '$lib/api/client';
+  import { api, type ChildSessionSummary, type SessionMeta } from '$lib/api/client';
   import { tasksState } from '$lib/stores/tasks.svelte';
   import { Bot } from '$lib/icons';
   import { taskProgress } from '$lib/sessionDisplay';
   import { onDestroy } from 'svelte';
   import { toast } from 'svelte-sonner';
-
-  interface ChildSession {
-    session_id: string;
-    parent_session_id: string | null;
-    root_session_id: string;
-    kind: SessionKind;
-    role: string | null;
-    status: 'running' | 'exited' | 'killed';
-    started_at: number;
-    pid: number;
-    detected_state?: 'working' | 'blocked' | 'idle' | 'unknown' | null;
-  }
 
   interface Props {
     session: SessionMeta | null;
@@ -41,7 +29,7 @@
 
   type Tab = 'tasks' | 'agents' | 'info';
   let tab = $state<Tab>('tasks');
-  let children = $state<ChildSession[]>([]);
+  let children = $state<ChildSessionSummary[]>([]);
   let childrenError = $state<string | null>(null);
   let pollTimer: ReturnType<typeof setInterval> | null = null;
   // Track ids and statuses across polls so we can fire toasts when something
@@ -61,14 +49,22 @@
     return status === 'done';
   }
 
-  async function loadChildren() {
-    if (!session) {
+  function resetChildren() {
+    children = [];
+    childrenError = null;
+    knownIds = new Set();
+    knownStatuses = new Map();
+  }
+
+  async function loadChildren(sessionId: string) {
+    if (!session || session.id !== sessionId) {
       children = [];
       return;
     }
     try {
-      const res = await apiRequest<ChildSession[]>(`/sessions/${session.id}/children`);
-      const next = res.data ?? [];
+      const res = await api.sessions.children(sessionId);
+      const next = (res.data ?? []).toSorted((a, b) => a.started_at - b.started_at);
+      if (!session || session.id !== sessionId) return;
       diffAndToast(next);
       children = next;
       childrenError = null;
@@ -82,7 +78,7 @@
    * and status transitions as toasts so the user gets a real "something
    * happened" signal even when they're not looking at the Agents tab.
    */
-  function diffAndToast(next: ChildSession[]) {
+  function diffAndToast(next: ChildSessionSummary[]) {
     // Skip the first round after a session switch — everything would toast.
     if (activeSessionId !== session?.id) {
       activeSessionId = session?.id ?? null;
@@ -128,12 +124,13 @@
       pollTimer = null;
     }
     if (session) {
-      void loadChildren();
-      pollTimer = setInterval(() => void loadChildren(), 1500);
+      const sessionId = session.id;
+      resetChildren();
+      activeSessionId = sessionId;
+      void loadChildren(sessionId);
+      pollTimer = setInterval(() => void loadChildren(sessionId), 1500);
     } else {
-      children = [];
-      knownIds = new Set();
-      knownStatuses = new Map();
+      resetChildren();
       activeSessionId = null;
     }
   });

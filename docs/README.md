@@ -113,6 +113,7 @@ Promovido a runtime principal en la sección 13. Los shards en este dir son tomb
 - [[build-plan/phase-6-polish]] — Curator LLM + GEPA + USER.md + packaging.
 - [[build-plan/decisions-locked]] — Decisiones fijadas (no re-abrir sin justificación).
 - [[build-plan/open-questions]] — Preguntas abiertas por fase, lo siguiente a aclarar.
+- [[build-plan/pending-implementation-tasks]] — Backlog secuencial F3/F4 para ejecutar tarea por tarea.
 - [[build-plan/risks]] — Matriz de riesgos con mitigaciones.
 
 ### 13 · Agentes (runtime) ⭐

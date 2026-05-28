@@ -15,6 +15,7 @@
   import { ApiError } from '$lib/api/client';
   import { toast } from 'svelte-sonner';
   import JsonCellEditor from './JsonCellEditor.svelte';
+  import { editTextForDbValue } from './valueFormat';
 
   type Mode = 'insert' | 'update' | 'duplicate';
 
@@ -111,7 +112,7 @@
 
   function jsonText(v: unknown): string {
     if (v == null) return '';
-    return typeof v === 'string' ? v : JSON.stringify(v, null, 2);
+    return editTextForDbValue(v);
   }
 
   const title = $derived(
@@ -216,16 +217,21 @@
               </div>
 
               {#if kind === 'bool'}
-                <label class="inline-flex items-center gap-2 text-sm">
-                  <input
-                    id={`f-${col.name}`}
-                    type="checkbox"
-                    checked={v === true}
-                    onchange={(e) =>
-                      setValue(col.name, (e.currentTarget as HTMLInputElement).checked)}
-                  />
-                  <span style="color: var(--fg-muted);">{v ? 'true' : 'false'}</span>
-                </label>
+                <select
+                  id={`f-${col.name}`}
+                  value={v == null ? '' : v === true ? 'true' : 'false'}
+                  onchange={(e) => {
+                    const raw = (e.currentTarget as HTMLSelectElement).value;
+                    setValue(col.name, raw === '' ? null : raw === 'true');
+                  }}
+                  disabled={mode === 'update' && col.pk}
+                  class="h-9 w-full rounded-md border px-3 text-sm outline-none disabled:cursor-not-allowed disabled:opacity-50"
+                  style="border-color: var(--border-input); background: var(--surface-titlebar); color: var(--fg-default);"
+                >
+                  {#if col.nullable}<option value="">NULL</option>{/if}
+                  <option value="true">TRUE</option>
+                  <option value="false">FALSE</option>
+                </select>
               {:else if kind === 'enum' && col.kind?.kind === 'Enum'}
                 <select
                   id={`f-${col.name}`}
@@ -258,21 +264,21 @@
                 <Input
                   id={`f-${col.name}`}
                   type="date"
-                  value={v == null ? '' : String(v)}
+                  value={editTextForDbValue(v)}
                   oninput={(e) => setValue(col.name, (e.currentTarget as HTMLInputElement).value)}
                 />
               {:else if kind === 'datetime'}
                 <Input
                   id={`f-${col.name}`}
                   type="datetime-local"
-                  value={v == null ? '' : String(v).replace(' ', 'T').slice(0, 16)}
+                  value={editTextForDbValue(v).replace(' ', 'T').slice(0, 16)}
                   oninput={(e) => setValue(col.name, (e.currentTarget as HTMLInputElement).value)}
                 />
               {:else if kind === 'number'}
                 <Input
                   id={`f-${col.name}`}
                   type="number"
-                  value={v == null ? '' : (v as number | string)}
+                  value={editTextForDbValue(v)}
                   oninput={(e) => {
                     const raw = (e.currentTarget as HTMLInputElement).value;
                     setValue(col.name, raw === '' ? null : Number(raw));
@@ -282,7 +288,7 @@
               {:else}
                 <Input
                   id={`f-${col.name}`}
-                  value={v == null ? '' : (v as string)}
+                  value={editTextForDbValue(v)}
                   oninput={(e) => setValue(col.name, (e.currentTarget as HTMLInputElement).value)}
                   disabled={mode === 'update' && col.pk}
                 />

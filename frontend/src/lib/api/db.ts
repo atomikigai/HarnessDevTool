@@ -49,11 +49,15 @@ export interface TestResult {
   error?: string;
 }
 
+export type ColumnKind = { kind: 'Enum'; variants: string[] };
+
 export interface Column {
   name: string;
   data_type: string;
   nullable: boolean;
   pk?: boolean;
+  // kind is set by backend introspection for ENUM-typed columns; null/undefined for everything else
+  kind?: ColumnKind | null;
   default?: string | null;
   comment?: string | null;
 }

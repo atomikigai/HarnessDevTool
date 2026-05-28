@@ -24,6 +24,7 @@
   } from '@tanstack/virtual-core';
   import { Edit3, Trash2, Copy, X } from '$lib/icons';
   import type { Column } from '$lib/api/db';
+  import JsonCellEditor from './JsonCellEditor.svelte';
 
   type PendingRowMap = Record<
     number,
@@ -109,7 +110,10 @@
     | { kind: 'insert'; tempId: string; colIndex: number };
   let editing = $state<EditTarget>({ kind: 'none' });
   let editingValue = $state('');
-  let editingInputEl = $state<HTMLInputElement | HTMLTextAreaElement | null>(null);
+  let editingInputEl = $state<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | null>(
+    null
+  );
+  let editingError = $state<string | null>(null);
 
   // Kept as $derived bridges so existing helpers below need only minimal change.
   const editingRow = $derived(editing.kind === 'row' ? editing.rowIndex : -1);
@@ -150,17 +154,24 @@
   async function startEdit(rowIndex: number, colIndex: number) {
     if (!isCellEditable(colIndex)) return;
     const current = cellDisplay(rowIndex, colIndex, rows[rowIndex]?.[colIndex]);
-    editingValue = current === null || current === undefined ? '' : String(current);
+    editingValue =
+      current === null || current === undefined
+        ? ''
+        : typeof current === 'object'
+          ? JSON.stringify(current, null, 2)
+          : String(current);
+    editingError = null;
     editing = { kind: 'row', rowIndex, colIndex };
     await tick();
     editingInputEl?.focus();
-    editingInputEl?.select?.();
+    if (editingInputEl && 'select' in editingInputEl) editingInputEl.select();
   }
 
   function cancelEdit() {
     editing = { kind: 'none' };
     editingValue = '';
     editingInputEl = null;
+    editingError = null;
   }
 
   /** Heuristic — auto-increment columns are read-only on inserts. */
@@ -174,11 +185,17 @@
     if (!col || !isInsertCellEditable(col)) return;
     const ins = pendingInserts.find((p) => p.tempId === tempId);
     const current = ins?.values?.[col.name];
-    editingValue = current === null || current === undefined ? '' : String(current);
+    editingValue =
+      current === null || current === undefined
+        ? ''
+        : typeof current === 'object'
+          ? JSON.stringify(current, null, 2)
+          : String(current);
+    editingError = null;
     editing = { kind: 'insert', tempId, colIndex };
     await tick();
     editingInputEl?.focus();
-    editingInputEl?.select?.();
+    if (editingInputEl && 'select' in editingInputEl) editingInputEl.select();
   }
 
   /** Best-effort coercion using the column's declared type. */
@@ -230,6 +247,52 @@
       return raw;
     }
     return raw;
+  }
+
+  function columnMetaFor(colIndex: number): Column | null {
+    const name = cols[colIndex]?.name;
+    if (!name) return null;
+    return columnsMeta?.find((c) => c.name === name) ?? null;
+  }
+
+  function isJsonColumn(colIndex: number, meta?: Column | null): boolean {
+    const dt = meta?.data_type ?? cols[colIndex]?.data_type ?? '';
+    return dt.toLowerCase().includes('json');
+  }
+
+  function isEnumColumn(
+    meta?: Column | null
+  ): meta is Column & { kind: { kind: 'Enum'; variants: string[] } } {
+    return meta?.kind?.kind === 'Enum';
+  }
+
+  function commitEnumValue(raw: string) {
+    if (editing.kind === 'none') return;
+    const colIndex = editing.colIndex;
+    const meta = columnMetaFor(colIndex) ?? columnsMeta?.[colIndex];
+    if (!meta) return;
+    const value = coerceForColumn(raw, meta);
+    if (editing.kind === 'row') {
+      const colName = cols[colIndex]?.name;
+      if (colName) onCellCommit?.(editing.rowIndex, colName, value);
+    } else {
+      onInsertCellCommit?.(editing.tempId, meta.name, value);
+    }
+    cancelEdit();
+  }
+
+  function commitJsonValue(parsed: unknown, raw: string) {
+    if (editing.kind === 'none') return;
+    const value = parsed === null && raw.trim() === '' ? null : raw;
+    const colIndex = editing.colIndex;
+    if (editing.kind === 'row') {
+      const colName = cols[colIndex]?.name;
+      if (colName) onCellCommit?.(editing.rowIndex, colName, value);
+    } else {
+      const col = columnsMeta?.[colIndex];
+      if (col) onInsertCellCommit?.(editing.tempId, col.name, value);
+    }
+    cancelEdit();
   }
 
   function commitEdit(advance = false) {
@@ -454,29 +517,59 @@
             {@const displayed = cellDisplay(ri, ci, cell)}
             {@const editingThis = editingRow === ri && editingCol === ci}
             {@const cellEditable = isCellEditable(ci)}
+            {@const meta = columnMetaFor(ci)}
+            {@const jsonEditing = editingThis && isJsonColumn(ci, meta)}
             <td
               class="px-3 py-2 whitespace-nowrap {cellEditable && !editingThis
                 ? 'cell-editable'
                 : ''}"
               style="border-bottom: 1px solid var(--row-divider); {pending
                 ? `background: ${PENDING_BG}; box-shadow: inset 2px 0 0 0 ${PENDING_BORDER};`
-                : ''} {cellEditable && !editingThis ? 'cursor: text;' : ''}"
+                : jsonEditing && editingError
+                  ? `background: ${ERROR_BG}; box-shadow: inset 2px 0 0 0 ${ERROR_BORDER};`
+                  : ''} {cellEditable && !editingThis ? 'cursor: text;' : ''}"
               title={pending
                 ? `was: ${fmt(originalFor(ri, ci))}`
-                : cellEditable && !editingThis
-                  ? 'Click to edit'
-                  : ''}
+                : jsonEditing && editingError
+                  ? editingError
+                  : cellEditable && !editingThis
+                    ? 'Click to edit'
+                    : ''}
               onclick={() => cellEditable && !editingThis && startEdit(ri, ci)}
             >
               {#if editingThis}
-                <input
-                  bind:this={editingInputEl}
-                  bind:value={editingValue}
-                  onkeydown={onCellKey}
-                  onblur={() => commitEdit(false)}
-                  class="w-full rounded-sm border px-1 py-0.5 text-[13px] outline-none"
-                  style="background: var(--surface-titlebar); border-color: var(--accent); color: var(--fg-default); font-family: var(--font-mono);"
-                />
+                {#if isEnumColumn(meta)}
+                  <select
+                    bind:this={editingInputEl}
+                    bind:value={editingValue}
+                    onkeydown={onCellKey}
+                    onchange={(e) => commitEnumValue((e.currentTarget as HTMLSelectElement).value)}
+                    class="w-full rounded-sm border px-1 py-0.5 text-[13px] outline-none"
+                    style="background: var(--surface-titlebar); border-color: var(--accent); color: var(--fg-default); font-family: var(--font-mono);"
+                  >
+                    {#if meta.nullable}<option value=""></option>{/if}
+                    {#each meta.kind.variants as variant (variant)}
+                      <option value={variant}>{variant}</option>
+                    {/each}
+                  </select>
+                {:else if isJsonColumn(ci, meta)}
+                  <JsonCellEditor
+                    value={editingValue}
+                    nullable={meta?.nullable ?? true}
+                    onCommit={commitJsonValue}
+                    onCancel={cancelEdit}
+                    onParseError={(err) => (editingError = err)}
+                  />
+                {:else}
+                  <input
+                    bind:this={editingInputEl}
+                    bind:value={editingValue}
+                    onkeydown={onCellKey}
+                    onblur={() => commitEdit(false)}
+                    class="w-full rounded-sm border px-1 py-0.5 text-[13px] outline-none"
+                    style="background: var(--surface-titlebar); border-color: var(--accent); color: var(--fg-default); font-family: var(--font-mono);"
+                  />
+                {/if}
               {:else if isNull(displayed)}
                 <span style="color: var(--fg-muted); font-style: italic; opacity: 0.6;">NULL</span>
               {:else}
@@ -493,29 +586,58 @@
             {@const val = ins.values?.[col.name]}
             {@const hasError = !!ins.errors?.[col.name]}
             {@const cellEditable = !auto}
+            {@const jsonEditing = editingThis && isJsonColumn(ci, col)}
             <td
               class="px-3 py-2 whitespace-nowrap {cellEditable && !editingThis
                 ? 'cell-editable'
                 : ''}"
               style="border-bottom: 1px solid var(--row-divider); {hasError
                 ? `background: ${ERROR_BG}; box-shadow: inset 2px 0 0 0 ${ERROR_BORDER};`
-                : ''} {cellEditable && !editingThis ? 'cursor: text;' : 'cursor: default;'}"
+                : jsonEditing && editingError
+                  ? `background: ${ERROR_BG}; box-shadow: inset 2px 0 0 0 ${ERROR_BORDER};`
+                  : ''} {cellEditable && !editingThis ? 'cursor: text;' : 'cursor: default;'}"
               title={hasError
                 ? ins.errors?.[col.name]
-                : auto
-                  ? 'auto-generated by the database'
-                  : 'Click to edit'}
+                : jsonEditing && editingError
+                  ? editingError
+                  : auto
+                    ? 'auto-generated by the database'
+                    : 'Click to edit'}
               onclick={() => cellEditable && !editingThis && startInsertEdit(ins.tempId, ci)}
             >
               {#if editingThis}
-                <input
-                  bind:this={editingInputEl}
-                  bind:value={editingValue}
-                  onkeydown={onCellKey}
-                  onblur={() => commitEdit(false)}
-                  class="w-full rounded-sm border px-1 py-0.5 text-[13px] outline-none"
-                  style="background: var(--surface-titlebar); border-color: var(--accent); color: var(--fg-default); font-family: var(--font-mono);"
-                />
+                {#if isEnumColumn(col)}
+                  <select
+                    bind:this={editingInputEl}
+                    bind:value={editingValue}
+                    onkeydown={onCellKey}
+                    onchange={(e) => commitEnumValue((e.currentTarget as HTMLSelectElement).value)}
+                    class="w-full rounded-sm border px-1 py-0.5 text-[13px] outline-none"
+                    style="background: var(--surface-titlebar); border-color: var(--accent); color: var(--fg-default); font-family: var(--font-mono);"
+                  >
+                    {#if col.nullable}<option value=""></option>{/if}
+                    {#each col.kind.variants as variant (variant)}
+                      <option value={variant}>{variant}</option>
+                    {/each}
+                  </select>
+                {:else if isJsonColumn(ci, col)}
+                  <JsonCellEditor
+                    value={editingValue}
+                    nullable={col.nullable}
+                    onCommit={commitJsonValue}
+                    onCancel={cancelEdit}
+                    onParseError={(err) => (editingError = err)}
+                  />
+                {:else}
+                  <input
+                    bind:this={editingInputEl}
+                    bind:value={editingValue}
+                    onkeydown={onCellKey}
+                    onblur={() => commitEdit(false)}
+                    class="w-full rounded-sm border px-1 py-0.5 text-[13px] outline-none"
+                    style="background: var(--surface-titlebar); border-color: var(--accent); color: var(--fg-default); font-family: var(--font-mono);"
+                  />
+                {/if}
               {:else if auto}
                 <span style="color: var(--fg-muted); font-style: italic; opacity: 0.55;">auto</span>
               {:else if val === undefined || val === null || val === ''}

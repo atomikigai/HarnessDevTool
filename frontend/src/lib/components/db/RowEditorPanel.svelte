@@ -14,6 +14,7 @@
   import { dbApi, type TableMeta } from '$lib/api/db';
   import { ApiError } from '$lib/api/client';
   import { toast } from 'svelte-sonner';
+  import JsonCellEditor from './JsonCellEditor.svelte';
 
   type Mode = 'insert' | 'update' | 'duplicate';
 
@@ -42,6 +43,7 @@
   let values = $state<Record<string, unknown>>({});
   let submitting = $state(false);
   let error = $state<string | null>(null);
+  let errors = $state<Record<string, string>>({});
 
   $effect(() => {
     if (open) {
@@ -57,6 +59,7 @@
       }
       values = base;
       error = null;
+      errors = {};
       submitting = false;
     }
   });
@@ -74,8 +77,11 @@
     return () => window.removeEventListener('keydown', onKey);
   });
 
-  function fieldKind(dt: string): 'bool' | 'date' | 'datetime' | 'json' | 'number' | 'text' {
-    const t = dt.toLowerCase();
+  function fieldKind(
+    col: TableMeta['columns'][number]
+  ): 'bool' | 'date' | 'datetime' | 'enum' | 'json' | 'number' | 'text' {
+    if (col.kind?.kind === 'Enum') return 'enum';
+    const t = col.data_type.toLowerCase();
     if (t.includes('bool')) return 'bool';
     if (t.includes('timestamp') || t.includes('datetime')) return 'datetime';
     if (t === 'date') return 'date';
@@ -96,16 +102,29 @@
     values = { ...values, [col]: v };
   }
 
+  function setFieldError(col: string, message: string | null) {
+    const next = { ...errors };
+    if (message) next[col] = message;
+    else delete next[col];
+    errors = next;
+  }
+
+  function jsonText(v: unknown): string {
+    if (v == null) return '';
+    return typeof v === 'string' ? v : JSON.stringify(v, null, 2);
+  }
+
   const title = $derived(
     mode === 'insert' ? 'Insert row' : mode === 'update' ? 'Edit row' : 'Duplicate row'
   );
   const primaryLabel = $derived(
     mode === 'update' ? 'Save' : mode === 'duplicate' ? 'Insert copy' : 'Insert'
   );
+  const hasFieldErrors = $derived(Object.keys(errors).length > 0);
 
   async function onSubmit(ev: SubmitEvent) {
     ev.preventDefault();
-    if (submitting) return;
+    if (submitting || hasFieldErrors) return;
     submitting = true;
     error = null;
     try {
@@ -178,7 +197,7 @@
       <div class="flex-1 overflow-y-auto px-4 py-4">
         <div class="flex flex-col gap-3">
           {#each table.columns as col (col.name)}
-            {@const kind = fieldKind(col.data_type)}
+            {@const kind = fieldKind(col)}
             {@const v = values[col.name]}
             <div class="flex flex-col gap-1">
               <div class="flex items-center gap-2">
@@ -207,16 +226,34 @@
                   />
                   <span style="color: var(--fg-muted);">{v ? 'true' : 'false'}</span>
                 </label>
-              {:else if kind === 'json'}
-                <textarea
+              {:else if kind === 'enum' && col.kind?.kind === 'Enum'}
+                <select
                   id={`f-${col.name}`}
-                  rows="4"
-                  value={v == null ? '' : typeof v === 'string' ? v : JSON.stringify(v, null, 2)}
-                  oninput={(e) =>
-                    setValue(col.name, (e.currentTarget as HTMLTextAreaElement).value)}
-                  class="w-full rounded-md border px-3 py-2 font-mono text-xs outline-none"
+                  value={v == null ? '' : String(v)}
+                  onchange={(e) => {
+                    const raw = (e.currentTarget as HTMLSelectElement).value;
+                    setValue(col.name, raw === '' && col.nullable ? null : raw);
+                  }}
+                  disabled={mode === 'update' && col.pk}
+                  class="h-9 w-full rounded-md border px-3 text-sm outline-none disabled:cursor-not-allowed disabled:opacity-50"
                   style="border-color: var(--border-input); background: var(--surface-titlebar); color: var(--fg-default);"
-                ></textarea>
+                >
+                  {#if col.nullable}<option value=""></option>{/if}
+                  {#each col.kind.variants as variant (variant)}
+                    <option value={variant}>{variant}</option>
+                  {/each}
+                </select>
+              {:else if kind === 'json'}
+                <JsonCellEditor
+                  value={jsonText(v)}
+                  nullable={col.nullable}
+                  onCommit={(_parsed, raw) => {
+                    setValue(col.name, raw.trim() === '' && col.nullable ? null : raw);
+                    setFieldError(col.name, null);
+                  }}
+                  onCancel={() => setFieldError(col.name, null)}
+                  onParseError={(msg) => setFieldError(col.name, msg)}
+                />
               {:else if kind === 'date'}
                 <Input
                   id={`f-${col.name}`}
@@ -256,6 +293,9 @@
                   {#if mode === 'update' && col.pk}primary key — not editable{:else if col.nullable}nullable{/if}
                 </p>
               {/if}
+              {#if errors[col.name]}
+                <p class="text-[11px]" style="color: var(--dot-danger);">{errors[col.name]}</p>
+              {/if}
             </div>
           {/each}
 
@@ -283,7 +323,7 @@
         >
           Cancel
         </Button>
-        <Button type="submit" disabled={submitting}>
+        <Button type="submit" disabled={submitting || hasFieldErrors}>
           {#if submitting}<Loader2 class="h-4 w-4 animate-spin" />{/if}
           {primaryLabel}
         </Button>
@@ -291,4 +331,3 @@
     </form>
   </aside>
 {/if}
-

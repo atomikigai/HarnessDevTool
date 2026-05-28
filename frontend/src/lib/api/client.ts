@@ -129,6 +129,8 @@ export interface CreateSessionResponse {
   session_id: string;
 }
 
+import type { BudgetView } from './types/BudgetView';
+import type { SetBudgetRequest } from './types/SetBudgetRequest';
 import type {
   Task,
   CreateTaskRequest,
@@ -149,23 +151,8 @@ export interface PauseAllState {
   paused: boolean;
 }
 
-/**
- * Server returns the budget plus derived percentages on GET/POST
- * `/api/threads/:id/budget`. Hand-typed here because the backend ships
- * this view via plain serde (not ts-rs).
- */
-export interface BudgetView {
-  thread_id: string;
-  spent_usd: number;
-  limit_usd: number;
-  pct: number;
-  soft_pct: number;
-  hard_pct: number;
-}
-
-export interface SetBudgetRequest {
-  limit_usd: number;
-}
+export type { BudgetView } from './types/BudgetView';
+export type { SetBudgetRequest } from './types/SetBudgetRequest';
 
 function isEtagMismatch(body: unknown): boolean {
   if (!body || typeof body !== 'object') return false;

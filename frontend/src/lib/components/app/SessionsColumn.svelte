@@ -27,6 +27,7 @@
     tokensLabel,
     uiStatus,
     uptime,
+    groupSessionsByRole,
     type TaskProgress
   } from '$lib/sessionDisplay';
 
@@ -218,107 +219,117 @@
           </button>
         </div>
       {:else}
-        <ul class="flex flex-col">
-          {#each sessions as s (s.id)}
-            {@const u = uiStatus(s)}
-            {@const k = kindChip(s.kind)}
-            {@const selected = s.id === selectedSessionId}
-            {@const prog = progressFor(s)}
-            <li class="group relative">
-              <!-- Destructive affordance — hidden until row hover/selection so
-                   it doesn't compete with the primary "select session" tap
-                   target. Stops propagation so clicking it doesn't also
-                   re-select the card we're about to delete. -->
-              <button
-                type="button"
-                onclick={(e) => handleDelete(e, s)}
-                disabled={deleting === s.id}
-                aria-label={'Delete session ' + s.id.slice(0, 8)}
-                title="Delete session"
-                class="absolute right-2 top-2 z-10 flex h-6 w-6 items-center justify-center rounded-md border opacity-0 transition-opacity hover:bg-[color-mix(in_srgb,var(--dot-danger)_15%,transparent)] focus-visible:opacity-100 group-hover:opacity-100 disabled:opacity-50"
-                style="border-color: var(--border-subtle); color: var(--dot-danger); background: var(--surface-window);"
-              >
-                <Trash2 class="h-3 w-3" />
-              </button>
-              <button
-                type="button"
-                onclick={() => onSelect(s.id)}
-                class="flex w-full flex-col gap-2 px-3.5 py-3 text-left transition-colors"
-                style="
-                  background: {selected ? 'var(--accent-soft)' : 'transparent'};
-                  border-left: 2px solid {selected ? 'var(--accent)' : 'transparent'};
-                "
-                onmouseenter={(e) => {
-                  if (!selected)
-                    (e.currentTarget as HTMLElement).style.background = 'var(--row-stripe)';
-                }}
-                onmouseleave={(e) => {
-                  if (!selected) (e.currentTarget as HTMLElement).style.background = 'transparent';
-                }}
-              >
-                <!-- Row 1: status dot, title, time -->
-                <div class="flex items-center gap-2">
-                  <span
-                    class="h-2 w-2 shrink-0 rounded-full"
+        <div class="flex flex-col">
+          {#each groupSessionsByRole(sessions) as group (group.role)}
+            <div
+              class="px-3.5 pb-1 pt-3 text-[10px] font-semibold uppercase tracking-wider"
+              style="color: var(--fg-muted);"
+            >
+              {group.role} · {group.items.length}
+            </div>
+            <ul class="flex flex-col">
+              {#each group.items as s (s.id)}
+                {@const u = uiStatus(s)}
+                {@const k = kindChip(s.kind)}
+                {@const selected = s.id === selectedSessionId}
+                {@const prog = progressFor(s)}
+                <li class="group relative">
+                  <!-- Destructive affordance — hidden until row hover/selection so
+                       it doesn't compete with the primary "select session" tap
+                       target. Stops propagation so clicking it doesn't also
+                       re-select the card we're about to delete. -->
+                  <button
+                    type="button"
+                    onclick={(e) => handleDelete(e, s)}
+                    disabled={deleting === s.id}
+                    aria-label={'Delete session ' + s.id.slice(0, 8)}
+                    title="Delete session"
+                    class="absolute right-2 top-2 z-10 flex h-6 w-6 items-center justify-center rounded-md border opacity-0 transition-opacity hover:bg-[color-mix(in_srgb,var(--dot-danger)_15%,transparent)] focus-visible:opacity-100 group-hover:opacity-100 disabled:opacity-50"
+                    style="border-color: var(--border-subtle); color: var(--dot-danger); background: var(--surface-window);"
+                  >
+                    <Trash2 class="h-3 w-3" />
+                  </button>
+                  <button
+                    type="button"
+                    onclick={() => onSelect(s.id)}
+                    class="flex w-full flex-col gap-2 px-3.5 py-3 text-left transition-colors"
                     style="
-                      background: {statusColor(u)};
-                      box-shadow: {u === 'active'
-                      ? '0 0 0 3px color-mix(in srgb, var(--dot-success) 18%, transparent)'
-                      : 'none'};
+                      background: {selected ? 'var(--accent-soft)' : 'transparent'};
+                      border-left: 2px solid {selected ? 'var(--accent)' : 'transparent'};
                     "
-                    title={statusLabel(u)}
-                  ></span>
-                  <span
-                    class="flex-1 truncate text-[13px]"
-                    style="
-                      color: {selected ? 'var(--accent)' : 'var(--fg-default)'};
-                      font-weight: {selected ? 600 : 500};
-                    "
+                    onmouseenter={(e) => {
+                      if (!selected)
+                        (e.currentTarget as HTMLElement).style.background = 'var(--row-stripe)';
+                    }}
+                    onmouseleave={(e) => {
+                      if (!selected) (e.currentTarget as HTMLElement).style.background = 'transparent';
+                    }}
                   >
-                    {s.id ? s.kind + ' · ' + s.id.slice(0, 8) : '(untitled)'}
-                  </span>
-                  <span class="shrink-0 text-[10px] font-mono" style="color: var(--fg-muted);">
-                    {relTime(s.started_at)}
-                  </span>
-                </div>
-                <!-- Row 2: kind chip + stats -->
-                <div class="flex items-center gap-2">
-                  <span
-                    class="inline-flex items-center rounded px-1.5 py-0.5 font-mono text-[10px] font-semibold"
-                    style="color: {k.color}; background: {k.bg};"
-                  >
-                    {k.label}
-                  </span>
-                  <span class="font-mono text-[10px]" style="color: var(--fg-muted);">
-                    {uptime(s.started_at)} · {tokensLabel(null)}
-                  </span>
-                </div>
-                <!-- Row 3: progress bar + N/M -->
-                <div class="flex items-center gap-2">
-                  <div
-                    class="h-[3px] flex-1 overflow-hidden rounded-full"
-                    style="background: var(--border-input);"
-                  >
-                    {#if prog.total > 0}
-                      <div
-                        class="h-full rounded-full transition-[width]"
+                    <!-- Row 1: status dot, title, time -->
+                    <div class="flex items-center gap-2">
+                      <span
+                        class="h-2 w-2 shrink-0 rounded-full"
                         style="
-                          width: {prog.pct}%;
-                          background: {prog.pct === 100 ? 'var(--dot-success)' : 'var(--accent)'};
-                          transition-duration: 300ms;
+                          background: {statusColor(u)};
+                          box-shadow: {u === 'active'
+                          ? '0 0 0 3px color-mix(in srgb, var(--dot-success) 18%, transparent)'
+                          : 'none'};
                         "
-                      ></div>
-                    {/if}
-                  </div>
-                  <span class="shrink-0 font-mono text-[10px]" style="color: var(--fg-muted);">
-                    {prog.total > 0 ? `${prog.done}/${prog.total}` : '—/—'}
-                  </span>
-                </div>
-              </button>
-              <div class="mx-3.5 h-px" style="background: var(--row-divider);"></div>
-            </li>
+                        title={statusLabel(u)}
+                      ></span>
+                      <span
+                        class="flex-1 truncate text-[13px]"
+                        style="
+                          color: {selected ? 'var(--accent)' : 'var(--fg-default)'};
+                          font-weight: {selected ? 600 : 500};
+                        "
+                      >
+                        {s.id ? s.kind + ' · ' + s.id.slice(0, 8) : '(untitled)'}
+                      </span>
+                      <span class="shrink-0 text-[10px] font-mono" style="color: var(--fg-muted);">
+                        {relTime(s.started_at)}
+                      </span>
+                    </div>
+                    <!-- Row 2: kind chip + stats -->
+                    <div class="flex items-center gap-2">
+                      <span
+                        class="inline-flex items-center rounded px-1.5 py-0.5 font-mono text-[10px] font-semibold"
+                        style="color: {k.color}; background: {k.bg};"
+                      >
+                        {k.label}
+                      </span>
+                      <span class="font-mono text-[10px]" style="color: var(--fg-muted);">
+                        {uptime(s.started_at)} · {tokensLabel(null)}
+                      </span>
+                    </div>
+                    <!-- Row 3: progress bar + N/M -->
+                    <div class="flex items-center gap-2">
+                      <div
+                        class="h-[3px] flex-1 overflow-hidden rounded-full"
+                        style="background: var(--border-input);"
+                      >
+                        {#if prog.total > 0}
+                          <div
+                            class="h-full rounded-full transition-[width]"
+                            style="
+                              width: {prog.pct}%;
+                              background: {prog.pct === 100 ? 'var(--dot-success)' : 'var(--accent)'};
+                              transition-duration: 300ms;
+                            "
+                          ></div>
+                        {/if}
+                      </div>
+                      <span class="shrink-0 font-mono text-[10px]" style="color: var(--fg-muted);">
+                        {prog.total > 0 ? `${prog.done}/${prog.total}` : '—/—'}
+                      </span>
+                    </div>
+                  </button>
+                  <div class="mx-3.5 h-px" style="background: var(--row-divider);"></div>
+                </li>
+              {/each}
+            </ul>
           {/each}
-        </ul>
+        </div>
       {/if}
     </div>
 

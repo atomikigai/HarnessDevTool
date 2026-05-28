@@ -223,6 +223,7 @@ pub fn list_descriptors() -> Vec<ToolDescriptor> {
                 "required": ["connection", "sql"],
                 "properties": {
                     "connection": { "type": "string" },
+                    "database":   { "type": "string" },
                     "sql":        { "type": "string" }
                 }
             }),

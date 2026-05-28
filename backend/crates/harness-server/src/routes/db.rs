@@ -32,6 +32,7 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/api/db/connections/:id/databases", get(list_databases))
         .route("/api/db/connections/:id/schema", get(schema_tree))
         .route("/api/db/connections/:id/query", post(run_query))
+        .route("/api/db/connections/:id/explain", post(explain_query))
         .route(
             "/api/db/connections/:id/query/:query_id/cancel",
             post(cancel_query),
@@ -186,6 +187,23 @@ async fn run_query(
     .map_err(map_db_err)
 }
 
+#[derive(Deserialize)]
+struct ExplainBody {
+    database: Option<String>,
+    sql: String,
+}
+
+async fn explain_query(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(body): Json<ExplainBody>,
+) -> ApiResult<Json<QueryResult>> {
+    s.db.explain(&id, body.database.as_deref(), &body.sql)
+        .await
+        .map(Json)
+        .map_err(map_db_err)
+}
+
 async fn cancel_query(
     State(s): State<Arc<AppState>>,
     Path((_id, qid)): Path<(String, String)>,
@@ -284,4 +302,58 @@ async fn duplicate_row(
     .await
     .map(Json)
     .map_err(map_db_err)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+
+    fn state(home: std::path::PathBuf) -> Arc<AppState> {
+        Arc::new(
+            AppState::new(&Config {
+                bind: "127.0.0.1:7777".parse().unwrap(),
+                home,
+                cors_origin: "http://localhost:8080".to_string(),
+            })
+            .unwrap(),
+        )
+    }
+
+    #[tokio::test]
+    async fn explain_accepts_database_body_field() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = state(dir.path().to_path_buf());
+        let conn = state
+            .db
+            .connections_add(ConnectionInput {
+                name: "sqlite".to_string(),
+                engine: module_db::Engine::Sqlite,
+                database: dir.path().join("explain.sqlite").display().to_string(),
+                ..Default::default()
+            })
+            .unwrap();
+        let app = router().with_state(state);
+        let body = serde_json::json!({
+            "database": "x",
+            "sql": "SELECT 1"
+        });
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/db/connections/{}/explain", conn.id))
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
 }

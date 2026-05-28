@@ -170,15 +170,30 @@ impl Manager {
         let RunningQuery {
             engine,
             backend_pid,
+            pool,
         } = rq;
         match (engine, backend_pid) {
             (Engine::Postgres, Some(pid)) => {
-                // Aux connection — not implemented in this slice.
-                tracing::debug!(pid, "pg cancel requested (aux connection TODO)");
+                let DbPool::Postgres(p) = pool else {
+                    return Ok(false);
+                };
+                let pid = i32::try_from(pid)
+                    .map_err(|_| DbError::Validation("invalid postgres backend pid".into()))?;
+                sqlx::query("SELECT pg_cancel_backend($1)")
+                    .bind(pid)
+                    .execute(&p)
+                    .await?;
                 Ok(true)
             }
             (Engine::Mysql, Some(pid)) => {
-                tracing::debug!(pid, "mysql cancel requested (KILL QUERY TODO)");
+                let DbPool::Mysql(p) = pool else {
+                    return Ok(false);
+                };
+                if pid < 0 {
+                    return Err(DbError::Validation("invalid mysql connection id".into()));
+                }
+                let sql = format!("KILL QUERY {pid}");
+                sqlx::query(&sql).execute(&p).await?;
                 Ok(true)
             }
             (Engine::Sqlite, _) => Err(DbError::Unsupported(
@@ -278,7 +293,12 @@ impl Manager {
     }
 
     /// Run an `EXPLAIN`-style query. Engine-specific prefix.
-    pub async fn explain(&self, connection_id: &str, sql: &str) -> DbResult<QueryResult> {
+    pub async fn explain(
+        &self,
+        connection_id: &str,
+        database: Option<&str>,
+        sql: &str,
+    ) -> DbResult<QueryResult> {
         let conn = self.store.get(connection_id)?;
         let prefix = match conn.engine {
             Engine::Sqlite => "EXPLAIN QUERY PLAN",
@@ -286,7 +306,7 @@ impl Manager {
             Engine::Mysql => "EXPLAIN",
         };
         let wrapped = format!("{prefix} {sql}");
-        self.query_run(connection_id, None, &wrapped, None, 1000, 0)
+        self.query_run(connection_id, database, &wrapped, None, 1000, 0)
             .await
     }
 }
@@ -308,5 +328,43 @@ async fn probe_server_version(pool: &DbPool) -> Option<String> {
             .await
             .ok()
             .and_then(|r| r.try_get::<String, _>(0).ok()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    #[tokio::test]
+    async fn query_cancel_unknown_id_returns_false() {
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = Manager::new(dir.path(), "default").unwrap();
+
+        assert!(!mgr.query_cancel("missing").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn query_cancel_removes_registered_sqlite_query() {
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = Manager::new(dir.path(), "default").unwrap();
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        mgr.queries.inner.insert(
+            "q1".to_string(),
+            RunningQuery {
+                engine: Engine::Sqlite,
+                backend_pid: Some(1),
+                pool: DbPool::Sqlite(pool),
+            },
+        );
+
+        let err = mgr.query_cancel("q1").await.unwrap_err();
+
+        assert!(matches!(err, DbError::Unsupported(_)));
+        assert!(!mgr.queries.inner.contains_key("q1"));
     }
 }

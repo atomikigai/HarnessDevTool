@@ -20,6 +20,8 @@ export class ApiError extends Error {
   }
 }
 
+export { ApiError as ApiRequestError };
+
 export class SpecEtagMismatchError extends ApiError {
   constructor(body?: unknown) {
     super(409, 'Spec etag mismatch', body);
@@ -131,6 +133,9 @@ export interface CreateSessionResponse {
 
 import type { BudgetView } from './types/BudgetView';
 import type { SetBudgetRequest } from './types/SetBudgetRequest';
+import type { ApprovalSummary } from './types/ApprovalSummary';
+import type { Decision } from './types/Decision';
+import type { RememberScope } from './types/RememberScope';
 import type {
   Task,
   CreateTaskRequest,
@@ -166,6 +171,14 @@ function isEtagMismatch(body: unknown): boolean {
 
 export const api = {
   health: (signal?: AbortSignal) => apiRequest<HealthResponse>('/health', { signal }),
+  approvals: {
+    list: (signal?: AbortSignal) => apiRequest<ApprovalSummary[]>('/approvals', { signal }),
+    decide: (id: string, decision: Decision, remember_scope?: RememberScope) =>
+      apiRequest<null>(`/approvals/${id}/decide`, {
+        method: 'POST',
+        body: { decision, remember_scope }
+      })
+  },
   pauseAll: {
     get: (signal?: AbortSignal) => apiRequest<PauseAllState>('/pause-all', { signal }),
     pause: (signal?: AbortSignal) =>

@@ -77,6 +77,8 @@ fn thread_stream(
             harness_core::TaskEvent::Updated { .. } => "task.updated",
             harness_core::TaskEvent::Ready { .. } => "task.ready",
             harness_core::TaskEvent::LeaseExpired { .. } => "task.lease-expired",
+            harness_core::TaskEvent::SpecChanged { .. } => "spec.changed",
+            harness_core::TaskEvent::ArtifactAdded { .. } => "artifact.added",
         };
         let data = serde_json::to_string(&ev).unwrap_or_else(|_| "{}".into());
         Some(Ok(SseEvent::default().event(kind).data(data)))

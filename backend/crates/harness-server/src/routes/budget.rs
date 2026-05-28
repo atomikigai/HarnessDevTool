@@ -12,7 +12,7 @@ use std::sync::Arc;
 use axum::extract::{Path, State};
 use axum::routing::get;
 use axum::{Json, Router};
-use harness_core::Budget;
+use harness_core::{AgentCost, Budget};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{ApiError, ApiResult};
@@ -23,11 +23,15 @@ pub fn router() -> Router<Arc<AppState>> {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export, export_to = "../../../bindings/"))]
 pub struct SetBudgetRequest {
     pub limit_usd: f64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export, export_to = "../../../bindings/"))]
 pub struct BudgetView {
     pub thread_id: String,
     pub spent_usd: f64,
@@ -35,9 +39,11 @@ pub struct BudgetView {
     pub pct: u8,
     pub soft_pct: u8,
     pub hard_pct: u8,
+    #[serde(default)]
+    pub agents: Vec<AgentCost>,
 }
 
-fn view(thread_id: &str, b: &Budget) -> BudgetView {
+fn view(thread_id: &str, b: &Budget, agents: Vec<AgentCost>) -> BudgetView {
     BudgetView {
         thread_id: thread_id.to_string(),
         spent_usd: b.spent_usd,
@@ -45,6 +51,7 @@ fn view(thread_id: &str, b: &Budget) -> BudgetView {
         pct: b.pct_spent(),
         soft_pct: b.soft_pct,
         hard_pct: b.hard_pct,
+        agents,
     }
 }
 
@@ -53,7 +60,8 @@ async fn get_budget(
     Path(tid): Path<String>,
 ) -> ApiResult<Json<BudgetView>> {
     let b = s.budgets.get(&tid);
-    Ok(Json(view(&tid, &b)))
+    let agents = s.budgets.agents_for(&tid);
+    Ok(Json(view(&tid, &b, agents)))
 }
 
 async fn set_budget(
@@ -67,5 +75,6 @@ async fn set_budget(
         ));
     }
     let b = s.budgets.set_limit(&tid, body.limit_usd)?;
-    Ok(Json(view(&tid, &b)))
+    let agents = s.budgets.agents_for(&tid);
+    Ok(Json(view(&tid, &b, agents)))
 }

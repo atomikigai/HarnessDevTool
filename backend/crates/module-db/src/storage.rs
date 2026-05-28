@@ -391,6 +391,7 @@ mod tests {
     use super::*;
     use crate::types::{Engine, SslMode};
     use chrono::Utc;
+    use std::collections::BTreeMap;
 
     fn base(engine: Engine, database: &str) -> Connection {
         let now = Utc::now();
@@ -404,7 +405,7 @@ mod tests {
             username: Some("alice".into()),
             password_ref: None,
             ssl_mode: None,
-            params: HashMap::new(),
+            params: BTreeMap::new(),
             created_at: now,
             updated_at: now,
         }
@@ -433,6 +434,19 @@ mod tests {
         assert!(dsn.contains("sslmode=require"), "got: {dsn}");
         // saved database name must not leak when overridden.
         assert!(!dsn.contains("/appdb"), "got: {dsn}");
+    }
+
+    #[test]
+    fn postgres_dsn_orders_params_deterministically() {
+        let mut c = base(Engine::Postgres, "appdb");
+        c.params = BTreeMap::from([
+            ("zeta".to_string(), "2".to_string()),
+            ("alpha".to_string(), "1".to_string()),
+        ]);
+        let dsn = build_dsn(&c, None, None).unwrap();
+        let alpha = dsn.find("alpha=1").expect("alpha param in DSN");
+        let zeta = dsn.find("zeta=2").expect("zeta param in DSN");
+        assert!(alpha < zeta, "got: {dsn}");
     }
 
     #[test]

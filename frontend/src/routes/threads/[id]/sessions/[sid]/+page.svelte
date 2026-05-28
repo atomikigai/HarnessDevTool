@@ -3,7 +3,7 @@
   import { page } from '$app/stores';
   import TerminalView from '$lib/components/app/TerminalView.svelte';
   import { api, type SessionMeta } from '$lib/api/client';
-  import { Loader2, CircleAlert, ChevronLeft, ListChecks } from '$lib/icons';
+  import { Loader2, CircleAlert, ChevronLeft, ListChecks, FileText } from '$lib/icons';
   import { Button } from '$lib/components/ui/button';
 
   const threadId = $derived($page.params.id as string);
@@ -101,6 +101,14 @@
         title="Open tasks for this thread"
       >
         <ListChecks class="h-3.5 w-3.5" /> Tasks
+      </a>
+      <a
+        href={`/threads/${threadId}/spec`}
+        class="inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs transition-colors hover:bg-[var(--accent-soft)] hover:text-[var(--accent)]"
+        style="border-color: var(--border-input); color: var(--fg-muted);"
+        title="Open spec for this thread"
+      >
+        <FileText class="h-3.5 w-3.5" /> Spec
       </a>
     </div>
   </header>

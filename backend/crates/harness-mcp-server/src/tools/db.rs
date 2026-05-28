@@ -76,9 +76,10 @@ pub fn schema(mgr: &Manager, args: &Value) -> Result<Value, String> {
 
 pub fn explain(mgr: &Manager, args: &Value) -> Result<Value, String> {
     let connection_id = str_arg(args, "connection")?;
+    let database = opt_str(args, "database");
     let sql = str_arg(args, "sql")?;
     let res = runtime()
-        .block_on(mgr.explain(connection_id, sql))
+        .block_on(mgr.explain(connection_id, database, sql))
         .map_err(|e| e.to_string())?;
     Ok(json!(res))
 }

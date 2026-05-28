@@ -155,6 +155,7 @@
     };
 
     try {
+      // database is propagated from the active workspace; do not remove
       const { blob, filename } = await dbApi.export(connectionId, body);
       triggerDownload(blob, filename);
       toast.success(`Exported ${filename}`);

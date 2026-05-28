@@ -7,6 +7,7 @@
  * placeholders for everything else. F3 will replace these with real values
  * once the orchestrator emits cost/token stats and sub-agent telemetry.
  */
+import type { SessionMeta as GeneratedSessionMeta } from './api/types/SessionMeta';
 import type { SessionKind, SessionMeta, SessionStatus } from '$lib/api/client';
 import type { Task } from '$lib/api/models/task';
 
@@ -97,10 +98,51 @@ export function statusLabel(s: UiStatus): string {
   }
 }
 
+function displayRole(role: string | null | undefined): 'planner' | 'generator' | 'evaluator' | 'other' {
+  if (role === 'planner' || role === 'generator' || role === 'evaluator') return role;
+  return 'other';
+}
+
+export function groupSessionsByRole(
+  sessions: GeneratedSessionMeta[]
+): Array<{ role: string; items: GeneratedSessionMeta[] }>;
+export function groupSessionsByRole<T extends object>(
+  sessions: T[]
+): Array<{ role: string; items: T[] }>;
+export function groupSessionsByRole<T extends object>(
+  sessions: T[]
+): Array<{ role: string; items: T[] }> {
+  // Only exact role template names are surfaced as groups. Missing roles,
+  // agent-prefixed metadata, and unknown values are folded into "other".
+  const grouped: Record<'planner' | 'generator' | 'evaluator' | 'other', T[]> = {
+    planner: [],
+    generator: [],
+    evaluator: [],
+    other: []
+  };
+
+  for (const session of sessions) {
+    const role = 'role' in session ? (session.role as string | null | undefined) : null;
+    grouped[displayRole(role)].push(session);
+  }
+
+  return (['planner', 'generator', 'evaluator', 'other'] as const)
+    .map((role) => ({ role, items: grouped[role] }))
+    .filter((group) => group.items.length > 0);
+}
+
+type TimeInput = string | number | bigint | undefined;
+
+function timeMs(value: TimeInput): number {
+  if (value == null) return Number.NaN;
+  if (typeof value === 'bigint') return Number(value);
+  if (typeof value === 'number') return value;
+  return new Date(value).getTime();
+}
+
 /** Coarse "X min ago" / "just now" relative time. */
-export function relTime(iso: string | undefined): string {
-  if (!iso) return '';
-  const then = new Date(iso).getTime();
+export function relTime(iso: TimeInput): string {
+  const then = timeMs(iso);
   if (Number.isNaN(then)) return '';
   const s = Math.max(0, Math.round((Date.now() - then) / 1000));
   if (s < 30) return 'just now';
@@ -111,9 +153,8 @@ export function relTime(iso: string | undefined): string {
 }
 
 /** Compact "uptime" duration since `iso` (e.g. "14m", "1h 8m"). */
-export function uptime(iso: string | undefined): string {
-  if (!iso) return '—';
-  const then = new Date(iso).getTime();
+export function uptime(iso: TimeInput): string {
+  const then = timeMs(iso);
   if (Number.isNaN(then)) return '—';
   const s = Math.max(0, Math.round((Date.now() - then) / 1000));
   if (s < 60) return `${s}s`;

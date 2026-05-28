@@ -13,8 +13,10 @@
   import TaskCreateForm from '$lib/components/tasks/TaskCreateForm.svelte';
   import TaskGraph from '$lib/components/tasks/TaskGraph.svelte';
   import BudgetMeter from '$lib/components/tasks/BudgetMeter.svelte';
+  import AgentCostBreakdown from '$lib/components/tasks/AgentCostBreakdown.svelte';
   import { Button } from '$lib/components/ui/button';
   import { Input } from '$lib/components/ui/input';
+  import { budgetStore } from '$lib/stores/budget.svelte';
   import {
     Plus,
     ChevronLeft,
@@ -39,6 +41,8 @@
   let labelFilter = $state('');
 
   const selected = $derived(selectedId ? tasksState.byId(selectedId) : null);
+  const budgetEntry = $derived(budgetStore.get(threadId));
+  const budgetView = $derived(budgetEntry.view);
 
   // Hard cap visible rows at 200 (see deuda about virtualization).
   const visible = $derived(tasksState.items.slice(0, 200));
@@ -170,6 +174,9 @@
     style="background: var(--surface-canvas); border-color: var(--border-subtle);"
   >
     <BudgetMeter {threadId} />
+    <div class="mt-2">
+      <AgentCostBreakdown view={budgetView} />
+    </div>
   </div>
 
   <!-- Body — two panes -->

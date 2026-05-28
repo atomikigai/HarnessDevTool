@@ -20,7 +20,7 @@ pub fn build_router(state: Arc<AppState>, cfg: &Config) -> Router {
         .allow_origin(AllowOrigin::exact(
             HeaderValue::from_str(&cfg.cors_origin).expect("invalid HARNESS_CORS_ORIGIN value"),
         ))
-        .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+        .allow_methods([Method::GET, Method::POST, Method::PUT, Method::OPTIONS])
         .allow_headers([header::CONTENT_TYPE, header::ACCEPT, header::AUTHORIZATION])
         .expose_headers([PROTOCOL_VERSION_HEADER]);
 
@@ -41,7 +41,9 @@ pub fn build_router(state: Arc<AppState>, cfg: &Config) -> Router {
         .merge(routes::sessions::router())
         .merge(routes::events::router())
         .merge(routes::tasks::router())
+        .merge(routes::spec::router())
         .merge(routes::agents::router())
+        .merge(routes::approvals::router())
         .merge(routes::control::router())
         .merge(routes::budget::router())
         .merge(routes::db::router())

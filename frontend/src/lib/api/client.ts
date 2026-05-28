@@ -20,6 +20,15 @@ export class ApiError extends Error {
   }
 }
 
+export { ApiError as ApiRequestError };
+
+export class SpecEtagMismatchError extends ApiError {
+  constructor(body?: unknown) {
+    super(409, 'Spec etag mismatch', body);
+    this.name = 'SpecEtagMismatchError';
+  }
+}
+
 export interface ApiResponse<T> {
   data: T;
   protocolVersion: string | null;
@@ -197,6 +206,11 @@ export interface CreateSessionResponse {
   session_id: string;
 }
 
+import type { BudgetView } from './types/BudgetView';
+import type { SetBudgetRequest } from './types/SetBudgetRequest';
+import type { ApprovalSummary } from './types/ApprovalSummary';
+import type { Decision } from './types/Decision';
+import type { RememberScope } from './types/RememberScope';
 import type {
   Task,
   CreateTaskRequest,
@@ -217,22 +231,17 @@ export interface PauseAllState {
   paused: boolean;
 }
 
-/**
- * Server returns the budget plus derived percentages on GET/POST
- * `/api/threads/:id/budget`. Hand-typed here because the backend ships
- * this view via plain serde (not ts-rs).
- */
-export interface BudgetView {
-  thread_id: string;
-  spent_usd: number;
-  limit_usd: number;
-  pct: number;
-  soft_pct: number;
-  hard_pct: number;
-}
+export type { BudgetView } from './types/BudgetView';
+export type { SetBudgetRequest } from './types/SetBudgetRequest';
 
-export interface SetBudgetRequest {
-  limit_usd: number;
+function isEtagMismatch(body: unknown): boolean {
+  if (!body || typeof body !== 'object') return false;
+  const record = body as Record<string, unknown>;
+  return (
+    record.code === 'etag_mismatch' ||
+    record.error === 'etag_mismatch' ||
+    record.kind === 'etag_mismatch'
+  );
 }
 
 export interface ProfileSummary {
@@ -261,6 +270,14 @@ export interface ActivateProfileResponse {
 
 export const api = {
   health: (signal?: AbortSignal) => apiRequest<HealthResponse>('/health', { signal }),
+  approvals: {
+    list: (signal?: AbortSignal) => apiRequest<ApprovalSummary[]>('/approvals', { signal }),
+    decide: (id: string, decision: Decision, remember_scope?: RememberScope) =>
+      apiRequest<null>(`/approvals/${id}/decide`, {
+        method: 'POST',
+        body: { decision, remember_scope }
+      })
+  },
   pauseAll: {
     get: (signal?: AbortSignal) => apiRequest<PauseAllState>('/pause-all', { signal }),
     pause: (signal?: AbortSignal) =>
@@ -307,6 +324,22 @@ export const api = {
         body: title ? { title } : undefined,
         signal
       })
+  },
+  spec: {
+    get: (tid: string) => apiRequest<{ content: string; etag: string }>(`/threads/${tid}/spec`),
+    put: async (tid: string, body: { content: string; etag?: string }) => {
+      try {
+        return await apiRequest<{ etag: string; bytes: number; created: boolean }>(
+          `/threads/${tid}/spec`,
+          { method: 'PUT', body }
+        );
+      } catch (err) {
+        if (err instanceof ApiError && err.status === 409 && isEtagMismatch(err.body)) {
+          throw new SpecEtagMismatchError(err.body);
+        }
+        throw err;
+      }
+    }
   },
   getBudget: (threadId: string, signal?: AbortSignal) =>
     apiRequest<BudgetView>(`/threads/${threadId}/budget`, { signal }),

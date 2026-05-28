@@ -7,7 +7,7 @@ use tokio::task::JoinHandle;
 
 use crate::agents::{Agent, AgentsRegistry};
 use crate::budget::{
-    ActiveSessionsSource, BudgetStore, BudgetWarning, BudgetWarningSink, CostReporter,
+    ActiveSessionsSource, AgentCost, BudgetStore, BudgetWarning, BudgetWarningSink, CostReporter,
 };
 use crate::pause::PauseFlag;
 use crate::tasks::{ClaimResult, ListFilters, TaskEvent, TaskStatus, TaskStore};
@@ -525,6 +525,7 @@ pub fn run_budget_pass(
     let sessions = wiring.sessions.snapshot();
     // Per-thread aggregation: sum of per-session cost_usd reported this tick.
     let mut per_thread: HashMap<String, f64> = HashMap::new();
+    let mut per_agent: HashMap<(String, String), AgentCost> = HashMap::new();
     for s in &sessions {
         let Some(reporter) = wiring.reporters.get(&s.kind) else {
             continue;
@@ -532,6 +533,18 @@ pub fn run_budget_pass(
         match reporter.poll(&s.session_id, &s.cwd) {
             Ok(cost) => {
                 *per_thread.entry(s.thread_id.clone()).or_insert(0.0) += cost.cost_usd;
+                let agent_id = s.agent_id.clone().unwrap_or_else(|| "unknown".into());
+                let role = s.role.clone().unwrap_or_else(|| "generator".into());
+                let entry = per_agent
+                    .entry((s.thread_id.clone(), agent_id.clone()))
+                    .or_insert_with(|| AgentCost {
+                        agent_id,
+                        role,
+                        sessions: 0,
+                        spent_usd: 0.0,
+                    });
+                entry.sessions += 1;
+                entry.spent_usd += cost.cost_usd;
             }
             Err(e) => {
                 tracing::warn!(
@@ -553,6 +566,18 @@ pub fn run_budget_pass(
                 continue;
             }
         };
+        let mut agents = per_agent
+            .iter()
+            .filter(|((tid, _), _)| tid == &thread_id)
+            .map(|(_, agent)| agent.clone())
+            .collect::<Vec<_>>();
+        agents.sort_by(|a, b| {
+            b.spent_usd
+                .partial_cmp(&a.spent_usd)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.agent_id.cmp(&b.agent_id))
+        });
+        wiring.store.set_agents_breakdown(&thread_id, agents);
 
         // No limit set => nothing to warn or trip on.
         if budget.limit_usd <= 0.0 {
@@ -916,6 +941,17 @@ mod tests {
         }
     }
 
+    struct SidCostReporter(HashMap<String, f64>);
+    impl CostReporter for SidCostReporter {
+        fn poll(&self, sid: &str, _cwd: &Path) -> Result<SessionCost, crate::Error> {
+            Ok(SessionCost {
+                model: "claude-opus-4-7".into(),
+                usage: Default::default(),
+                cost_usd: *self.0.get(sid).unwrap_or(&0.0),
+            })
+        }
+    }
+
     struct StaticSessions(Vec<ActiveSession>);
     impl ActiveSessionsSource for StaticSessions {
         fn snapshot(&self) -> Vec<ActiveSession> {
@@ -958,6 +994,8 @@ mod tests {
             session_id: "sid-1".into(),
             cwd: dir.path().to_path_buf(),
             kind: "claude".into(),
+            agent_id: None,
+            role: None,
         }];
 
         // 80% — over soft (band 75), under hard.
@@ -990,6 +1028,8 @@ mod tests {
             session_id: "sid-x".into(),
             cwd: dir.path().to_path_buf(),
             kind: "claude".into(),
+            agent_id: None,
+            role: None,
         }];
         let wiring = mk_wiring(dir.path(), 10.0, sessions, sink.clone());
         wiring.store.set_limit("thr-x", 10.0).unwrap();
@@ -1013,6 +1053,8 @@ mod tests {
             session_id: "sid-c".into(),
             cwd: dir.path().to_path_buf(),
             kind: "codex".into(), // not in reporters map
+            agent_id: None,
+            role: None,
         }];
         let wiring = mk_wiring(dir.path(), 10.0, sessions, sink.clone());
         wiring.store.set_limit("thr-c", 10.0).unwrap();
@@ -1021,6 +1063,69 @@ mod tests {
         run_budget_pass(&wiring, &pause, &mut bands).unwrap();
         assert!(sink.0.lock().unwrap().is_empty());
         assert!(!pause.is_paused());
+    }
+
+    #[test]
+    fn budget_pass_emits_per_agent_breakdown() {
+        let dir = tempdir().unwrap();
+        let pause = PauseFlag::load(dir.path()).unwrap();
+        let sink = Arc::new(RecordingSink::default());
+        let sessions = vec![
+            ActiveSession {
+                thread_id: "thr-1".into(),
+                session_id: "sid-1".into(),
+                cwd: dir.path().to_path_buf(),
+                kind: "claude".into(),
+                agent_id: Some("a1".into()),
+                role: Some("generator".into()),
+            },
+            ActiveSession {
+                thread_id: "thr-1".into(),
+                session_id: "sid-2".into(),
+                cwd: dir.path().to_path_buf(),
+                kind: "claude".into(),
+                agent_id: Some("a1".into()),
+                role: Some("generator".into()),
+            },
+            ActiveSession {
+                thread_id: "thr-1".into(),
+                session_id: "sid-3".into(),
+                cwd: dir.path().to_path_buf(),
+                kind: "claude".into(),
+                agent_id: Some("a2".into()),
+                role: Some("planner".into()),
+            },
+        ];
+        let store = BudgetStore::load(dir.path()).unwrap();
+        let mut reporters: HashMap<String, Arc<dyn CostReporter>> = HashMap::new();
+        reporters.insert(
+            "claude".into(),
+            Arc::new(SidCostReporter(HashMap::from([
+                ("sid-1".into(), 1.0),
+                ("sid-2".into(), 2.0),
+                ("sid-3".into(), 5.0),
+            ]))),
+        );
+        let wiring = BudgetWiring {
+            store,
+            reporters,
+            sessions: Arc::new(StaticSessions(sessions)),
+            sink,
+        };
+
+        let mut bands: HashMap<String, u8> = HashMap::new();
+        run_budget_pass(&wiring, &pause, &mut bands).unwrap();
+
+        let agents = wiring.store.agents_for("thr-1");
+        assert_eq!(agents.len(), 2);
+        assert_eq!(agents[0].agent_id, "a2");
+        assert_eq!(agents[0].role, "planner");
+        assert_eq!(agents[0].sessions, 1);
+        assert_eq!(agents[0].spent_usd, 5.0);
+        assert_eq!(agents[1].agent_id, "a1");
+        assert_eq!(agents[1].role, "generator");
+        assert_eq!(agents[1].sessions, 2);
+        assert_eq!(agents[1].spent_usd, 3.0);
     }
 
     #[test]

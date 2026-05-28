@@ -4,12 +4,16 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+ts-export = ["dep:ts-rs", "harness-core/ts-export", "harness-policy/ts-export"]
+
 [[bin]]
 name = "harness-server"
 path = "src/main.rs"
 
 [dependencies]
 harness-core = { path = "../harness-core" }
+harness-policy = { path = "../harness-policy" }
 harness-session = { path = "../harness-session" }
 module-db = { path = "../module-db" }
 
@@ -35,3 +39,6 @@ dirs = { workspace = true }
 base64 = { workspace = true }
 toml_edit = { workspace = true }
 bytes = "1"
+sha2 = "0.10"
+tempfile = "3"
+ts-rs = { workspace = true, optional = true }

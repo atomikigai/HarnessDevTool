@@ -1,4 +1,5 @@
 pub mod agents;
+pub mod approvals;
 pub mod budget;
 pub mod control;
 pub mod db;
@@ -6,6 +7,7 @@ pub mod events;
 pub mod health;
 pub mod profiles;
 pub mod sessions;
+pub mod spec;
 pub mod tasks;
 pub mod threads;
 pub mod transcript;

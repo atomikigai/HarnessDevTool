@@ -182,6 +182,21 @@ pub fn list_descriptors() -> Vec<ToolDescriptor> {
             }),
         },
         ToolDescriptor {
+            name: "spec_write".into(),
+            description:
+                "Overwrite the thread spec markdown (profiles/default/threads/<tid>/spec.md)."
+                    .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["thread_id", "content"],
+                "properties": {
+                    "thread_id": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$" },
+                    "content":   { "type": "string", "maxLength": 1048576 },
+                    "etag":      { "type": "string" }
+                }
+            }),
+        },
+        ToolDescriptor {
             name: "db_query".into(),
             description: "Run a SQL query against a saved DB connection. Non-SELECT statements \
                 require `approved: true`."
@@ -218,6 +233,7 @@ pub fn list_descriptors() -> Vec<ToolDescriptor> {
                 "required": ["connection", "sql"],
                 "properties": {
                     "connection": { "type": "string" },
+                    "database":   { "type": "string" },
                     "sql":        { "type": "string" }
                 }
             }),

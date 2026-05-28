@@ -14,8 +14,9 @@ pub mod threads;
 
 pub use agents::{Agent, AgentDraft, AgentKind, AgentsRegistry};
 pub use budget::{
-    ActiveSession, ActiveSessionsSource, Budget, BudgetStore, BudgetWarning, BudgetWarningSink,
-    ClaudeTranscriptReporter, CodexStubReporter, CostReporter, SessionCost, StubReporter, Usage,
+    ActiveSession, ActiveSessionsSource, AgentCost, Budget, BudgetStore, BudgetWarning,
+    BudgetWarningSink, ClaudeTranscriptReporter, CodexStubReporter, CostReporter, SessionCost,
+    StubReporter, Usage,
 };
 pub use events::Event;
 pub use pause::PauseFlag;

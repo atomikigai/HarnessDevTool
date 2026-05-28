@@ -11,10 +11,12 @@ use harness_core::{
     PauseFlag, RolesRegistry, Scheduler, SessionSpawner, SpawnRequest, SpawnResult, Store,
     StubReporter, TaskStore,
 };
+use harness_policy::PolicyEngine;
 use harness_session::{AgentKind, Manager, SpawnOpts};
 use serde_json::json;
 use tokio::sync::broadcast;
 
+use crate::approvals::ApprovalStore;
 use crate::config::Config;
 use crate::transcript::{TranscriptEvent, TranscriptStore, WatcherHandle};
 
@@ -36,6 +38,8 @@ pub struct AppState {
     pub roles: Arc<RolesRegistry>,
     pub pause: Arc<PauseFlag>,
     pub budgets: Arc<BudgetStore>,
+    pub policy: Arc<PolicyEngine>,
+    pub approvals: Arc<ApprovalStore>,
     pub db: Arc<module_db::Manager>,
     #[allow(dead_code)]
     pub scheduler: Arc<Scheduler>,
@@ -83,6 +87,16 @@ impl AppState {
         let roles = Arc::new(RolesRegistry::load_for_profile(&cfg.home, profile)?);
         let pause = Arc::new(PauseFlag::load(&cfg.home)?);
         let budgets = Arc::new(BudgetStore::load_for_profile(&cfg.home, profile)?);
+        let policy_path = cfg.home.join("profiles").join(profile).join("policy.toml");
+        let policy = Arc::new(PolicyEngine::load(policy_path.clone()).unwrap_or_else(|e| {
+            tracing::warn!(
+                path = %policy_path.display(),
+                error = %e,
+                "failed to load policy, using default allow policy"
+            );
+            PolicyEngine::default_at(policy_path)
+        }));
+        let approvals = Arc::new(ApprovalStore::new());
         let db = Arc::new(
             module_db::Manager::new(&cfg.home, profile)
                 .map_err(|e| anyhow::anyhow!("module-db init: {e}"))?,
@@ -168,6 +182,8 @@ impl AppState {
             roles,
             pause,
             budgets,
+            policy,
+            approvals,
             db,
             scheduler,
             binaries,
@@ -196,11 +212,23 @@ impl ActiveSessionsSource for ManagerSessionsSource {
         self.manager
             .all()
             .into_iter()
-            .map(|s| ActiveSession {
-                thread_id: s.thread_id().to_string(),
-                session_id: s.id().to_string(),
-                cwd: s.cwd().to_path_buf(),
-                kind: s.kind().as_str().to_string(),
+            .map(|s| {
+                let role_value = s.role();
+                let (agent_id, role) = match role_value {
+                    Some(value) if value.starts_with("agent:") => {
+                        (Some(value["agent:".len()..].to_string()), None)
+                    }
+                    Some(value) => (None, Some(value)),
+                    None => (None, None),
+                };
+                ActiveSession {
+                    thread_id: s.thread_id().to_string(),
+                    session_id: s.id().to_string(),
+                    cwd: s.cwd().to_path_buf(),
+                    kind: s.kind().as_str().to_string(),
+                    agent_id,
+                    role,
+                }
             })
             .collect()
     }

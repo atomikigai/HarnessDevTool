@@ -1,6 +1,7 @@
 //! Maps incoming JSON-RPC requests to handlers.
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 use serde_json::{json, Value};
 use tracing::warn;
@@ -111,6 +112,10 @@ impl Dispatcher {
         };
         let args = params.get("arguments").cloned().unwrap_or(json!({}));
 
+        if let Some(msg) = self.check_tool_policy(&name, &args) {
+            return result_response(id, wrap_error(&msg));
+        }
+
         let outcome: Result<Value, String> = match name.as_str() {
             "task_create" => tasks::create(
                 &self.store,
@@ -127,6 +132,7 @@ impl Dispatcher {
             "task_release" => tasks::release(&self.store, &self.thread_id, &args),
             "task_submit" => tasks::submit(&self.store, &self.thread_id, &self.agent_id, &args),
             "spec_read" => spec::read(&self.harness_home, &self.thread_id, &args),
+            "spec_write" => spec::write(&self.harness_home, self.server_url.as_deref(), &args),
             "skills_search" => skills::search(&args),
             "db_query" => db_tools::query(&self.db, &args),
             "db_schema" => db_tools::schema(&self.db, &args),
@@ -171,6 +177,44 @@ impl Dispatcher {
                 // reserved for protocol-level failures). This keeps the agent
                 // loop alive and surfaces a structured message to the model.
                 result_response(id, wrap_error(&msg))
+            }
+        }
+    }
+
+    fn check_tool_policy(&self, tool_name: &str, tool_args: &Value) -> Option<String> {
+        let server_url = self.server_url.as_deref()?;
+        let payload = json!({
+            "tool": tool_name,
+            "args": tool_args,
+            "thread_id": self.thread_id,
+            "agent_id": self.agent_id,
+        });
+        let url = format!("{}/api/approvals/check", server_url.trim_end_matches('/'));
+        match ureq::post(&url)
+            .timeout(Duration::from_secs(120))
+            .send_json(payload)
+        {
+            Ok(resp) => match resp.into_json::<Value>() {
+                Ok(value) => match value.get("decision").and_then(|v| v.as_str()) {
+                    Some("allow") => None,
+                    Some("deny") => Some(format!("tool call denied by policy: {tool_name}")),
+                    Some(other) => {
+                        warn!(decision = %other, "approval check returned unknown decision, continuing");
+                        None
+                    }
+                    None => {
+                        warn!("approval check response missing decision, continuing");
+                        None
+                    }
+                },
+                Err(e) => {
+                    warn!(error = %e, "approval check response parse failed, continuing");
+                    None
+                }
+            },
+            Err(e) => {
+                warn!(error = %e, "approval check failed, continuing");
+                None
             }
         }
     }
@@ -233,6 +277,7 @@ mod tests {
             "task_release",
             "task_submit",
             "spec_read",
+            "spec_write",
             "skills_search",
         ] {
             assert!(names.contains(&expected), "missing tool: {expected}");
@@ -273,5 +318,20 @@ mod tests {
         let resp = d.handle(parse_request(line).unwrap()).unwrap();
         let text = resp["result"]["content"][0]["text"].as_str().unwrap();
         assert!(text.contains("\"content\":\"\""));
+    }
+
+    #[test]
+    fn spec_write_then_spec_read_returns_written_content() {
+        let (d, _) = mk("t1", "agent:1");
+        let write_line = r##"{"jsonrpc":"2.0","id":12,"method":"tools/call","params":{"name":"spec_write","arguments":{"thread_id":"t1","content":"# Spec\nBody"}}}"##;
+        let resp = d.handle(parse_request(write_line).unwrap()).unwrap();
+        let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("\"ok\":true"));
+        assert!(text.contains("\"created\":true"));
+
+        let read_line = r#"{"jsonrpc":"2.0","id":13,"method":"tools/call","params":{"name":"spec_read","arguments":{"thread_id":"t1"}}}"#;
+        let resp = d.handle(parse_request(read_line).unwrap()).unwrap();
+        let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("# Spec\\nBody"));
     }
 }

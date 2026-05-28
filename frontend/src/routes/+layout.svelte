@@ -2,13 +2,21 @@
   import '../app.css';
   import { page } from '$app/stores';
   import IconRail from '$lib/components/app/IconRail.svelte';
+  import ApprovalModal from '$lib/components/approvals/ApprovalModal.svelte';
   import TopBar from '$lib/components/app/TopBar.svelte';
   import { Toaster } from '$lib/components/ui/sonner';
+  import { approvalsState } from '$lib/stores/approvals.svelte';
   import type { Snippet } from 'svelte';
+  import { onMount } from 'svelte';
 
   let { children }: { children: Snippet } = $props();
 
   const currentPath = $derived($page.url.pathname);
+
+  onMount(() => {
+    void approvalsState.start();
+    return () => approvalsState.stop();
+  });
 </script>
 
 <!--
@@ -30,3 +38,4 @@
 </div>
 
 <Toaster />
+<ApprovalModal />

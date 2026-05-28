@@ -27,6 +27,7 @@
     tokensLabel,
     uiStatus,
     uptime,
+    groupSessionsByRole,
     type TaskProgress
   } from '$lib/sessionDisplay';
 
@@ -66,6 +67,7 @@
   // children under their root so Zeus orchestrators visually own the worker
   // sessions they spawned. Roots without children render as a single card.
   interface SessionGroup {
+    role?: string | null;
     root: SessionMeta;
     children: SessionMeta[];
   }
@@ -87,6 +89,7 @@
       }
     }
     return roots.map((root) => ({
+      role: root.role ?? null,
       root,
       children: (childrenByRoot.get(root.id) ?? []).sort((a, b) =>
         a.started_at < b.started_at ? -1 : 1
@@ -162,6 +165,200 @@
     return progressByThread[s.thread_id] ?? { done: 0, total: 0, pct: 0 };
   }
 </script>
+
+{#snippet sessionCard(
+  s: SessionMeta,
+  isChild: boolean,
+  childCount: number,
+  rootExpanded: boolean,
+  runningKids: number
+)}
+  {@const u = uiStatus(s)}
+  {@const k = kindChip(s.kind)}
+  {@const selected = s.id === selectedSessionId}
+  {@const prog = progressFor(s)}
+  <li class="group relative" style={isChild ? 'padding-left: 18px;' : ''}>
+    {#if isChild}
+      <div
+        class="pointer-events-none absolute left-[10px] top-0 h-full w-px"
+        style="background: var(--border-subtle);"
+      ></div>
+      <div
+        class="pointer-events-none absolute left-[10px] top-[18px] h-px w-[10px]"
+        style="background: var(--border-subtle);"
+      ></div>
+    {/if}
+    <button
+      type="button"
+      onclick={(e) => handleDelete(e, s)}
+      disabled={deleting === s.id}
+      aria-label={'Delete session ' + s.id.slice(0, 8)}
+      title="Delete session"
+      class="absolute right-2 top-2 z-10 flex h-6 w-6 items-center justify-center rounded-md border opacity-0 transition-opacity hover:bg-[color-mix(in_srgb,var(--dot-danger)_15%,transparent)] focus-visible:opacity-100 group-hover:opacity-100 disabled:opacity-50"
+      style="border-color: var(--border-subtle); color: var(--dot-danger); background: var(--surface-window);"
+    >
+      <Trash2 class="h-3 w-3" />
+    </button>
+    {#if !isChild && childCount > 0}
+      <button
+        type="button"
+        onclick={(e) => {
+          e.stopPropagation();
+          toggleRoot(s.id);
+        }}
+        aria-label={rootExpanded ? 'Collapse children' : 'Expand children'}
+        title={rootExpanded
+          ? `Collapse ${childCount} child${childCount === 1 ? '' : 'ren'}`
+          : `Expand ${childCount} child${childCount === 1 ? '' : 'ren'}`}
+        class="absolute left-1 top-3 z-10 flex h-5 w-5 items-center justify-center rounded transition-colors hover:bg-[var(--accent-soft)]"
+        style="color: var(--fg-muted);"
+      >
+        {#if rootExpanded}
+          <ChevronDown class="h-3 w-3" />
+        {:else}
+          <ChevronRight class="h-3 w-3" />
+        {/if}
+      </button>
+    {/if}
+    <button
+      type="button"
+      onclick={() => onSelect(s.id)}
+      class="flex w-full flex-col gap-2 py-3 pr-3.5 text-left transition-colors"
+      style="
+        padding-left: {!isChild && childCount > 0 ? '26px' : '14px'};
+        background: {selected ? 'var(--accent-soft)' : 'transparent'};
+        border-left: 2px solid {selected ? 'var(--accent)' : 'transparent'};
+      "
+      onmouseenter={(e) => {
+        if (!selected) (e.currentTarget as HTMLElement).style.background = 'var(--row-stripe)';
+      }}
+      onmouseleave={(e) => {
+        if (!selected) (e.currentTarget as HTMLElement).style.background = 'transparent';
+      }}
+    >
+      <div class="flex items-center gap-2">
+        <span
+          class="h-2 w-2 shrink-0 rounded-full"
+          style="
+            background: {statusColor(u)};
+            box-shadow: {u === 'active'
+            ? '0 0 0 3px color-mix(in srgb, var(--dot-success) 18%, transparent)'
+            : 'none'};
+          "
+          title={statusLabel(u)}
+        ></span>
+        <span
+          class="flex-1 truncate text-[13px]"
+          style="
+            color: {selected ? 'var(--accent)' : 'var(--fg-default)'};
+            font-weight: {selected ? 600 : 500};
+          "
+        >
+          {s.id ? s.kind + ' · ' + s.id.slice(0, 8) : '(untitled)'}
+        </span>
+        <span class="shrink-0 text-[10px] font-mono" style="color: var(--fg-muted);">
+          {relTime(s.started_at)}
+        </span>
+      </div>
+      <div class="flex items-center gap-2">
+        <span
+          class="inline-flex items-center rounded px-1.5 py-0.5 font-mono text-[10px] font-semibold"
+          style="color: {k.color}; background: {k.bg};"
+        >
+          {k.label}
+        </span>
+        {#if s.role === 'zeus-orchestrator'}
+          <span
+            class="inline-flex items-center rounded border px-1.5 py-0.5 font-mono text-[10px] font-bold uppercase"
+            style="color: rgb(74 222 128); border-color: rgba(74 222 128 / 0.5); background: rgba(74 222 128 / 0.1);"
+            title="Zeus orchestrator"
+          >
+            Zeus
+          </span>
+        {:else if s.parent_session_id}
+          <span
+            class="inline-flex items-center rounded border px-1.5 py-0.5 font-mono text-[10px] font-semibold"
+            style="color: var(--fg-default); border-color: var(--border-subtle); background: var(--surface-titlebar);"
+            title={`Child of ${s.parent_session_id}`}
+          >
+            ↳ {s.role ?? 'child'}
+          </span>
+        {:else if s.role}
+          <span
+            class="inline-flex items-center rounded border px-1.5 py-0.5 font-mono text-[10px]"
+            style="color: var(--fg-muted); border-color: var(--border-subtle);"
+          >
+            {s.role}
+          </span>
+        {/if}
+        {#if !isChild && childCount > 0}
+          <span
+            class="inline-flex items-center gap-1 rounded border px-1.5 py-0.5 font-mono text-[10px] font-semibold"
+            style="color: var(--accent); border-color: var(--accent-soft-border); background: var(--accent-soft);"
+            title={`${childCount} child session${childCount === 1 ? '' : 's'} · ${runningKids} running`}
+          >
+            ▾ {runningKids}/{childCount}
+          </span>
+        {/if}
+        {#if s.detected_state && s.detected_state !== 'unknown' && uiStatus(s) === 'active'}
+          {@const ds = s.detected_state}
+          <span
+            class="inline-flex items-center gap-1 rounded border px-1.5 py-0.5 font-mono text-[10px] font-semibold"
+            style="
+              color: {ds === 'working'
+              ? 'rgb(96 165 250)'
+              : ds === 'blocked'
+                ? 'rgb(251 191 36)'
+                : 'rgb(148 163 184)'};
+              border-color: {ds === 'working'
+              ? 'rgba(96 165 250 / 0.4)'
+              : ds === 'blocked'
+                ? 'rgba(251 191 36 / 0.4)'
+                : 'rgba(148 163 184 / 0.3)'};
+              background: {ds === 'working'
+              ? 'rgba(96 165 250 / 0.08)'
+              : ds === 'blocked'
+                ? 'rgba(251 191 36 / 0.1)'
+                : 'transparent'};
+            "
+            title={ds === 'working'
+              ? 'Agent is thinking / running a tool'
+              : ds === 'blocked'
+                ? 'Agent is waiting for input (approval / prompt)'
+                : 'Agent is idle, ready for the next message'}
+          >
+            {ds === 'working' ? '⋯' : ds === 'blocked' ? '⏸' : '✓'}
+            {ds}
+          </span>
+        {/if}
+        <span class="font-mono text-[10px]" style="color: var(--fg-muted);">
+          {uptime(s.started_at)} · {tokensLabel(null)}
+        </span>
+      </div>
+      <div class="flex items-center gap-2">
+        <div
+          class="h-[3px] flex-1 overflow-hidden rounded-full"
+          style="background: var(--border-input);"
+        >
+          {#if prog.total > 0}
+            <div
+              class="h-full rounded-full transition-[width]"
+              style="
+                width: {prog.pct}%;
+                background: {prog.pct === 100 ? 'var(--dot-success)' : 'var(--accent)'};
+                transition-duration: 300ms;
+              "
+            ></div>
+          {/if}
+        </div>
+        <span class="shrink-0 font-mono text-[10px]" style="color: var(--fg-muted);">
+          {prog.total > 0 ? `${prog.done}/${prog.total}` : '—/—'}
+        </span>
+      </div>
+    </button>
+    <div class="mx-3.5 h-px" style="background: var(--row-divider);"></div>
+  </li>
+{/snippet}
 
 <aside
   class="flex h-full shrink-0 flex-col overflow-hidden border-r transition-[width]"
@@ -287,230 +484,30 @@
           </button>
         </div>
       {:else}
-        <ul class="flex flex-col">
-          {#each groups as g (g.root.id)}
-            {@const expanded = isExpanded(g.root.id)}
-            {@const runningKids = runningChildren(g)}
-            {@render sessionCard(g.root, false, g.children.length, expanded, runningKids)}
-            {#if expanded && g.children.length > 0}
-              {#each g.children as c (c.id)}
-                {@render sessionCard(c, true, 0, false, 0)}
+        <div class="flex flex-col">
+          {#each groupSessionsByRole(groups) as group (group.role)}
+            <div
+              class="px-3.5 pb-1 pt-3 text-[10px] font-semibold uppercase tracking-wider"
+              style="color: var(--fg-muted);"
+            >
+              {group.role} · {group.items.reduce((n, g) => n + 1 + g.children.length, 0)}
+            </div>
+            <ul class="flex flex-col">
+              {#each group.items as g (g.root.id)}
+                {@const expanded = isExpanded(g.root.id)}
+                {@const runningKids = runningChildren(g)}
+                {@render sessionCard(g.root, false, g.children.length, expanded, runningKids)}
+                {#if expanded && g.children.length > 0}
+                  {#each g.children as c (c.id)}
+                    {@render sessionCard(c, true, 0, false, 0)}
+                  {/each}
+                {/if}
               {/each}
-            {/if}
+            </ul>
           {/each}
-        </ul>
+        </div>
       {/if}
     </div>
-
-{#snippet sessionCard(
-  s: SessionMeta,
-  isChild: boolean,
-  childCount: number,
-  rootExpanded: boolean,
-  runningKids: number
-)}
-            {@const u = uiStatus(s)}
-            {@const k = kindChip(s.kind)}
-            {@const selected = s.id === selectedSessionId}
-            {@const prog = progressFor(s)}
-            <li
-              class="group relative"
-              style={isChild ? 'padding-left: 18px;' : ''}
-            >
-              {#if isChild}
-                <!-- Tree spine: a vertical line + horizontal arm drawn over
-                     the padded-left area so children visually hang from their
-                     root. Cheap absolute-positioned divs — no extra DOM per row. -->
-                <div
-                  class="pointer-events-none absolute left-[10px] top-0 h-full w-px"
-                  style="background: var(--border-subtle);"
-                ></div>
-                <div
-                  class="pointer-events-none absolute left-[10px] top-[18px] h-px w-[10px]"
-                  style="background: var(--border-subtle);"
-                ></div>
-              {/if}
-              <!-- Destructive affordance — hidden until row hover/selection so
-                   it doesn't compete with the primary "select session" tap
-                   target. Stops propagation so clicking it doesn't also
-                   re-select the card we're about to delete. -->
-              <button
-                type="button"
-                onclick={(e) => handleDelete(e, s)}
-                disabled={deleting === s.id}
-                aria-label={'Delete session ' + s.id.slice(0, 8)}
-                title="Delete session"
-                class="absolute right-2 top-2 z-10 flex h-6 w-6 items-center justify-center rounded-md border opacity-0 transition-opacity hover:bg-[color-mix(in_srgb,var(--dot-danger)_15%,transparent)] focus-visible:opacity-100 group-hover:opacity-100 disabled:opacity-50"
-                style="border-color: var(--border-subtle); color: var(--dot-danger); background: var(--surface-window);"
-              >
-                <Trash2 class="h-3 w-3" />
-              </button>
-              {#if !isChild && childCount > 0}
-                <!-- Expand / collapse caret. Lives outside the card button so
-                     clicking it doesn't also select the root. -->
-                <button
-                  type="button"
-                  onclick={(e) => {
-                    e.stopPropagation();
-                    toggleRoot(s.id);
-                  }}
-                  aria-label={rootExpanded ? 'Collapse children' : 'Expand children'}
-                  title={rootExpanded
-                    ? `Collapse ${childCount} child${childCount === 1 ? '' : 'ren'}`
-                    : `Expand ${childCount} child${childCount === 1 ? '' : 'ren'}`}
-                  class="absolute left-1 top-3 z-10 flex h-5 w-5 items-center justify-center rounded transition-colors hover:bg-[var(--accent-soft)]"
-                  style="color: var(--fg-muted);"
-                >
-                  {#if rootExpanded}
-                    <ChevronDown class="h-3 w-3" />
-                  {:else}
-                    <ChevronRight class="h-3 w-3" />
-                  {/if}
-                </button>
-              {/if}
-              <button
-                type="button"
-                onclick={() => onSelect(s.id)}
-                class="flex w-full flex-col gap-2 py-3 pr-3.5 text-left transition-colors"
-                style="
-                  padding-left: {!isChild && childCount > 0 ? '26px' : '14px'};
-                  background: {selected ? 'var(--accent-soft)' : 'transparent'};
-                  border-left: 2px solid {selected ? 'var(--accent)' : 'transparent'};
-                "
-                onmouseenter={(e) => {
-                  if (!selected)
-                    (e.currentTarget as HTMLElement).style.background = 'var(--row-stripe)';
-                }}
-                onmouseleave={(e) => {
-                  if (!selected) (e.currentTarget as HTMLElement).style.background = 'transparent';
-                }}
-              >
-                <!-- Row 1: status dot, title, time -->
-                <div class="flex items-center gap-2">
-                  <span
-                    class="h-2 w-2 shrink-0 rounded-full"
-                    style="
-                      background: {statusColor(u)};
-                      box-shadow: {u === 'active'
-                      ? '0 0 0 3px color-mix(in srgb, var(--dot-success) 18%, transparent)'
-                      : 'none'};
-                    "
-                    title={statusLabel(u)}
-                  ></span>
-                  <span
-                    class="flex-1 truncate text-[13px]"
-                    style="
-                      color: {selected ? 'var(--accent)' : 'var(--fg-default)'};
-                      font-weight: {selected ? 600 : 500};
-                    "
-                  >
-                    {s.id ? s.kind + ' · ' + s.id.slice(0, 8) : '(untitled)'}
-                  </span>
-                  <span class="shrink-0 text-[10px] font-mono" style="color: var(--fg-muted);">
-                    {relTime(s.started_at)}
-                  </span>
-                </div>
-                <!-- Row 2: kind chip + role + stats -->
-                <div class="flex items-center gap-2">
-                  <span
-                    class="inline-flex items-center rounded px-1.5 py-0.5 font-mono text-[10px] font-semibold"
-                    style="color: {k.color}; background: {k.bg};"
-                  >
-                    {k.label}
-                  </span>
-                  {#if s.role === 'zeus-orchestrator'}
-                    <span
-                      class="inline-flex items-center rounded border px-1.5 py-0.5 font-mono text-[10px] font-bold uppercase"
-                      style="color: rgb(74 222 128); border-color: rgba(74 222 128 / 0.5); background: rgba(74 222 128 / 0.1);"
-                      title="Zeus orchestrator"
-                    >
-                      Zeus
-                    </span>
-                  {:else if s.parent_session_id}
-                    <span
-                      class="inline-flex items-center rounded border px-1.5 py-0.5 font-mono text-[10px] font-semibold"
-                      style="color: var(--fg-default); border-color: var(--border-subtle); background: var(--surface-titlebar);"
-                      title={`Child of ${s.parent_session_id}`}
-                    >
-                      ↳ {s.role ?? 'child'}
-                    </span>
-                  {:else if s.role}
-                    <span
-                      class="inline-flex items-center rounded border px-1.5 py-0.5 font-mono text-[10px]"
-                      style="color: var(--fg-muted); border-color: var(--border-subtle);"
-                    >
-                      {s.role}
-                    </span>
-                  {/if}
-                  {#if !isChild && childCount > 0}
-                    <span
-                      class="inline-flex items-center gap-1 rounded border px-1.5 py-0.5 font-mono text-[10px] font-semibold"
-                      style="color: var(--accent); border-color: var(--accent-soft-border); background: var(--accent-soft);"
-                      title={`${childCount} child session${childCount === 1 ? '' : 's'} · ${runningKids} running`}
-                    >
-                      ▾ {runningKids}/{childCount}
-                    </span>
-                  {/if}
-                  {#if s.detected_state && s.detected_state !== 'unknown' && uiStatus(s) === 'active'}
-                    {@const ds = s.detected_state}
-                    <span
-                      class="inline-flex items-center gap-1 rounded border px-1.5 py-0.5 font-mono text-[10px] font-semibold"
-                      style="
-                        color: {ds === 'working'
-                        ? 'rgb(96 165 250)'
-                        : ds === 'blocked'
-                          ? 'rgb(251 191 36)'
-                          : 'rgb(148 163 184)'};
-                        border-color: {ds === 'working'
-                        ? 'rgba(96 165 250 / 0.4)'
-                        : ds === 'blocked'
-                          ? 'rgba(251 191 36 / 0.4)'
-                          : 'rgba(148 163 184 / 0.3)'};
-                        background: {ds === 'working'
-                        ? 'rgba(96 165 250 / 0.08)'
-                        : ds === 'blocked'
-                          ? 'rgba(251 191 36 / 0.1)'
-                          : 'transparent'};
-                      "
-                      title={ds === 'working'
-                        ? 'Agent is thinking / running a tool'
-                        : ds === 'blocked'
-                          ? 'Agent is waiting for input (approval / prompt)'
-                          : 'Agent is idle, ready for the next message'}
-                    >
-                      {ds === 'working' ? '⋯' : ds === 'blocked' ? '⏸' : '✓'}
-                      {ds}
-                    </span>
-                  {/if}
-                  <span class="font-mono text-[10px]" style="color: var(--fg-muted);">
-                    {uptime(s.started_at)} · {tokensLabel(null)}
-                  </span>
-                </div>
-                <!-- Row 3: progress bar + N/M -->
-                <div class="flex items-center gap-2">
-                  <div
-                    class="h-[3px] flex-1 overflow-hidden rounded-full"
-                    style="background: var(--border-input);"
-                  >
-                    {#if prog.total > 0}
-                      <div
-                        class="h-full rounded-full transition-[width]"
-                        style="
-                          width: {prog.pct}%;
-                          background: {prog.pct === 100 ? 'var(--dot-success)' : 'var(--accent)'};
-                          transition-duration: 300ms;
-                        "
-                      ></div>
-                    {/if}
-                  </div>
-                  <span class="shrink-0 font-mono text-[10px]" style="color: var(--fg-muted);">
-                    {prog.total > 0 ? `${prog.done}/${prog.total}` : '—/—'}
-                  </span>
-                </div>
-              </button>
-              <div class="mx-3.5 h-px" style="background: var(--row-divider);"></div>
-            </li>
-{/snippet}
 
     <!-- Footer link to the registry -->
     <a

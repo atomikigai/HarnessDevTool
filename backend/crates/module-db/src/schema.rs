@@ -8,7 +8,7 @@ use sqlx::Row;
 use crate::error::DbResult;
 use crate::pool::DbPool;
 use crate::types::{
-    Column, Engine, ForeignKey, Index, SchemaTree, SchemaTreeSchema, Table, TableKind,
+    Column, ColumnKind, Engine, ForeignKey, Index, SchemaTree, SchemaTreeSchema, Table, TableKind,
 };
 
 pub async fn introspect(
@@ -59,6 +59,7 @@ async fn sqlite_tree(pool: &sqlx::SqlitePool) -> DbResult<SchemaTree> {
                     nullable: notnull == 0,
                     pk: pk > 0,
                     default: dflt,
+                    kind: None,
                 }
             })
             .collect();
@@ -160,7 +161,7 @@ async fn postgres_tree(pool: &sqlx::PgPool) -> DbResult<SchemaTree> {
         let mut out_tables = Vec::new();
         for (tname, kind) in tables {
             let cols = sqlx::query(
-                "SELECT column_name, data_type, is_nullable, column_default
+                "SELECT column_name, data_type, is_nullable, column_default, udt_name
                  FROM information_schema.columns
                  WHERE table_schema = $1 AND table_name = $2
                  ORDER BY ordinal_position",
@@ -170,6 +171,20 @@ async fn postgres_tree(pool: &sqlx::PgPool) -> DbResult<SchemaTree> {
             .fetch_all(pool)
             .await
             .unwrap_or_default();
+            let enum_type_names: Vec<String> = cols
+                .iter()
+                .filter_map(|c| {
+                    let data_type: String = c.try_get(1).unwrap_or_default();
+                    if data_type.eq_ignore_ascii_case("USER-DEFINED") {
+                        c.try_get::<String, _>(4).ok()
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            let enum_variants = postgres_enum_variants(pool, &enum_type_names)
+                .await
+                .unwrap_or_default();
             let pk_cols = sqlx::query(
                 "SELECT kcu.column_name
                  FROM information_schema.table_constraints tc
@@ -195,12 +210,19 @@ async fn postgres_tree(pool: &sqlx::PgPool) -> DbResult<SchemaTree> {
                     let ctype: String = c.try_get(1).unwrap_or_default();
                     let nul: String = c.try_get(2).unwrap_or_default();
                     let dflt: Option<String> = c.try_get(3).ok();
+                    let udt_name: String = c.try_get(4).unwrap_or_default();
+                    let kind = enum_variants
+                        .get(&udt_name)
+                        .map(|variants| ColumnKind::Enum {
+                            variants: variants.clone(),
+                        });
                     Column {
                         pk: pk_set.contains(&cname),
                         name: cname,
                         r#type: ctype,
                         nullable: nul.eq_ignore_ascii_case("YES"),
                         default: dflt,
+                        kind,
                     }
                 })
                 .collect();
@@ -264,12 +286,20 @@ async fn mysql_tree(pool: &sqlx::MySqlPool, database: Option<&str>) -> DbResult<
                 let nul: String = c.try_get(2).unwrap_or_default();
                 let dflt: Option<String> = c.try_get(3).ok();
                 let key: String = c.try_get(4).unwrap_or_default();
+                let kind = if ctype.to_ascii_lowercase().starts_with("enum(") {
+                    Some(ColumnKind::Enum {
+                        variants: parse_enum_column_type(&ctype),
+                    })
+                } else {
+                    None
+                };
                 Column {
                     name: cname,
                     r#type: ctype,
                     nullable: nul.eq_ignore_ascii_case("YES"),
                     pk: key.eq_ignore_ascii_case("PRI"),
                     default: dflt,
+                    kind,
                 }
             })
             .collect();
@@ -285,4 +315,82 @@ async fn mysql_tree(pool: &sqlx::MySqlPool, database: Option<&str>) -> DbResult<
     Ok(SchemaTree {
         schemas: vec![SchemaTreeSchema { name: db, tables }],
     })
+}
+
+async fn postgres_enum_variants(
+    pool: &sqlx::PgPool,
+    enum_type_names: &[String],
+) -> DbResult<BTreeMap<String, Vec<String>>> {
+    if enum_type_names.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    let rows = sqlx::query(
+        "SELECT t.typname, e.enumlabel
+         FROM pg_type t
+         JOIN pg_enum e ON e.enumtypid = t.oid
+         WHERE t.typtype = 'e' AND t.typname = ANY($1)
+         ORDER BY t.typname, e.enumsortorder",
+    )
+    .bind(enum_type_names)
+    .fetch_all(pool)
+    .await?;
+    let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for row in rows {
+        let typname: String = row.try_get(0).unwrap_or_default();
+        let label: String = row.try_get(1).unwrap_or_default();
+        out.entry(typname).or_default().push(label);
+    }
+    Ok(out)
+}
+
+pub(crate) fn parse_enum_column_type(column_type: &str) -> Vec<String> {
+    let Some(inner) = column_type
+        .trim()
+        .strip_prefix("enum(")
+        .and_then(|s| s.strip_suffix(')'))
+    else {
+        return Vec::new();
+    };
+
+    let mut variants = Vec::new();
+    let mut current = String::new();
+    let mut in_quote = false;
+    let mut chars = inner.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\'' if in_quote && chars.peek() == Some(&'\'') => {
+                current.push('\'');
+                chars.next();
+            }
+            '\'' => in_quote = !in_quote,
+            ',' if !in_quote => {
+                variants.push(current.trim().to_string());
+                current.clear();
+            }
+            _ => current.push(ch),
+        }
+    }
+    if !current.is_empty() || inner.ends_with("''") {
+        variants.push(current.trim().to_string());
+    }
+    variants
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_mysql_enum_column_type() {
+        assert_eq!(
+            parse_enum_column_type("enum('a','b','c')"),
+            vec!["a", "b", "c"]
+        );
+        assert_eq!(parse_enum_column_type("enum('a,b','c')"), vec!["a,b", "c"]);
+        assert_eq!(
+            parse_enum_column_type("enum('it''s','ok')"),
+            vec!["it's", "ok"]
+        );
+        assert!(parse_enum_column_type("varchar(10)").is_empty());
+    }
 }

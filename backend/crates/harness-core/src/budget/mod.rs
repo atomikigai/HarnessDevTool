@@ -65,6 +65,16 @@ impl Budget {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "ts-export", derive(TS))]
+#[cfg_attr(feature = "ts-export", ts(export, export_to = "../../../bindings/"))]
+pub struct AgentCost {
+    pub agent_id: String,
+    pub role: String,
+    pub sessions: usize,
+    pub spent_usd: f64,
+}
+
 /// Snapshot used by the budget pass to map a running PTY session back to its
 /// owning thread and the kind-specific cost reporter.
 ///
@@ -76,6 +86,8 @@ pub struct ActiveSession {
     pub session_id: String,
     pub cwd: PathBuf,
     pub kind: String,
+    pub agent_id: Option<String>,
+    pub role: Option<String>,
 }
 
 /// Pluggable provider of currently-active sessions. The server wires this to
@@ -106,6 +118,7 @@ pub trait BudgetWarningSink: Send + Sync {
 pub struct BudgetStore {
     dir: PathBuf,
     state: Arc<RwLock<HashMap<String, Budget>>>,
+    agents: Arc<RwLock<HashMap<String, Vec<AgentCost>>>>,
 }
 
 impl BudgetStore {
@@ -141,6 +154,7 @@ impl BudgetStore {
         Ok(Self {
             dir,
             state: Arc::new(RwLock::new(map)),
+            agents: Arc::new(RwLock::new(HashMap::new())),
         })
     }
 
@@ -155,6 +169,22 @@ impl BudgetStore {
 
     pub fn list(&self) -> HashMap<String, Budget> {
         self.state.read().expect("budget lock").clone()
+    }
+
+    pub fn agents_for(&self, thread_id: &str) -> Vec<AgentCost> {
+        self.agents
+            .read()
+            .expect("budget agents lock")
+            .get(thread_id)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    pub fn set_agents_breakdown(&self, thread_id: &str, agents: Vec<AgentCost>) {
+        self.agents
+            .write()
+            .expect("budget agents lock")
+            .insert(thread_id.to_string(), agents);
     }
 
     pub fn set_limit(&self, thread_id: &str, limit_usd: f64) -> Result<Budget, Error> {
@@ -249,6 +279,29 @@ mod tests {
         let s = BudgetStore::load(dir.path()).unwrap();
         let got = s.get("nope");
         assert_eq!(got, Budget::default());
+    }
+
+    #[test]
+    fn agents_for_returns_empty_when_unset() {
+        let dir = tempdir().unwrap();
+        let s = BudgetStore::load(dir.path()).unwrap();
+        assert!(s.agents_for("thr-1").is_empty());
+    }
+
+    #[test]
+    fn agents_breakdown_round_trips_in_memory() {
+        let dir = tempdir().unwrap();
+        let s = BudgetStore::load(dir.path()).unwrap();
+        let agents = vec![AgentCost {
+            agent_id: "a1".into(),
+            role: "generator".into(),
+            sessions: 2,
+            spent_usd: 1.25,
+        }];
+
+        s.set_agents_breakdown("thr-1", agents.clone());
+
+        assert_eq!(s.agents_for("thr-1"), agents);
     }
 
     #[test]

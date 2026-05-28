@@ -1,4 +1,5 @@
 mod app;
+mod approvals;
 mod config;
 mod error;
 mod routes;

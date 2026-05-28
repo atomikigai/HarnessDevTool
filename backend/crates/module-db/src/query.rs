@@ -22,6 +22,8 @@ use crate::value::{decode_mysql_row, decode_postgres_row, decode_sqlite_row};
 pub struct RunningQuery {
     pub engine: Engine,
     pub backend_pid: Option<i64>,
+    #[doc(hidden)]
+    pub pool: DbPool,
 }
 
 #[derive(Debug, Default)]
@@ -51,6 +53,7 @@ pub async fn run(
         RunningQuery {
             engine,
             backend_pid: None,
+            pool: pool.clone(),
         },
     );
 
@@ -80,8 +83,16 @@ pub async fn run(
                 (cols, dec)
             }
             DbPool::Postgres(p) => {
+                let mut conn = p.acquire().await.map_err(DbError::from)?;
+                let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+                    .fetch_one(&mut *conn)
+                    .await
+                    .map_err(DbError::from)?;
+                if let Some(mut entry) = registry.inner.get_mut(&query_id) {
+                    entry.backend_pid = Some(i64::from(pid));
+                }
                 let rows = sqlx::query(&effective)
-                    .fetch_all(p)
+                    .fetch_all(&mut *conn)
                     .await
                     .map_err(DbError::from)?;
                 let cols = first_row_cols_pg(rows.first());
@@ -89,8 +100,16 @@ pub async fn run(
                 (cols, dec)
             }
             DbPool::Mysql(p) => {
+                let mut conn = p.acquire().await.map_err(DbError::from)?;
+                let pid: i64 = sqlx::query_scalar("SELECT CAST(CONNECTION_ID() AS SIGNED)")
+                    .fetch_one(&mut *conn)
+                    .await
+                    .map_err(DbError::from)?;
+                if let Some(mut entry) = registry.inner.get_mut(&query_id) {
+                    entry.backend_pid = Some(pid);
+                }
                 let rows = sqlx::query(&effective)
-                    .fetch_all(p)
+                    .fetch_all(&mut *conn)
                     .await
                     .map_err(DbError::from)?;
                 let cols = first_row_cols_mysql(rows.first());

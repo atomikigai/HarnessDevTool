@@ -40,6 +40,7 @@ pub struct AgentSession {
     /// audit emit) — matches `meta.parent_session_id` / `meta.root_session_id`.
     parent_session_id_static: Option<String>,
     root_session_id_static: String,
+    role_static: Option<String>,
 }
 
 impl AgentSession {
@@ -60,6 +61,9 @@ impl AgentSession {
     }
     pub fn root_session_id_static(&self) -> &str {
         &self.root_session_id_static
+    }
+    pub fn role(&self) -> Option<String> {
+        self.role_static.clone()
     }
 }
 
@@ -170,7 +174,7 @@ impl AgentSession {
             status: SessionStatus::Running,
             started_at: Utc::now().timestamp_millis(),
             exit_code: None,
-            role,
+            role: role.clone(),
             parent_session_id: parent_session_id.clone(),
             root_session_id: root_session_id.clone(),
             detected_state: None,
@@ -193,6 +197,7 @@ impl AgentSession {
             cwd_static: cwd.clone(),
             parent_session_id_static: parent_session_id.clone(),
             root_session_id_static: root_session_id.clone(),
+            role_static: role.clone(),
         });
 
         // Emit started.

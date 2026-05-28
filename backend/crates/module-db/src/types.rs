@@ -1,6 +1,6 @@
 //! Wire types — REST request/response shapes and ts-rs exports.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -62,7 +62,7 @@ pub struct Connection {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ssl_mode: Option<SslMode>,
     #[serde(default)]
-    pub params: HashMap<String, String>,
+    pub params: BTreeMap<String, String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -86,7 +86,7 @@ pub struct ConnectionInput {
     #[serde(default)]
     pub ssl_mode: Option<SslMode>,
     #[serde(default)]
-    pub params: HashMap<String, String>,
+    pub params: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -122,6 +122,16 @@ pub struct Column {
     pub pk: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<ColumnKind>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "ts-export", derive(TS))]
+#[cfg_attr(feature = "ts-export", ts(export, export_to = "../../../bindings/"))]
+#[serde(tag = "kind")]
+pub enum ColumnKind {
+    Enum { variants: Vec<String> },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

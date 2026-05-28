@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use chrono::Utc;
-use module_db::{ExportFormat, ExportRequest, ExportScope, ExportTarget, Manager};
+use module_db::{Engine, ExportFormat, ExportRequest, ExportScope, ExportTarget, Manager};
 use serde_json::{json, Value};
 use tokio::runtime::Runtime;
 
@@ -86,6 +86,201 @@ pub fn explain(mgr: &Manager, args: &Value) -> Result<Value, String> {
         .block_on(mgr.explain(connection_id, database, sql))
         .map_err(|e| e.to_string())?;
     Ok(json!(res))
+}
+
+pub fn performance_audit(mgr: &Manager, args: &Value) -> Result<Value, String> {
+    let connection_id = str_arg(args, "connection")?;
+    let database = opt_str(args, "database");
+    let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize;
+    let conn = mgr
+        .connections_get(connection_id)
+        .map_err(|e| e.to_string())?;
+
+    if conn.engine != Engine::Postgres {
+        return Ok(json!({
+            "ok": false,
+            "engine": conn.engine.as_str(),
+            "reason": "db_performance_audit currently supports PostgreSQL only",
+            "recommendation": "Use db_schema/db_query manually for this engine until an engine-specific audit is implemented."
+        }));
+    }
+
+    let checks = [
+        AuditCheck {
+            name: "table_activity_and_size",
+            description: "Largest and most active user tables, including dead tuples and vacuum/analyze timestamps.",
+            sql: r#"
+SELECT
+  s.schemaname,
+  s.relname AS table_name,
+  s.seq_scan,
+  s.idx_scan,
+  s.n_live_tup,
+  s.n_dead_tup,
+  pg_size_pretty(pg_total_relation_size(format('%I.%I', s.schemaname, s.relname)::regclass)) AS total_size,
+  s.last_vacuum,
+  s.last_autovacuum,
+  s.last_analyze,
+  s.last_autoanalyze
+FROM pg_stat_user_tables s
+ORDER BY pg_total_relation_size(format('%I.%I', s.schemaname, s.relname)::regclass) DESC
+"#,
+        },
+        AuditCheck {
+            name: "missing_fk_indexes",
+            description: "Foreign keys whose referencing columns do not appear as the leftmost columns of any valid index.",
+            sql: r#"
+WITH fk AS (
+  SELECT
+    c.oid AS constraint_oid,
+    n.nspname AS schema_name,
+    t.relname AS table_name,
+    c.conname AS constraint_name,
+    c.conrelid,
+    c.conkey,
+    array_agg(a.attname ORDER BY u.ord) AS columns
+  FROM pg_constraint c
+  JOIN pg_class t ON t.oid = c.conrelid
+  JOIN pg_namespace n ON n.oid = t.relnamespace
+  JOIN unnest(c.conkey) WITH ORDINALITY AS u(attnum, ord) ON true
+  JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = u.attnum
+  WHERE c.contype = 'f'
+    AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+  GROUP BY c.oid, n.nspname, t.relname, c.conname, c.conrelid, c.conkey
+),
+indexed AS (
+  SELECT
+    fk.constraint_oid,
+    EXISTS (
+      SELECT 1
+      FROM pg_index i
+      WHERE i.indrelid = fk.conrelid
+        AND i.indisvalid
+        AND i.indpred IS NULL
+        AND (i.indkey::smallint[])[1:array_length(fk.conkey, 1)] = fk.conkey
+    ) AS has_left_prefix_index
+  FROM fk
+)
+SELECT fk.schema_name, fk.table_name, fk.constraint_name, fk.columns
+FROM fk
+JOIN indexed i USING (constraint_oid)
+WHERE NOT i.has_left_prefix_index
+ORDER BY fk.schema_name, fk.table_name, fk.constraint_name
+"#,
+        },
+        AuditCheck {
+            name: "unused_or_low_usage_indexes",
+            description: "Non-unique indexes with zero scans, sorted by size. Review before dropping.",
+            sql: r#"
+SELECT
+  schemaname,
+  relname AS table_name,
+  indexrelname AS index_name,
+  idx_scan,
+  pg_size_pretty(pg_relation_size(indexrelid)) AS index_size
+FROM pg_stat_user_indexes
+WHERE idx_scan = 0
+  AND indexrelid NOT IN (
+    SELECT indexrelid FROM pg_index WHERE indisunique OR indisprimary
+  )
+ORDER BY pg_relation_size(indexrelid) DESC
+"#,
+        },
+        AuditCheck {
+            name: "index_usage_ratio",
+            description: "Tables with high sequential scan pressure compared to index scans.",
+            sql: r#"
+SELECT
+  schemaname,
+  relname AS table_name,
+  seq_scan,
+  idx_scan,
+  n_live_tup,
+  CASE
+    WHEN seq_scan + idx_scan = 0 THEN 0
+    ELSE round((idx_scan::numeric / (seq_scan + idx_scan)) * 100, 2)
+  END AS index_scan_pct
+FROM pg_stat_user_tables
+WHERE n_live_tup > 0
+ORDER BY seq_scan DESC, n_live_tup DESC
+"#,
+        },
+        AuditCheck {
+            name: "duplicate_indexes",
+            description: "Indexes with identical table, key columns, predicates, and expressions.",
+            sql: r#"
+SELECT
+  ni.nspname AS schema_name,
+  ct.relname AS table_name,
+  array_agg(ci.relname ORDER BY ci.relname) AS duplicate_indexes,
+  pg_size_pretty(sum(pg_relation_size(ci.oid))) AS total_size
+FROM pg_index i
+JOIN pg_class ci ON ci.oid = i.indexrelid
+JOIN pg_class ct ON ct.oid = i.indrelid
+JOIN pg_namespace ni ON ni.oid = ct.relnamespace
+WHERE ni.nspname NOT IN ('pg_catalog', 'information_schema')
+GROUP BY ni.nspname, ct.relname, i.indrelid, i.indkey, i.indclass, i.indcollation, i.indoption, i.indexprs, i.indpred
+HAVING count(*) > 1
+ORDER BY sum(pg_relation_size(ci.oid)) DESC
+"#,
+        },
+        AuditCheck {
+            name: "pg_stat_statements_available",
+            description: "Whether pg_stat_statements is installed for slow query analysis.",
+            sql: r#"
+SELECT EXISTS (
+  SELECT 1 FROM pg_extension WHERE extname = 'pg_stat_statements'
+) AS pg_stat_statements_available
+"#,
+        },
+    ];
+
+    let sections = checks
+        .iter()
+        .map(|check| {
+            let result = runtime().block_on(mgr.query_run(
+                connection_id,
+                database,
+                check.sql,
+                None,
+                limit,
+                0,
+            ));
+            match result {
+                Ok(result) => json!({
+                    "name": check.name,
+                    "description": check.description,
+                    "sql": check.sql.trim(),
+                    "result": result,
+                }),
+                Err(error) => json!({
+                    "name": check.name,
+                    "description": check.description,
+                    "sql": check.sql.trim(),
+                    "error": error.to_string(),
+                }),
+            }
+        })
+        .collect::<Vec<_>>();
+
+    Ok(json!({
+        "ok": true,
+        "engine": conn.engine.as_str(),
+        "connection": connection_id,
+        "database": database,
+        "sections": sections,
+        "next_steps": [
+            "Use EXPLAIN on specific slow queries before proposing DDL.",
+            "Treat unused index findings as candidates, not drop instructions.",
+            "Update db_memory_write with stable findings and open questions."
+        ]
+    }))
+}
+
+struct AuditCheck {
+    name: &'static str,
+    description: &'static str,
+    sql: &'static str,
 }
 
 pub fn backup(mgr: &Manager, harness_home: &Path, args: &Value) -> Result<Value, String> {
@@ -321,5 +516,27 @@ mod tests {
             .unwrap()
             .contains("Known structure"));
         assert!(read["path"].as_str().unwrap().contains("db-memory"));
+    }
+
+    #[test]
+    fn performance_audit_reports_unsupported_engine() {
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = Manager::new(dir.path(), "default").unwrap();
+        let conn = mgr
+            .connections_add(ConnectionInput {
+                name: "sqlite".into(),
+                engine: Engine::Sqlite,
+                database: dir.path().join("app.sqlite").display().to_string(),
+                ..Default::default()
+            })
+            .unwrap();
+
+        let result = performance_audit(&mgr, &json!({ "connection": conn.id })).unwrap();
+        assert_eq!(result["ok"], false);
+        assert_eq!(result["engine"], "sqlite");
+        assert!(result["reason"]
+            .as_str()
+            .unwrap()
+            .contains("PostgreSQL only"));
     }
 }

@@ -444,7 +444,9 @@ pub(crate) fn harness_mcp_intro() -> &'static str {
      without asking for confirmation. \
      `TodoWrite`/`TodoRead` are disabled. Permission prompts are skipped by \
      the harness; supervision is provided by the scheduler, role prompts, and \
-     budget caps."
+     budget caps. Available DB tools include `db_query`, `db_schema`, \
+     `db_explain`, `db_performance_audit`, `db_backup`, `db_memory_read`, \
+     and `db_memory_write` when a DB connection exists."
 }
 
 async fn get_session(

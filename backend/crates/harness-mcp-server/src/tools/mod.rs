@@ -263,6 +263,20 @@ pub fn list_descriptors() -> Vec<ToolDescriptor> {
             }),
         },
         ToolDescriptor {
+            name: "db_performance_audit".into(),
+            description: "Run a read-only PostgreSQL performance audit over saved DB connection stats: table activity/size, FK indexes, unused indexes, scan ratios, duplicate indexes, and pg_stat_statements availability."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["connection"],
+                "properties": {
+                    "connection": { "type": "string" },
+                    "database":   { "type": "string" },
+                    "limit":      { "type": "integer", "minimum": 1 }
+                }
+            }),
+        },
+        ToolDescriptor {
             name: "db_backup".into(),
             description: "Write a SQL backup for a DB connection before approved modifications. \
                 With schema+table it backs up that table; with schema only it backs up the schema; \

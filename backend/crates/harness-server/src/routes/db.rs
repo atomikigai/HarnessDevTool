@@ -188,6 +188,7 @@ Available DB tools:
 - `db_schema`: inspect schemas, tables, columns, indexes, and foreign keys.
 - `db_query`: run SQL. Read-only SQL works directly. Non-read-only SQL requires `approved: true`.
 - `db_explain`: inspect query plans without changing data.
+- `db_performance_audit`: run a read-only PostgreSQL performance audit using catalog/statistics views.
 - `db_backup`: write a SQL backup file before approved modifications.
 - `db_memory_read`: read persistent DB architecture memory for this connection/database.
 - `db_memory_write`: update persistent DB architecture memory for future sessions.
@@ -205,7 +206,9 @@ Persistent DB memory:
 Security and behavior rules:
 - Start in READ-ONLY mode.
 - You already have the active connection context. Do not ask the user for a DB connection id, database name, or schema before using the provided defaults.
+- If the `db_*` tools are not visible or callable, stop and report: "DB MCP tools are not loaded for this session; restart the DB Agent/backend." Do not present schema-snapshot guesses as verified audit results.
 - If the user asks about a table by name, inspect it directly with `db_schema` or a read-only `db_query` using the provided default connection/database.
+- If the user asks about performance, start with `db_performance_audit` when the engine is PostgreSQL, then use targeted `db_query`/`db_explain` for follow-up.
 - Use `db_schema` and `db_query` for inspection. Always pass `connection: "{connection_id}"` and `database: "{database}"` when the tool accepts it.
 - Do not run INSERT, UPDATE, DELETE, ALTER, DROP, TRUNCATE, CREATE, migration, or maintenance statements unless the user explicitly asks for a modification.
 - Before any modification, run `db_backup` for the table/schema/database you will modify, share the backup file path, and only then proceed if the user explicitly confirms the write.
@@ -775,8 +778,10 @@ mod tests {
         assert!(prompt.contains("Do not ask the user for a DB connection id"));
         assert!(prompt.contains("Available DB tools"));
         assert!(prompt.contains("db_backup"));
+        assert!(prompt.contains("db_performance_audit"));
         assert!(prompt.contains("db_memory_read"));
         assert!(prompt.contains("db_memory_write"));
+        assert!(prompt.contains("DB MCP tools are not loaded"));
         assert!(prompt.contains("/tmp/db-memory/conn-1/main.md"));
         assert!(prompt.contains("connection id: conn-1"));
         assert!(prompt.contains("application_name"));

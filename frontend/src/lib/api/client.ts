@@ -20,6 +20,13 @@ export class ApiError extends Error {
   }
 }
 
+export class SpecEtagMismatchError extends ApiError {
+  constructor(body?: unknown) {
+    super(409, 'Spec etag mismatch', body);
+    this.name = 'SpecEtagMismatchError';
+  }
+}
+
 export interface ApiResponse<T> {
   data: T;
   protocolVersion: string | null;
@@ -160,6 +167,16 @@ export interface SetBudgetRequest {
   limit_usd: number;
 }
 
+function isEtagMismatch(body: unknown): boolean {
+  if (!body || typeof body !== 'object') return false;
+  const record = body as Record<string, unknown>;
+  return (
+    record.code === 'etag_mismatch' ||
+    record.error === 'etag_mismatch' ||
+    record.kind === 'etag_mismatch'
+  );
+}
+
 export const api = {
   health: (signal?: AbortSignal) => apiRequest<HealthResponse>('/health', { signal }),
   pauseAll: {
@@ -208,6 +225,22 @@ export const api = {
         body: title ? { title } : undefined,
         signal
       })
+  },
+  spec: {
+    get: (tid: string) => apiRequest<{ content: string; etag: string }>(`/threads/${tid}/spec`),
+    put: async (tid: string, body: { content: string; etag?: string }) => {
+      try {
+        return await apiRequest<{ etag: string; bytes: number; created: boolean }>(
+          `/threads/${tid}/spec`,
+          { method: 'PUT', body }
+        );
+      } catch (err) {
+        if (err instanceof ApiError && err.status === 409 && isEtagMismatch(err.body)) {
+          throw new SpecEtagMismatchError(err.body);
+        }
+        throw err;
+      }
+    }
   },
   getBudget: (threadId: string, signal?: AbortSignal) =>
     apiRequest<BudgetView>(`/threads/${threadId}/budget`, { signal }),

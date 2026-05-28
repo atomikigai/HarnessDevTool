@@ -15,9 +15,16 @@ export interface SubscribeOptions {
 }
 
 function buildUrl(path: string): string {
-  return path.startsWith('http')
-    ? path
-    : `${API_BASE.endsWith('/') ? API_BASE.slice(0, -1) : API_BASE}${path.startsWith('/') ? path : `/${path}`}`;
+  if (path.startsWith('http')) return path;
+  const base = API_BASE.endsWith('/') ? API_BASE.slice(0, -1) : API_BASE;
+  if (base && path.startsWith(`${base}/`)) return path;
+  if (base.startsWith('http')) {
+    const url = new URL(base);
+    if (url.pathname !== '/' && path.startsWith(`${url.pathname}/`)) {
+      return `${url.origin}${path}`;
+    }
+  }
+  return `${base}${path.startsWith('/') ? path : `/${path}`}`;
 }
 
 function tryParse(data: string): unknown {

@@ -35,6 +35,7 @@ export {
   Network,
   Paperclip,
   RotateCcw,
+  Save,
   Send,
   Copy,
   Database,

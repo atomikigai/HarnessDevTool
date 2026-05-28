@@ -40,18 +40,28 @@ pub fn create(
     server_url: Option<&str>,
     args: &Value,
 ) -> Result<Value, String> {
-    let thread_id = opt_str(args, "thread_id").unwrap_or(default_thread).to_string();
+    let thread_id = opt_str(args, "thread_id")
+        .unwrap_or(default_thread)
+        .to_string();
     let title = str_arg(args, "title")?.to_string();
     let parent = opt_str(args, "parent").map(String::from);
     let depends_on: Vec<String> = args
         .get("depends_on")
         .and_then(|v| v.as_array())
-        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_default();
     let labels: Vec<String> = args
         .get("labels")
         .and_then(|v| v.as_array())
-        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_default();
     let acceptance: Vec<AcceptanceCheck> = args
         .get("acceptance")
@@ -149,10 +159,7 @@ pub fn claim(store: &TaskStore, args: &Value) -> Result<Value, String> {
     let thread_id = str_arg(args, "thread_id")?;
     let task_id = str_arg(args, "task_id")?;
     let agent_id = str_arg(args, "agent_id")?;
-    let ttl_s = args
-        .get("ttl_s")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(60);
+    let ttl_s = args.get("ttl_s").and_then(|v| v.as_u64()).unwrap_or(60);
     match store
         .claim(thread_id, task_id, agent_id, Duration::from_secs(ttl_s))
         .map_err(map_err)?
@@ -170,9 +177,7 @@ pub fn renew(store: &TaskStore, args: &Value) -> Result<Value, String> {
     let thread_id = str_arg(args, "thread_id")?;
     let task_id = str_arg(args, "task_id")?;
     let agent_id = str_arg(args, "agent_id")?;
-    let lease = store
-        .renew(thread_id, task_id, agent_id)
-        .map_err(map_err)?;
+    let lease = store.renew(thread_id, task_id, agent_id).map_err(map_err)?;
     Ok(json!({ "lease": lease }))
 }
 
@@ -182,8 +187,8 @@ pub fn update(store: &TaskStore, agent_id: &str, args: &Value) -> Result<Value, 
     let patch_v = args
         .get("patch")
         .ok_or_else(|| "missing arg: patch".to_string())?;
-    let patch: TaskPatch = serde_json::from_value(patch_v.clone())
-        .map_err(|e| format!("invalid patch: {e}"))?;
+    let patch: TaskPatch =
+        serde_json::from_value(patch_v.clone()).map_err(|e| format!("invalid patch: {e}"))?;
     let t = store
         .patch(thread_id, task_id, patch, agent_id)
         .map_err(map_err)?;

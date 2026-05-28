@@ -122,9 +122,7 @@ fn build_spawn_opts(
     let mcp_bin = match state.mcp_server_binary.as_ref() {
         Some(p) => p.clone(),
         None => {
-            tracing::warn!(
-                "spawning {kind} without MCP injection (no harness-mcp-server binary)"
-            );
+            tracing::warn!("spawning {kind} without MCP injection (no harness-mcp-server binary)");
             return Ok((SpawnOpts::default(), None));
         }
     };

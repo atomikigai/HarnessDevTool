@@ -87,9 +87,7 @@ impl PoolCache {
         let conn = store.get(connection_id)?;
         let key_db = match conn.engine {
             Engine::Sqlite => None,
-            _ => database
-                .filter(|d| !d.is_empty())
-                .map(|d| d.to_string()),
+            _ => database.filter(|d| !d.is_empty()).map(|d| d.to_string()),
         };
         let key: PoolKey = (connection_id.to_string(), key_db.clone());
 

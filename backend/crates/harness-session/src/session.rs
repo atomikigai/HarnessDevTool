@@ -97,13 +97,17 @@ impl AgentSession {
         // C.UTF-8 is universally available without locale-gen. Only set if the
         // parent didn't already provide an explicit UTF-8 locale.
         let lang_ok = std::env::var("LANG")
-            .map(|v| v.to_ascii_uppercase().contains("UTF-8") || v.to_ascii_uppercase().contains("UTF8"))
+            .map(|v| {
+                v.to_ascii_uppercase().contains("UTF-8") || v.to_ascii_uppercase().contains("UTF8")
+            })
             .unwrap_or(false);
         if !lang_ok {
             cmd.env("LANG", "C.UTF-8");
         }
         let lc_all_ok = std::env::var("LC_ALL")
-            .map(|v| v.to_ascii_uppercase().contains("UTF-8") || v.to_ascii_uppercase().contains("UTF8"))
+            .map(|v| {
+                v.to_ascii_uppercase().contains("UTF-8") || v.to_ascii_uppercase().contains("UTF8")
+            })
             .unwrap_or(false);
         if !lc_all_ok {
             cmd.env("LC_ALL", "C.UTF-8");

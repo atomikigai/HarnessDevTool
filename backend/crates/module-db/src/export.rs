@@ -31,9 +31,7 @@ use crate::error::{DbError, DbResult};
 use crate::pool::DbPool;
 use crate::schema::introspect;
 use crate::types::{Column, Engine, Table};
-use crate::value::{
-    decode_mysql_row, decode_postgres_row, decode_sqlite_row, TaggedValue, Value,
-};
+use crate::value::{decode_mysql_row, decode_postgres_row, decode_sqlite_row, TaggedValue, Value};
 
 /// Output format for an export.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -274,9 +272,7 @@ async fn render_single_table(
     scope: ExportScope,
 ) -> DbResult<Vec<u8>> {
     match format {
-        ExportFormat::Json => {
-            render_table_json(pool, engine, schema, table, selected, scope).await
-        }
+        ExportFormat::Json => render_table_json(pool, engine, schema, table, selected, scope).await,
         ExportFormat::SqlInsert => {
             render_table_sql(pool, engine, schema, table, selected, scope).await
         }
@@ -682,9 +678,9 @@ fn sql_literal(engine: Engine, v: &Value) -> String {
         Value::Text(s) => quote_sql_string(s),
         Value::Tagged(t) => match t {
             TaggedValue::Decimal(s) => s.clone(),
-            TaggedValue::Date(s)
-            | TaggedValue::Time(s)
-            | TaggedValue::DateTime(s) => quote_sql_string(s),
+            TaggedValue::Date(s) | TaggedValue::Time(s) | TaggedValue::DateTime(s) => {
+                quote_sql_string(s)
+            }
             TaggedValue::Bytes(b64) => {
                 use base64::Engine as _;
                 let bytes = base64::engine::general_purpose::STANDARD

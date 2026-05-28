@@ -53,9 +53,7 @@ async fn connection_crud_roundtrip() {
 async fn schema_and_query_pagination() {
     let (mgr, dir) = fresh_manager();
     let db_path = dir.path().join("test2.db");
-    let c = mgr
-        .connections_add(sqlite_input(&db_path, "two"))
-        .unwrap();
+    let c = mgr.connections_add(sqlite_input(&db_path, "two")).unwrap();
 
     // Create a table and rows via query_run.
     mgr.query_run(
@@ -159,9 +157,7 @@ async fn row_crud_composite_pk() {
 async fn row_insert_refuses_pkless_table() {
     let (mgr, dir) = fresh_manager();
     let db_path = dir.path().join("test4.db");
-    let c = mgr
-        .connections_add(sqlite_input(&db_path, "four"))
-        .unwrap();
+    let c = mgr.connections_add(sqlite_input(&db_path, "four")).unwrap();
     mgr.query_run(
         &c.id,
         None,
@@ -194,16 +190,9 @@ async fn sqlite_query_run_ignores_database_override() {
         .connections_add(sqlite_input(&db_path, "override"))
         .unwrap();
 
-    mgr.query_run(
-        &c.id,
-        None,
-        "CREATE TABLE t (n INTEGER)",
-        None,
-        10,
-        0,
-    )
-    .await
-    .unwrap();
+    mgr.query_run(&c.id, None, "CREATE TABLE t (n INTEGER)", None, 10, 0)
+        .await
+        .unwrap();
     mgr.query_run(&c.id, None, "INSERT INTO t VALUES (1)", None, 10, 0)
         .await
         .unwrap();

@@ -318,10 +318,7 @@ impl SessionSpawner for ManagerSpawner {
         let binary = match self.binaries.get(&kind).cloned() {
             Some(b) => b,
             None => {
-                return SpawnResult::Failed(format!(
-                    "no binary detected for kind {}",
-                    req.kind
-                ))
+                return SpawnResult::Failed(format!("no binary detected for kind {}", req.kind))
             }
         };
 
@@ -375,9 +372,7 @@ impl SessionSpawner for ManagerSpawner {
                         }
                     }
                 });
-                if let Err(e) =
-                    std::fs::write(&path, serde_json::to_vec_pretty(&config).unwrap())
-                {
+                if let Err(e) = std::fs::write(&path, serde_json::to_vec_pretty(&config).unwrap()) {
                     return SpawnResult::Failed(format!("write mcp config: {e}"));
                 }
                 opts.mcp_config_path = Some(path.clone());
@@ -386,13 +381,10 @@ impl SessionSpawner for ManagerSpawner {
             }
         }
 
-        match self.manager.spawn_with_opts(
-            kind,
-            binary,
-            req.thread_id,
-            cwd,
-            opts,
-        ) {
+        match self
+            .manager
+            .spawn_with_opts(kind, binary, req.thread_id, cwd, opts)
+        {
             Ok(session) => {
                 let sid = session.id().to_string();
                 if let Some(p) = config_path {

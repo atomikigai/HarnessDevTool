@@ -19,10 +19,7 @@ use crate::error::{ApiError, ApiResult};
 use crate::state::AppState;
 
 pub fn router() -> Router<Arc<AppState>> {
-    Router::new().route(
-        "/api/threads/:tid/budget",
-        get(get_budget).post(set_budget),
-    )
+    Router::new().route("/api/threads/:tid/budget", get(get_budget).post(set_budget))
 }
 
 #[derive(Debug, Deserialize, Serialize)]

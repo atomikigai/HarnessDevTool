@@ -83,9 +83,7 @@ fn map_db_err(e: module_db::DbError) -> ApiError {
     }
 }
 
-async fn list_connections(
-    State(s): State<Arc<AppState>>,
-) -> ApiResult<Json<Vec<Connection>>> {
+async fn list_connections(State(s): State<Arc<AppState>>) -> ApiResult<Json<Vec<Connection>>> {
     s.db.connections_list().map(Json).map_err(map_db_err)
 }
 
@@ -258,9 +256,14 @@ async fn delete_row(
     Path((id, table)): Path<(String, String)>,
     Json(b): Json<RowDeleteBody>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let n = s
-        .db
-        .row_delete(&id, b.database.as_deref(), b.schema.as_deref(), &table, b.pk)
+    let n =
+        s.db.row_delete(
+            &id,
+            b.database.as_deref(),
+            b.schema.as_deref(),
+            &table,
+            b.pk,
+        )
         .await
         .map_err(map_db_err)?;
     Ok(Json(serde_json::json!({ "affected": n })))
@@ -282,4 +285,3 @@ async fn duplicate_row(
     .map(Json)
     .map_err(map_db_err)
 }
-

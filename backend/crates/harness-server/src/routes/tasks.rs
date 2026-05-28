@@ -1,4 +1,3 @@
-use std::sync::Arc;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::get;
@@ -6,6 +5,7 @@ use axum::{Json, Router};
 use harness_core::{AcceptanceCheck, ListFilters, Task, TaskDraft, TaskPatch, TaskStatus};
 use serde::Deserialize;
 use std::str::FromStr;
+use std::sync::Arc;
 
 use crate::error::{ApiError, ApiResult};
 use crate::state::AppState;

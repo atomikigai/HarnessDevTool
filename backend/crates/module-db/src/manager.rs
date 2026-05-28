@@ -13,9 +13,7 @@ use crate::query::{QueryRegistry, RunningQuery};
 use crate::row as row_ops;
 use crate::schema::introspect;
 use crate::storage::ConnectionsStore;
-use crate::types::{
-    Connection, ConnectionInput, Engine, QueryResult, Row, SchemaTree, TestResult,
-};
+use crate::types::{Connection, ConnectionInput, Engine, QueryResult, Row, SchemaTree, TestResult};
 use crate::value::Value;
 
 pub struct Manager {
@@ -154,7 +152,11 @@ impl Manager {
             .pools
             .get_or_init_for(&self.store, connection_id, database)
             .await?;
-        let ps = if page_size == 0 { 100 } else { page_size.min(10_000) };
+        let ps = if page_size == 0 {
+            100
+        } else {
+            page_size.min(10_000)
+        };
         let _ = conn;
         crate::query::run(&pool, sql, ps, page, &self.queries).await
     }
@@ -165,7 +167,10 @@ impl Manager {
         let Some((_, rq)) = self.queries.inner.remove(query_id) else {
             return Ok(false);
         };
-        let RunningQuery { engine, backend_pid } = rq;
+        let RunningQuery {
+            engine,
+            backend_pid,
+        } = rq;
         match (engine, backend_pid) {
             (Engine::Postgres, Some(pid)) => {
                 // Aux connection — not implemented in this slice.
@@ -273,11 +278,7 @@ impl Manager {
     }
 
     /// Run an `EXPLAIN`-style query. Engine-specific prefix.
-    pub async fn explain(
-        &self,
-        connection_id: &str,
-        sql: &str,
-    ) -> DbResult<QueryResult> {
+    pub async fn explain(&self, connection_id: &str, sql: &str) -> DbResult<QueryResult> {
         let conn = self.store.get(connection_id)?;
         let prefix = match conn.engine {
             Engine::Sqlite => "EXPLAIN QUERY PLAN",
@@ -309,5 +310,3 @@ async fn probe_server_version(pool: &DbPool) -> Option<String> {
             .and_then(|r| r.try_get::<String, _>(0).ok()),
     }
 }
-
-

@@ -255,7 +255,10 @@ mod tests {
     fn claude_without_mcp_only_pins_session_id() {
         let opts = SpawnOpts::default();
         let args = build_extra_args(AgentKind::Claude, &opts, "sid-123");
-        assert_eq!(args, vec!["--session-id".to_string(), "sid-123".to_string()]);
+        assert_eq!(
+            args,
+            vec!["--session-id".to_string(), "sid-123".to_string()]
+        );
         assert!(!args.iter().any(|a| a == "--disallowed-tools"));
         assert!(!args.iter().any(|a| a == "--mcp-config"));
     }
@@ -296,7 +299,10 @@ mod tests {
             ..SpawnOpts::default()
         };
         let args = build_extra_args(AgentKind::Claude, &opts, "sid-i");
-        let idx = args.iter().position(|a| a == "--append-system-prompt").unwrap();
+        let idx = args
+            .iter()
+            .position(|a| a == "--append-system-prompt")
+            .unwrap();
         assert_eq!(args[idx + 1], "harness MCP available: task_create, ...");
     }
 
@@ -320,6 +326,9 @@ mod tests {
             ..SpawnOpts::default()
         };
         let args = build_extra_args(AgentKind::Codex, &opts, "sid-c");
-        assert!(args.is_empty(), "codex must not get any extra flags yet, got {args:?}");
+        assert!(
+            args.is_empty(),
+            "codex must not get any extra flags yet, got {args:?}"
+        );
     }
 }

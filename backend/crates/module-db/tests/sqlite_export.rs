@@ -46,7 +46,9 @@ async fn seed(mgr: &Manager, conn_id: &str) {
             email,
             note.replace('\'', "''")
         );
-        mgr.query_run(conn_id, None, &sql, None, 10, 0).await.unwrap();
+        mgr.query_run(conn_id, None, &sql, None, 10, 0)
+            .await
+            .unwrap();
     }
     // Row with a SQL NULL note.
     mgr.query_run(
@@ -161,7 +163,10 @@ async fn sql_export_schema_only_and_schema_and_data() {
     assert!(s.contains("CREATE TABLE \"contacts\""), "no CREATE: {s}");
     assert!(s.contains("\"id\""), "no id column: {s}");
     assert!(s.contains("PRIMARY KEY (\"id\")"), "no PK clause: {s}");
-    assert!(!s.contains("INSERT INTO"), "schema-only must not emit INSERT");
+    assert!(
+        !s.contains("INSERT INTO"),
+        "schema-only must not emit INSERT"
+    );
 
     // schema+data
     let req = ExportRequest {
@@ -182,10 +187,7 @@ async fn sql_export_schema_only_and_schema_and_data() {
         "no INSERT batch: {s}"
     );
     // Single quotes in stored value were 'hello' — must be doubled.
-    assert!(
-        s.contains("''hello''"),
-        "missing single-quote escape: {s}"
-    );
+    assert!(s.contains("''hello''"), "missing single-quote escape: {s}");
 }
 
 #[tokio::test]
@@ -331,7 +333,10 @@ async fn schema_target_json_includes_all_tables_csv_refused() {
         format: ExportFormat::Csv,
         scope: ExportScope::DataOnly,
     };
-    let err = mgr.export(&c.id, req).await.expect_err("csv schema refused");
+    let err = mgr
+        .export(&c.id, req)
+        .await
+        .expect_err("csv schema refused");
     let msg = err.to_string();
     assert!(
         msg.to_lowercase().contains("csv") && msg.to_lowercase().contains("schema"),

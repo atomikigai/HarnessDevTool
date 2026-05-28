@@ -12,7 +12,9 @@ use tempfile::TempDir;
 /// Very small DSN parser — good enough for typical test URLs without
 /// pulling in the `url` crate.
 fn parse_pg_url(url: &str) -> Option<ConnectionInput> {
-    let rest = url.strip_prefix("postgres://").or_else(|| url.strip_prefix("postgresql://"))?;
+    let rest = url
+        .strip_prefix("postgres://")
+        .or_else(|| url.strip_prefix("postgresql://"))?;
     let (cred_host, db) = rest.split_once('/').unwrap_or((rest, ""));
     let (cred, host_port) = match cred_host.rsplit_once('@') {
         Some((c, h)) => (Some(c), h),
@@ -79,7 +81,19 @@ async fn pg_decodes_engine_specific_types() {
     assert_eq!(res.rows.len(), 1);
     let row = &res.rows[0];
     assert!(matches!(row[0], Value::Text(_)), "uuid: {:?}", row[0]);
-    assert!(matches!(row[1], Value::Tagged(TaggedValue::Json(_))), "jsonb: {:?}", row[1]);
-    assert!(matches!(row[2], Value::Tagged(TaggedValue::Decimal(_))), "numeric: {:?}", row[2]);
-    assert!(matches!(row[3], Value::Tagged(TaggedValue::DateTime(_))), "timestamptz: {:?}", row[3]);
+    assert!(
+        matches!(row[1], Value::Tagged(TaggedValue::Json(_))),
+        "jsonb: {:?}",
+        row[1]
+    );
+    assert!(
+        matches!(row[2], Value::Tagged(TaggedValue::Decimal(_))),
+        "numeric: {:?}",
+        row[2]
+    );
+    assert!(
+        matches!(row[3], Value::Tagged(TaggedValue::DateTime(_))),
+        "timestamptz: {:?}",
+        row[3]
+    );
 }

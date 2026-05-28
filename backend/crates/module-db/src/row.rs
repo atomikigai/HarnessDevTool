@@ -208,9 +208,7 @@ pub async fn insert(
             // MySQL: re-select by LAST_INSERT_ID() for single auto-PK, else by provided PKs.
             if pks.len() == 1 && last_id != 0 {
                 let pk = &pks[0];
-                let sel = format!(
-                    "SELECT * FROM {qtable} WHERE {qident}{pk}{qident} = ? LIMIT 1"
-                );
+                let sel = format!("SELECT * FROM {qtable} WHERE {qident}{pk}{qident} = ? LIMIT 1");
                 let row = sqlx::query(&sel).bind(last_id).fetch_one(p).await?;
                 let cells = named_map_mysql(&row);
                 return Ok(Row { cells });

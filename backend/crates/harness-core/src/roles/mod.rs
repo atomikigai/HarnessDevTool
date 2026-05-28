@@ -107,8 +107,7 @@ fn baseline_roles() -> Vec<Role> {
             name: "planner".into(),
             cli: AgentKind::Claude,
             prompt_template:
-                "You are the planner. Read spec.md and create tasks via task.* MCP tools."
-                    .into(),
+                "You are the planner. Read spec.md and create tasks via task.* MCP tools.".into(),
             enabled_tools: vec!["task.*".into(), "spec.*".into()],
             disabled_tools: vec![],
         },
@@ -127,11 +126,7 @@ fn baseline_roles() -> Vec<Role> {
             prompt_template:
                 "You are the evaluator. Verify submitted artifacts against acceptance checks."
                     .into(),
-            enabled_tools: vec![
-                "task.*".into(),
-                "spec.read".into(),
-                "artifact.read".into(),
-            ],
+            enabled_tools: vec!["task.*".into(), "spec.read".into(), "artifact.read".into()],
             disabled_tools: vec![],
         },
     ]

@@ -1,0 +1,288 @@
+use std::fs;
+use std::path::PathBuf;
+use std::sync::{Mutex, RwLock};
+
+use serde::{Deserialize, Serialize};
+use toml_edit::{value, ArrayOfTables, DocumentMut, Item, Table};
+
+use crate::{PolicyResult, Rule};
+
+#[cfg(feature = "ts-export")]
+use ts_rs::TS;
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "ts-export", derive(TS))]
+#[cfg_attr(feature = "ts-export", ts(export, export_to = "../../../bindings/"))]
+#[serde(rename_all = "lowercase")]
+pub enum Decision {
+    #[default]
+    Allow,
+    Deny,
+    Ask,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "ts-export", derive(TS))]
+#[cfg_attr(feature = "ts-export", ts(export, export_to = "../../../bindings/"))]
+#[serde(rename_all = "snake_case")]
+pub enum RememberScope {
+    ThisCall,
+    ToolOnly,
+    ToolAndArgs,
+}
+
+pub struct PolicyEngine {
+    path: PathBuf,
+    state: RwLock<PolicyFile>,
+    write_lock: Mutex<()>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PolicyFile {
+    #[serde(default = "default_decision")]
+    pub default: Decision,
+    #[serde(default = "default_timeout")]
+    pub timeout_secs: u64,
+    #[serde(default)]
+    pub rules: Vec<Rule>,
+}
+
+impl Default for PolicyFile {
+    fn default() -> Self {
+        Self {
+            default: default_decision(),
+            timeout_secs: default_timeout(),
+            rules: Vec::new(),
+        }
+    }
+}
+
+fn default_decision() -> Decision {
+    Decision::Allow
+}
+
+fn default_timeout() -> u64 {
+    60
+}
+
+impl PolicyEngine {
+    pub fn load(path: PathBuf) -> PolicyResult<Self> {
+        let state = read_policy_file(&path)?;
+        Ok(Self::from_state(path, state))
+    }
+
+    pub fn default_at(path: PathBuf) -> Self {
+        Self::from_state(path, PolicyFile::default())
+    }
+
+    fn from_state(path: PathBuf, state: PolicyFile) -> Self {
+        Self {
+            path,
+            state: RwLock::new(state),
+            write_lock: Mutex::new(()),
+        }
+    }
+
+    pub fn evaluate(&self, tool: &str, args: &serde_json::Value) -> Decision {
+        let state = self.state.read().expect("policy state rwlock");
+        state
+            .rules
+            .iter()
+            .find(|rule| rule.matches(tool, args))
+            .map(|rule| rule.decision.clone())
+            .unwrap_or_else(|| state.default.clone())
+    }
+
+    pub fn timeout_secs(&self) -> u64 {
+        self.state.read().expect("policy state rwlock").timeout_secs
+    }
+
+    pub fn append_rule(&self, rule: Rule) -> PolicyResult<()> {
+        let _guard = self.write_lock.lock().expect("policy write mutex");
+        if let Some(parent) = self.path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        let text = match fs::read_to_string(&self.path) {
+            Ok(text) => text,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(e) => return Err(e.into()),
+        };
+        let mut doc = if text.trim().is_empty() {
+            DocumentMut::new()
+        } else {
+            text.parse::<DocumentMut>()?
+        };
+
+        if !doc.as_table().contains_key("rules") {
+            doc["rules"] = Item::ArrayOfTables(ArrayOfTables::new());
+        }
+        let rules = doc["rules"]
+            .as_array_of_tables_mut()
+            .expect("rules should be an array of tables");
+        let mut table = Table::new();
+        table["tool"] = value(rule.tool);
+        table["decision"] = value(match rule.decision {
+            Decision::Allow => "allow",
+            Decision::Deny => "deny",
+            Decision::Ask => "ask",
+        });
+        if !rule.args_match.is_empty() {
+            let mut args = Table::new();
+            for (key, pattern) in rule.args_match {
+                args[&key] = value(pattern);
+            }
+            table["args_match"] = Item::Table(args);
+        }
+        rules.push(table);
+        fs::write(&self.path, doc.to_string())?;
+
+        let reloaded = read_policy_file(&self.path)?;
+        *self.state.write().expect("policy state rwlock") = reloaded;
+        Ok(())
+    }
+}
+
+fn read_policy_file(path: &PathBuf) -> PolicyResult<PolicyFile> {
+    match fs::read_to_string(path) {
+        Ok(text) => Ok(toml_edit::de::from_str::<PolicyFile>(&text)?),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(PolicyFile::default()),
+        Err(e) => Err(e.into()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use serde_json::json;
+
+    use super::*;
+
+    fn tmp_path(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "harness-policy-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        dir.join(name)
+    }
+
+    #[test]
+    fn evaluate_default_allow_when_no_rules() {
+        let engine = PolicyEngine::load(tmp_path("missing.toml")).unwrap();
+        assert_eq!(engine.evaluate("task_list", &json!({})), Decision::Allow);
+    }
+
+    #[test]
+    fn evaluate_first_matching_rule_wins() {
+        let path = tmp_path("policy.toml");
+        fs::write(
+            &path,
+            r#"
+[[rules]]
+tool = "db_query"
+decision = "ask"
+
+[[rules]]
+tool = "db_query"
+decision = "deny"
+"#,
+        )
+        .unwrap();
+        let engine = PolicyEngine::load(path).unwrap();
+        assert_eq!(engine.evaluate("db_query", &json!({})), Decision::Ask);
+    }
+
+    #[test]
+    fn evaluate_args_match_glob_prefix_suffix() {
+        let path = tmp_path("policy.toml");
+        fs::write(
+            &path,
+            r#"
+[[rules]]
+tool = "spec_write"
+decision = "deny"
+
+[rules.args_match]
+path = "docs/*md"
+"#,
+        )
+        .unwrap();
+        let engine = PolicyEngine::load(path).unwrap();
+        assert_eq!(
+            engine.evaluate("spec_write", &json!({ "path": "docs/readme.md" })),
+            Decision::Deny
+        );
+        assert_eq!(
+            engine.evaluate("spec_write", &json!({ "path": "src/readme.md" })),
+            Decision::Allow
+        );
+    }
+
+    #[test]
+    fn evaluate_args_match_missing_key_means_no_match() {
+        let path = tmp_path("policy.toml");
+        fs::write(
+            &path,
+            r#"
+[[rules]]
+tool = "spec_write"
+decision = "deny"
+
+[rules.args_match]
+path = "*secret*"
+"#,
+        )
+        .unwrap();
+        let engine = PolicyEngine::load(path).unwrap();
+        assert_eq!(engine.evaluate("spec_write", &json!({})), Decision::Allow);
+    }
+
+    #[test]
+    fn append_rule_creates_file_if_missing() {
+        let path = tmp_path("policy.toml");
+        let engine = PolicyEngine::load(path.clone()).unwrap();
+        engine
+            .append_rule(Rule {
+                tool: "db_query".to_string(),
+                args_match: BTreeMap::new(),
+                decision: Decision::Ask,
+            })
+            .unwrap();
+        assert!(path.exists());
+        assert_eq!(engine.evaluate("db_query", &json!({})), Decision::Ask);
+    }
+
+    #[test]
+    fn append_rule_preserves_existing_content() {
+        let path = tmp_path("policy.toml");
+        fs::write(
+            &path,
+            r#"# keep this comment
+default = "allow"
+
+[[rules]]
+tool = "task_list"
+decision = "allow"
+"#,
+        )
+        .unwrap();
+        let engine = PolicyEngine::load(path.clone()).unwrap();
+        engine
+            .append_rule(Rule {
+                tool: "db_query".to_string(),
+                args_match: BTreeMap::new(),
+                decision: Decision::Deny,
+            })
+            .unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.contains("# keep this comment"));
+        assert!(text.contains("tool = \"task_list\""));
+        assert!(text.contains("tool = \"db_query\""));
+    }
+}

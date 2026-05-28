@@ -1,6 +1,7 @@
 //! Maps incoming JSON-RPC requests to handlers.
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 use serde_json::{json, Value};
 use tracing::warn;
@@ -103,6 +104,10 @@ impl Dispatcher {
         };
         let args = params.get("arguments").cloned().unwrap_or(json!({}));
 
+        if let Some(msg) = self.check_tool_policy(&name, &args) {
+            return result_response(id, wrap_error(&msg));
+        }
+
         let outcome: Result<Value, String> = match name.as_str() {
             "task_create" => tasks::create(
                 &self.store,
@@ -141,6 +146,44 @@ impl Dispatcher {
                 // reserved for protocol-level failures). This keeps the agent
                 // loop alive and surfaces a structured message to the model.
                 result_response(id, wrap_error(&msg))
+            }
+        }
+    }
+
+    fn check_tool_policy(&self, tool_name: &str, tool_args: &Value) -> Option<String> {
+        let server_url = self.server_url.as_deref()?;
+        let payload = json!({
+            "tool": tool_name,
+            "args": tool_args,
+            "thread_id": self.thread_id,
+            "agent_id": self.agent_id,
+        });
+        let url = format!("{}/api/approvals/check", server_url.trim_end_matches('/'));
+        match ureq::post(&url)
+            .timeout(Duration::from_secs(120))
+            .send_json(payload)
+        {
+            Ok(resp) => match resp.into_json::<Value>() {
+                Ok(value) => match value.get("decision").and_then(|v| v.as_str()) {
+                    Some("allow") => None,
+                    Some("deny") => Some(format!("tool call denied by policy: {tool_name}")),
+                    Some(other) => {
+                        warn!(decision = %other, "approval check returned unknown decision, continuing");
+                        None
+                    }
+                    None => {
+                        warn!("approval check response missing decision, continuing");
+                        None
+                    }
+                },
+                Err(e) => {
+                    warn!(error = %e, "approval check response parse failed, continuing");
+                    None
+                }
+            },
+            Err(e) => {
+                warn!(error = %e, "approval check failed, continuing");
+                None
             }
         }
     }

@@ -11,10 +11,12 @@ use harness_core::{
     PauseFlag, RolesRegistry, Scheduler, SessionSpawner, SpawnRequest, SpawnResult, Store,
     TaskStore,
 };
+use harness_policy::PolicyEngine;
 use harness_session::{AgentKind, Manager, SpawnOpts};
 use serde_json::json;
 use tokio::sync::broadcast;
 
+use crate::approvals::ApprovalStore;
 use crate::config::Config;
 
 /// Shared application state.
@@ -26,6 +28,8 @@ pub struct AppState {
     pub roles: Arc<RolesRegistry>,
     pub pause: Arc<PauseFlag>,
     pub budgets: Arc<BudgetStore>,
+    pub policy: Arc<PolicyEngine>,
+    pub approvals: Arc<ApprovalStore>,
     pub db: Arc<module_db::Manager>,
     #[allow(dead_code)]
     pub scheduler: Arc<Scheduler>,
@@ -61,6 +65,16 @@ impl AppState {
         let roles = Arc::new(RolesRegistry::load(&cfg.home)?);
         let pause = Arc::new(PauseFlag::load(&cfg.home)?);
         let budgets = Arc::new(BudgetStore::load(&cfg.home)?);
+        let policy_path = cfg.home.join("profiles/default/policy.toml");
+        let policy = Arc::new(PolicyEngine::load(policy_path.clone()).unwrap_or_else(|e| {
+            tracing::warn!(
+                path = %policy_path.display(),
+                error = %e,
+                "failed to load policy, using default allow policy"
+            );
+            PolicyEngine::default_at(policy_path)
+        }));
+        let approvals = Arc::new(ApprovalStore::new());
         let db = Arc::new(
             module_db::Manager::new(&cfg.home, "default")
                 .map_err(|e| anyhow::anyhow!("module-db init: {e}"))?,
@@ -136,6 +150,8 @@ impl AppState {
             roles,
             pause,
             budgets,
+            policy,
+            approvals,
             db,
             scheduler,
             binaries,

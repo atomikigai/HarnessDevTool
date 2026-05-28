@@ -1,4 +1,5 @@
 pub mod agents;
+pub mod approvals;
 pub mod budget;
 pub mod control;
 pub mod db;

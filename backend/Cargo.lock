@@ -1175,6 +1175,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "harness-policy"
+version = "0.0.1"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror",
+ "toml_edit 0.22.27",
+ "ts-rs",
+]
+
+[[package]]
 name = "harness-server"
 version = "0.0.1"
 dependencies = [
@@ -1189,6 +1200,7 @@ dependencies = [
  "dirs",
  "futures",
  "harness-core",
+ "harness-policy",
  "harness-session",
  "module-db",
  "serde",

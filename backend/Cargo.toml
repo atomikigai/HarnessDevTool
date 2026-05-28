@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/harness-server", "crates/harness-core", "crates/harness-session", "crates/harness-mcp-server", "crates/module-db"]
+members = ["crates/harness-server", "crates/harness-core", "crates/harness-session", "crates/harness-mcp-server", "crates/module-db", "crates/harness-policy"]
 
 [workspace.package]
 version = "0.0.1"

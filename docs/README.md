@@ -93,6 +93,7 @@ Promovido a runtime principal en la sección 13. Los shards en este dir son tomb
 ### 10 · Recetas
 - [[recipes/bootstrap-new-tool]] — Cómo añadir un módulo nuevo.
 - [[recipes/add-mcp-server]] — Conectar un MCP server.
+- [[recipes/use-crawl4ai-excalidraw-mcp]] — Levantar Crawl4AI + Excalidraw MCP para skills bundled.
 - [[recipes/add-frontend-route]] — Nueva vista SvelteKit.
 
 ### 11 · Referencias

@@ -1,0 +1,67 @@
+# Optional MCP support stack for Harness agents.
+#
+# Start:
+#   docker compose -f docker-compose.mcp.yml up -d --build
+#
+# Endpoints:
+#   Crawl4AI MCP SSE:          http://localhost:11235/mcp/sse
+#   Crawl4AI schema:           http://localhost:11235/mcp/schema
+#   Excalidraw streamable MCP: http://localhost:3001/mcp
+
+services:
+  crawl4ai:
+    image: unclecode/crawl4ai:latest
+    container_name: harness-crawl4ai
+    shm_size: "1gb"
+    ports:
+      - "${CRAWL4AI_PORT:-11235}:11235"
+    networks:
+      - harness-mcp
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:11235/mcp/schema', timeout=5).read()\""
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  excalidraw-mcp:
+    build:
+      context: .
+      dockerfile: infra/mcp/excalidraw-mcp.Dockerfile
+      args:
+        EXCALIDRAW_MCP_REF: ${EXCALIDRAW_MCP_REF:-157aa23ceb1976008aadc89eb05e3444060f09d6}
+    image: harness/excalidraw-mcp:latest
+    container_name: harness-excalidraw-mcp
+    environment:
+      PORT: "3001"
+      NODE_ENV: production
+    ports:
+      - "${EXCALIDRAW_MCP_PORT:-3001}:3001"
+    volumes:
+      - excalidraw-mcp-checkpoints:/tmp/excalidraw-mcp-checkpoints
+    networks:
+      - harness-mcp
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "node -e \"const net=require('node:net'); const s=net.connect(3001,'127.0.0.1'); s.on('connect',()=>process.exit(0)); s.on('error',()=>process.exit(1)); setTimeout(()=>process.exit(1),5000);\""
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+
+networks:
+  harness-mcp:
+    driver: bridge
+
+volumes:
+  excalidraw-mcp-checkpoints:
+

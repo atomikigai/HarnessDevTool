@@ -13,7 +13,8 @@ list:
 dev:
     #!/usr/bin/env bash
     set -euo pipefail
-    trap 'kill 0' EXIT INT TERM
+    docker compose -f docker-compose.mcp.yml up -d --build
+    trap 'docker compose -f docker-compose.mcp.yml down; kill 0' EXIT INT TERM
     (cd backend && cargo run -p harness-server) &
     (cd frontend && pnpm dev) &
     wait
@@ -70,3 +71,15 @@ docker-down:
 # Bring up dev stack with hot-reload (foreground)
 docker-dev:
     docker compose -f docker-compose.dev.yml up
+
+# Build and start optional MCP support services (Crawl4AI + Excalidraw)
+mcp-up:
+    docker compose -f docker-compose.mcp.yml up -d --build
+
+# Stop optional MCP support services
+mcp-down:
+    docker compose -f docker-compose.mcp.yml down
+
+# Follow optional MCP support service logs
+mcp-logs:
+    docker compose -f docker-compose.mcp.yml logs -f

@@ -23,9 +23,24 @@ revisar, aprobar y ejecutar sin mezclar scopes.
 6. **Mejoras y bugs del DB Manager** — ejecutada; tarea creada desde la inspección de validación DB.
 7. **Iconos lucide para schemas, tablas y vistas en DB** — ejecutada; mejora visual pequeña del árbol DB.
 8. **Context menu avanzado para tablas/vistas DB** — ejecutada; exportar formatos y generar queries en nueva pestaña.
-9. **Agente DB para conexión activa** — agente especializado con acceso controlado a la BD, backups y puente con Agents.
-10. **Esqueleto mínimo del módulo SSH** — slice grande; arrancar después de cerrar pendientes chicos.
-11. **Botón `+ task` en tab Tasks** — mejora secundaria para control manual.
+9. **Task 12: TaskBrief first-class** — separar contrato de trabajo de acceptance checks.
+10. **Task 13: Separar `task.create` y `task.propose`** — workers proponen, planner/orchestrator crea.
+11. **Task 14: Capability policy middleware mínimo** — enforcement real de roles/tools/resources.
+12. **Task 15: Eventos append-only unificados** — task/agent/spec/artifact/audit con semántica común.
+13. **Task 16: Metadata fuerte de subagentes** — ownership, rol, task, parent/root y scopes.
+14. **Task 17: `spec.md` append-only con versiones** — referencias estables desde tasks.
+15. **Task 18: Artifacts como entidad/evento real** — metadata recuperable para diff, logs, screenshots.
+16. **Task 19: Razones estructuradas en tasks** — blocked/paused/rejected/needs_human.
+17. **Task 20: Scheduler explain/debug** — explicar por qué asignó o saltó una task.
+18. **Task 21: Budget por task/agente** — costo por thread/session/task/role y retries.
+19. **Task 22: Reconciliador de estado** — detectar inconsistencias task/session/artifact.
+20. **Task 23: Replay/debug timeline** — vista reconstruible de un thread completo.
+21. **Task 24: Tipos TS generados desde Rust para tasks** — reemplazar hand-rolled frontend models.
+22. **Task 25: E2E pequeño planner→worker→evaluator** — antes del TODO app challenge completo.
+23. **Task 26: Árbol aislado de sesiones y mailbox de subagentes** — comunicación controlada, multi-nivel y auditable.
+24. **Task 9: Agente DB para conexión activa** — agente especializado con acceso controlado a la BD, backups y puente con Agents.
+25. **Task 10: Esqueleto mínimo del módulo SSH** — slice grande; arrancar después de cerrar pendientes chicos.
+26. **Task 11: Botón `+ task` en tab Tasks** — mejora secundaria para control manual.
 
 ## 1. Tab Agents con sesiones hijas reales
 
@@ -380,3 +395,446 @@ Reglas:
 Resultado esperado:
 Desde una sesión abierta se crea una task asociada al thread y se ve
 inmediatamente en el panel.
+
+## 12. TaskBrief first-class
+
+Objetivo:
+Convertir el brief de una task en un campo estructurado de primer nivel en vez
+de guardarlo como `acceptance.checks[BRIEF]`.
+
+Contexto:
+Hoy `task_create` acepta `brief`, lo renderiza como texto y lo persiste dentro
+de acceptance. Eso permite recuperar el contrato, pero mezcla instrucciones de
+trabajo con checks verificables.
+
+Tarea:
+1. Agregar un tipo Rust `TaskBrief` con `objective`, `context`, `steps`,
+   `rules`, `expected_result`, `write_paths`, `forbidden_paths`, `risks` y
+   `test_plan` opcionales según alcance.
+2. Agregar `brief: Option<TaskBrief>` al modelo `Task`, schema JSON y create
+   request REST/MCP.
+3. Migrar `task_create` para persistir `brief` como campo propio y mantener
+   compatibilidad con tasks antiguas que tengan `acceptance.checks[BRIEF]`.
+4. Actualizar frontend para mostrar el brief separado de acceptance checks.
+5. Regenerar/actualizar tipos compartidos siguiendo `ts-rs` como fuente de verdad.
+6. Agregar tests de create/get/list para brief estructurado y compatibilidad legacy.
+
+Reglas:
+- No romper tasks existentes.
+- No duplicar el brief en acceptance salvo fallback temporal explícito.
+- Mantener `acceptance.checks` para criterios verificables.
+- Agregar test.
+
+Resultado esperado:
+Una task expone su contrato de trabajo en `task.brief`, mientras los acceptance
+checks quedan limpios para verificación.
+
+## 13. Separar `task.create` y `task.propose`
+
+Objetivo:
+Evitar que cualquier worker pueda abrir scope real creando tasks directamente.
+
+Contexto:
+`task_create` ya existe y funciona. Para F3, la regla de producto es que
+planner/orchestrator y humano crean tasks reales; workers solo proponen trabajo
+descubierto para que el planner lo acepte o descarte.
+
+Tarea:
+1. Agregar modelo y storage append-only para `TaskProposal`.
+2. Exponer MCP `task_propose` con `{ parent_task_id, discovered_by_role,
+   rationale, suggested_title, suggested_acceptance_criteria }`.
+3. Aplicar capability policy: workers no pueden `task_create`; sí pueden
+   `task_propose`.
+4. Agregar endpoints/listado mínimo para que planner/humano revisen propuestas.
+5. Permitir promover una propuesta a task real preservando trazabilidad.
+6. Agregar tests de allow/deny por rol y promoción de propuesta.
+
+Reglas:
+- No confiar en prompts para enforcement.
+- Mantener append-only: aceptar/rechazar/promover son eventos nuevos.
+- Agregar test.
+
+Resultado esperado:
+Los workers pueden descubrir trabajo sin expandir el scope por su cuenta; el
+planner/humano decide qué se convierte en task real.
+
+## 14. Capability policy middleware mínimo
+
+Objetivo:
+Crear enforcement real para permisos de tools MCP según actor, rol, recurso y
+scope.
+
+Contexto:
+La matriz roles × tools ya está decidida en docs, pero debe vivir en el bridge
+como middleware, no como convención.
+
+Tarea:
+1. Definir `CapabilityCheck { actor_id, actor_role, tool, resource, scope,
+   thread_id, task_id }`.
+2. Cargar una policy mínima desde `capability-policy.yaml` o defaults builtin.
+3. Envolver cada handler MCP con `check_capability`.
+4. Devolver `permission_denied` claro al CLI hijo cuando no tenga permiso.
+5. Emitir audit event para cada allow/deny.
+6. Cubrir invariantes críticas con tests de integración.
+
+Reglas:
+- Deny debe ser explícito y recuperable por el modelo.
+- No romper tools existentes para sesiones humanas autorizadas.
+- Agregar test.
+
+Resultado esperado:
+Las tools dejan de depender de instrucciones blandas; el harness bloquea
+acciones fuera de rol/scope.
+
+## 15. Eventos append-only unificados
+
+Objetivo:
+Normalizar eventos de tasks, agentes, specs, artifacts, budget y audit para
+replay, UI y debugging.
+
+Contexto:
+El repo ya tiene logs append-only, task history, SSE y transcript logs. Falta
+una semántica común para eventos de dominio.
+
+Tarea:
+1. Definir un envelope común `{ seq, at, kind, thread_id, actor, payload }`.
+2. Mapear eventos existentes: `task.created`, `task.claimed`, `task.submitted`,
+   `task.verified`, `agent.spawned`, `agent.exited`, `spec.changed`,
+   `artifact.added`, `capability.denied`, `budget.warning`.
+3. Persistir eventos append-only por thread y emitirlos vía SSE.
+4. Mantener compatibilidad con los stores actuales durante la transición.
+5. Agregar tests de orden, append-only y replay básico.
+
+Reglas:
+- Nunca reescribir eventos existentes.
+- Evitar migración grande si un adapter incremental basta.
+- Agregar test.
+
+Resultado esperado:
+La UI y los agentes pueden reconstruir qué pasó en un thread desde un stream
+ordenado y auditable.
+
+## 16. Metadata fuerte de subagentes
+
+Objetivo:
+Hacer que cada subagente sea atribuible a un thread, task, rol, padre/root y
+scope autorizado.
+
+Contexto:
+Las sesiones hijas existen, pero para operar equipos hace falta explicar qué
+hace cada proceso y bajo qué permisos.
+
+Tarea:
+1. Extender `SessionMeta` con `thread_id`, `task_id`, `role`, `spawned_by`,
+   `parent_session_id`, `root_session_id`, `allowed_tools`, `write_paths` y
+   `forbidden_paths`.
+2. Asegurar que `session_spawn_child` rellene esta metadata.
+3. Exponer la metadata en REST/SSE para el tab Agents.
+4. Mostrar en UI rol, task asociada y estado sin exponer secretos.
+5. Agregar tests de herencia parent/root y persistencia tras restart.
+
+Reglas:
+- No romper sesiones existentes sin metadata nueva.
+- No exponer prompts secretos ni tokens.
+- Agregar test.
+
+Resultado esperado:
+El tab Agents muestra no solo procesos, sino ownership real: quién lo creó, para
+qué task, con qué rol y con qué límites.
+
+## 17. `spec.md` append-only con versiones
+
+Objetivo:
+Crear una spec por thread versionada y referenciable desde tasks.
+
+Contexto:
+F3 requiere que planner mantenga `spec.md` y que workers/evaluator sepan contra
+qué versión verificar.
+
+Tarea:
+1. Implementar `spec.md` por thread con operaciones append-only.
+2. Agregar versionado incremental por cambio o sección.
+3. Permitir que tasks referencien `{ section, version }`.
+4. Implementar `spec.set_section` con `spec_version_required` para evitar stale writes.
+5. Emitir `spec.changed` vía evento/SSE.
+6. Agregar tests de version check y referencia desde task.
+
+Reglas:
+- Workers no editan spec.
+- Planner/orchestrator conserva trazabilidad de cambios.
+- Agregar test.
+
+Resultado esperado:
+Cada task puede decir qué parte y versión de la spec debe cumplir.
+
+## 18. Artifacts como entidad/evento real
+
+Objetivo:
+Modelar artifacts con metadata propia en vez de depender solo de strings dentro
+de `task.artifacts`.
+
+Contexto:
+Para evaluator y replay, no basta saber que hay un archivo; importa quién lo
+produjo, cuándo, de qué tipo es y cómo se relaciona con la task.
+
+Tarea:
+1. Definir `Artifact { artifact_id, task_id, kind, path, produced_by,
+   created_at, summary }`.
+2. Soportar kinds iniciales: `file`, `diff`, `test_output`, `screenshot`, `log`.
+3. Persistir artifact events append-only.
+4. Mantener `task.artifacts` como vista resumida si conviene para compatibilidad.
+5. Mostrar artifacts relevantes en TaskDetail/SessionRightPanel.
+6. Agregar tests de creación, listado y referencia inexistente.
+
+Reglas:
+- No perder compatibilidad con `task.submit` actual.
+- No duplicar blobs grandes dentro del evento; referenciar paths.
+- Agregar test.
+
+Resultado esperado:
+El evaluator y la UI pueden inspeccionar artifacts con contexto suficiente.
+
+## 19. Razones estructuradas en tasks
+
+Objetivo:
+Evitar que razones importantes queden escondidas solo en strings libres.
+
+Contexto:
+Hoy `notes.feedback`, `why_paused` y `why_abandoned` cubren parte del caso. Para
+operar equipos conviene estructurar bloqueo, pausa, rechazo y necesidad humana.
+
+Tarea:
+1. Agregar campos o eventos para `blocked_reason`, `paused_reason`,
+   `rejected_reason`, `last_failure` y `needs_human`.
+2. Ajustar state machine para exigir razón donde aplique.
+3. Mostrar razones en TaskDetail y badges.
+4. Emitir eventos cuando cambien esas razones.
+5. Agregar tests de transiciones con/sin razón requerida.
+
+Reglas:
+- Mantener compatibilidad con `notes.feedback`.
+- No convertir cada comentario en schema rígido; estructurar solo razones operativas.
+- Agregar test.
+
+Resultado esperado:
+Una task bloqueada, pausada o rechazada explica por qué de forma legible para UI
+y machine-readable para scheduler/agentes.
+
+## 20. Scheduler explain/debug
+
+Objetivo:
+Que el scheduler pueda explicar por qué asignó, saltó o bloqueó una task.
+
+Contexto:
+Cuando hay varios agentes, el síntoma "no avanzó" necesita diagnóstico directo:
+deps pendientes, no hay evaluator idle, cooldown, cap de concurrencia, budget, etc.
+
+Tarea:
+1. Emitir decisiones del scheduler como eventos/debug records.
+2. Cubrir causas: deps pendientes, no idle agent, cooldown verify-fail, cap de
+   concurrencia, pause-all, budget cap, task inválida.
+3. Exponer una vista/endpoint mínimo para últimas decisiones por thread.
+4. Mostrar explicación compacta en UI donde aplique.
+5. Agregar tests de causas principales.
+
+Reglas:
+- No generar ruido excesivo en logs normales.
+- Agrupar decisiones repetidas cuando sea necesario.
+- Agregar test.
+
+Resultado esperado:
+El usuario puede saber por qué una task no fue asignada sin leer logs internos.
+
+## 21. Budget por task/agente
+
+Objetivo:
+Desglosar costo y uso por thread, sesión, task, rol y retry.
+
+Contexto:
+El budget base ya existe. Para equipos de agentes, el costo útil es el
+desglose: qué task gastó, qué agente reintentó y qué rechazo fue costoso.
+
+Tarea:
+1. Enriquecer reportes de uso con `thread_id`, `session_id`, `task_id` y `role`.
+2. Acumular totales por task/agente/rol.
+3. Marcar costo asociado a retries y verify-fail.
+4. Mostrar desglose en BudgetMeter/Live cost.
+5. Agregar tests de acumulación y hard-cap por thread.
+
+Reglas:
+- No bloquear si un CLI no reporta tokens exactos; usar `unknown`/stub explícito.
+- Mantener hard cap actual funcionando.
+- Agregar test.
+
+Resultado esperado:
+El usuario puede ver qué parte del equipo consume presupuesto y dónde se pierde
+costo en reintentos.
+
+## 22. Reconciliador de estado
+
+Objetivo:
+Detectar y reparar o reportar inconsistencias entre tasks, sesiones, artifacts y
+spec.
+
+Contexto:
+En un sistema con procesos hijos, reinicios y logs append-only, se necesitan
+checks periódicos de salud del estado.
+
+Tarea:
+1. Implementar un pass de reconciliación por thread.
+2. Detectar task `in_progress` con session muerta, session viva sin task,
+   child sin parent válido, artifact referenciado inexistente y task bloqueada
+   por task inexistente.
+3. Para casos seguros, emitir evento de reparación; para casos ambiguos, marcar
+   `needs_human`.
+4. Exponer reporte mínimo en logs/UI.
+5. Agregar tests con fixtures corruptos/huérfanos.
+
+Reglas:
+- No borrar datos automáticamente.
+- Reparaciones deben ser append-only y trazables.
+- Agregar test.
+
+Resultado esperado:
+Después de crashes o cambios manuales, el harness puede explicar y estabilizar
+su estado sin perder historial.
+
+## 23. Replay/debug timeline
+
+Objetivo:
+Reconstruir la historia completa de un thread como línea de tiempo auditable.
+
+Contexto:
+Para depurar F3/F4 hace falta ver el flujo: human prompt, planner, tasks,
+workers, artifacts, evaluator, budget y fallbacks.
+
+Tarea:
+1. Crear un replay reader sobre eventos append-only.
+2. Construir timeline ordenada con eventos humanos, task, agent, spec, artifact
+   y budget.
+3. Exponer endpoint o CLI mínimo para inspección.
+4. Agregar vista frontend básica si el endpoint ya está estable.
+5. Agregar tests de replay determinístico.
+
+Reglas:
+- No depender de estado mutable para reconstruir la historia.
+- Manejar eventos desconocidos sin fallar.
+- Agregar test.
+
+Resultado esperado:
+Un thread se puede auditar de principio a fin y compartir como timeline de
+debug.
+
+## 24. Tipos TS generados desde Rust para tasks
+
+Objetivo:
+Eliminar drift entre modelos Rust y TypeScript para tasks.
+
+Contexto:
+`frontend/src/lib/api/models/task.ts` dice que está hand-rolled hasta que
+`ts-rs` exporte bindings. La convención crítica del repo exige `ts-rs` como
+fuente de verdad.
+
+Tarea:
+1. Auditar exports actuales de `ts-rs` para `Task`, `TaskStatus` y structs
+   relacionados.
+2. Hacer que `just gen-types` genere bindings consumibles por frontend.
+3. Reemplazar tipos hand-rolled por imports generados.
+4. Ajustar schemas valibot si necesitan coexistir con tipos generados.
+5. Agregar check para detectar tipos generados desactualizados.
+
+Reglas:
+- No editar a mano archivos generados en `frontend/src/lib/api/types/`.
+- Mantener compatibilidad de imports de UI.
+- Agregar test/check.
+
+Resultado esperado:
+Los tipos de task del frontend salen de Rust y dejan de divergir silenciosamente.
+
+## 25. E2E pequeño planner→worker→evaluator
+
+Objetivo:
+Crear una prueba end-to-end pequeña antes del "TODO app challenge" completo.
+
+Contexto:
+El challenge completo gasta tiempo/costo y mezcla muchas variables. Un E2E
+mínimo permite fijar el ciclo central de F3.
+
+Tarea:
+1. Crear thread fixture con goal sintético.
+2. Simular o spawnear planner que crea 2 tasks.
+3. Verificar que scheduler asigna una task a worker.
+4. Worker submit artifacts.
+5. Evaluator rechaza una vez con feedback.
+6. Scheduler reasigna y luego evaluator acepta.
+7. Verificar estado final, eventos, artifacts y budget básico.
+
+Reglas:
+- Preferir stubs determinísticos para no gastar tokens en CI.
+- Mantener una variante manual real opcional fuera del test rápido.
+- Agregar test.
+
+Resultado esperado:
+El loop planner → worker → evaluator queda probado sin depender del challenge
+grande.
+
+## 26. Árbol aislado de sesiones y mailbox de subagentes
+
+Objetivo:
+Formalizar que cada sesión raíz en Agents es un árbol aislado de contexto, con
+subagentes multi-nivel que pueden comunicarse entre sí de forma estructurada,
+auditable y sin mezclar contexto con otros árboles.
+
+Contexto:
+El modelo visual esperado es que en `Agents` el usuario inicia una sesión raíz,
+esa sesión tiene su contexto, tasks y subagentes, y esos subagentes viven dentro
+del árbol de esa sesión. Puede haber varias sesiones raíz en paralelo; una
+sesión con una task y otra sesión sin task no deben interrumpirse ni compartir
+contexto vivo accidentalmente. También queremos permitir que un subagente cree
+sus propios subagentes y mantenga comunicación con parent/root/orchestrator,
+pero sin chat libre opaco entre PTYs.
+
+Tarea:
+1. Definir el modelo de aislamiento: `root_session_id` como frontera fuerte de
+   contexto, con `parent_session_id` para árbol multi-nivel y `thread_id` /
+   `task_id` para scope operativo.
+2. Extender metadata de sesión/subagente con `root_session_id`,
+   `parent_session_id`, `spawned_by`, `spawn_reason`, `role`, `task_id`,
+   `allowed_tools`, `write_paths`, `forbidden_paths`, `max_depth` y
+   `max_children` según alcance mínimo.
+3. Crear un `AgentMailbox` append-only para mensajes estructurados entre
+   agentes: `{ id, root_session_id, from_session_id, to_session_id|role|parent|children|orchestrator,
+   task_id, kind, body, created_at, requires_ack }`.
+4. Permitir comunicación child→parent, parent→child, child→sibling y
+   child→root/orchestrator solo dentro del mismo `root_session_id`, registrando
+   cada mensaje como evento.
+5. Bloquear por defecto comunicación entre árboles distintos (`Session A` ↔
+   `Session B`) salvo acción humana o bridge explícito futuro.
+6. Permitir que subagentes creen subagentes propios solo si capability, budget,
+   concurrency, `max_depth`, `max_children` y scope lo permiten; el child hereda
+   permisos iguales o más restringidos, nunca ampliados.
+7. Filtrar herramientas de contexto (`task.get`, `artifact.list`,
+   `spec.get_section`, `mailbox.read`) por `root_session_id`, `task_id` y
+   capability policy.
+8. Agregar eventos `agent.message.sent`, `agent.message.acknowledged`,
+   `agent.spawn.requested`, `agent.spawned`, `agent.spawn.denied` y
+   `agent.finding.reported`.
+9. Actualizar UI Agents para mostrar árbol root→child→grandchild, mensajes
+   recientes relevantes y razón de spawn sin mezclar sesiones raíz.
+10. Agregar tests de aislamiento: dos sesiones raíz en paralelo no comparten
+    mailbox ni contexto; un child no puede cruzar a otro root; un subagente no
+    puede crear un child con más permisos.
+
+Reglas:
+- Una sesión raíz es frontera de contexto por defecto.
+- La comunicación entre agentes debe ser append-only y visible en replay.
+- No permitir comunicación PTY directa no auditada entre subagentes.
+- Los permisos solo se heredan o reducen; nunca se amplían descendiendo el árbol.
+- Agregar test.
+
+Resultado esperado:
+El harness soporta múltiples árboles de agentes en paralelo. Dentro de un árbol,
+los subagentes pueden coordinarse y crear subagentes propios con límites claros;
+fuera del árbol no se mezcla contexto ni comunicación. La UI y el replay pueden
+explicar quién habló con quién, por qué se creó cada subagente y bajo qué scope
+trabajó.

@@ -31,8 +31,8 @@ services:
 
   excalidraw-mcp:
     build:
-      context: .
-      dockerfile: infra/mcp/excalidraw-mcp.Dockerfile
+      context: ./infra/mcp
+      dockerfile: excalidraw-mcp.Dockerfile
       args:
         EXCALIDRAW_MCP_REF: ${EXCALIDRAW_MCP_REF:-157aa23ceb1976008aadc89eb05e3444060f09d6}
     image: harness/excalidraw-mcp:latest
@@ -64,4 +64,3 @@ networks:
 
 volumes:
   excalidraw-mcp-checkpoints:
-

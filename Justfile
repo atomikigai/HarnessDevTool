@@ -9,26 +9,39 @@ default:
 list:
     @just --list
 
-# Run backend + frontend locally in parallel (no docker)
+# Run the local dev workspace in Zellij
 dev:
+    ./scripts/dev-zellij.sh
+
+# Run backend + frontend locally in parallel (no Zellij)
+dev-raw:
     #!/usr/bin/env bash
     set -euo pipefail
-    docker compose -f docker-compose.mcp.yml up -d --build
-    trap 'docker compose -f docker-compose.mcp.yml down; kill 0' EXIT INT TERM
+    cleanup() {
+      trap - EXIT INT TERM
+      docker compose -f docker-compose.mcp.yml down
+      jobs -pr | xargs -r kill
+    }
+    trap cleanup EXIT INT TERM
+    docker compose -f docker-compose.mcp.yml up -d
     (cd backend && cargo run -p harness-server) &
     (cd frontend && pnpm dev) &
     wait
 
 # Alias
-dev-local: dev
+dev-local: dev-raw
 
 # Run only backend (local)
 dev-backend:
-    cd backend && cargo run -p harness-server
+    cd backend && exec cargo run -p harness-server
 
 # Run only frontend (local)
 dev-frontend:
-    cd frontend && pnpm dev
+    cd frontend && exec pnpm dev
+
+# Run optional MCP support services in foreground
+dev-mcp:
+    ./scripts/dev-mcp.sh
 
 # Build release artifacts (rust + svelte)
 build:
@@ -72,8 +85,12 @@ docker-down:
 docker-dev:
     docker compose -f docker-compose.dev.yml up
 
-# Build and start optional MCP support services (Crawl4AI + Excalidraw)
+# Start optional MCP support services without rebuilding
 mcp-up:
+    docker compose -f docker-compose.mcp.yml up -d
+
+# Rebuild and start optional MCP support services when images change
+mcp-build:
     docker compose -f docker-compose.mcp.yml up -d --build
 
 # Stop optional MCP support services

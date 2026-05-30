@@ -1,6 +1,6 @@
 //! REST surface for `module-db`. See `module-db::Manager` for the actual ops.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 

@@ -684,6 +684,7 @@ mod tests {
     use axum::http::{Request, StatusCode};
     use chrono::Utc;
     use module_db::{Column, Engine, SchemaTreeSchema, Table, TableKind};
+    use std::collections::BTreeMap;
     use tower::ServiceExt;
 
     fn state(home: std::path::PathBuf) -> Arc<AppState> {

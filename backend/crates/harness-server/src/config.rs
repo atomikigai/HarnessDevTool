@@ -22,7 +22,8 @@ pub struct Config {
 impl Config {
     pub fn from_env() -> Result<Self> {
         let bind: SocketAddr = env::var("HARNESS_BIND")
-            .unwrap_or_else(|_| "127.0.0.1:7777".to_string())
+            .or_else(|_| env::var("BACKEND_PORT").map(|port| format!("127.0.0.1:{port}")))
+            .unwrap_or_else(|_| "127.0.0.1:7778".to_string())
             .parse()
             .context("parsing HARNESS_BIND")?;
 
@@ -31,8 +32,9 @@ impl Config {
             Err(_) => default_home()?,
         };
 
-        let cors_origin =
-            env::var("HARNESS_CORS_ORIGIN").unwrap_or_else(|_| "http://localhost:8080".to_string());
+        let cors_origin = env::var("HARNESS_CORS_ORIGIN")
+            .or_else(|_| env::var("FRONTEND_PORT").map(|port| format!("http://localhost:{port}")))
+            .unwrap_or_else(|_| "http://localhost:8081".to_string());
 
         let profile = resolve_profile(&home);
 

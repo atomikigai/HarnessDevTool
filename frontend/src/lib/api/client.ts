@@ -1,7 +1,7 @@
 /**
  * Lightweight fetch wrapper for the harness backend.
  * Reads the API base URL from the `PUBLIC_API_BASE` env var (defaults to `/api`,
- * which is proxied to http://localhost:7777 in dev).
+ * which is proxied to the configured local backend port in dev).
  * Exposes the `X-Protocol-Version` header to callers.
  */
 

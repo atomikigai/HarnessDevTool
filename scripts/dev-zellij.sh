@@ -74,7 +74,12 @@ if ! command -v zellij >/dev/null 2>&1; then
   exit 127
 fi
 
-if zellij list-sessions 2>/dev/null | awk '{print $1}' | grep -Fxq "$SESSION_NAME"; then
+export_default_port BACKEND_PORT 7778
+export_default_port FRONTEND_PORT 8081
+export HARNESS_BIND="${HARNESS_BIND:-127.0.0.1:${BACKEND_PORT}}"
+export HARNESS_CORS_ORIGIN="${HARNESS_CORS_ORIGIN:-http://localhost:${FRONTEND_PORT}}"
+
+if zellij list-sessions --short --no-formatting 2>/dev/null | grep -Fxq "$SESSION_NAME"; then
   exec zellij attach "$SESSION_NAME"
 fi
 

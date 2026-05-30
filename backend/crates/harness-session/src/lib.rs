@@ -11,6 +11,6 @@ pub mod session;
 pub use detect::{detect as detect_state, AgentState};
 pub use errors::SessionError;
 pub use kind::AgentKind;
-pub use manager::{Manager, SessionEvent, SpawnOpts};
+pub use manager::{Manager, McpServerConfig, SessionEvent, SpawnOpts};
 pub use meta::{SessionMeta, SessionStatus};
 pub use session::AgentSession;

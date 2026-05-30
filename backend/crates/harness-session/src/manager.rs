@@ -305,6 +305,10 @@ pub struct SpawnOpts {
     pub mcp_server_command: Option<String>,
     /// Stdio MCP args paired with [`Self::mcp_server_command`].
     pub mcp_server_args: Vec<String>,
+    /// Additional stdio MCP servers exposed to CLIs that support per-spawn
+    /// config. Claude gets these through the JSON config file; Codex gets
+    /// equivalent `-c mcp_servers.<name>.*` overrides.
+    pub extra_mcp_servers: Vec<McpServerConfig>,
     /// Optional initial prompt to write into the PTY after spawn. Used by the
     /// role-template system to seed the agent.
     pub role_prompt: Option<String>,
@@ -331,6 +335,13 @@ pub struct SpawnOpts {
     /// otherwise the catch-up SSE replays bytes calibrated for 80 cols into
     /// a wider terminal and the user sees a mangled first frame.
     pub initial_size: Option<(u16, u16)>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpServerConfig {
+    pub name: String,
+    pub command: String,
+    pub args: Vec<String>,
 }
 
 /// Translate `SpawnOpts` into the CLI flags appended to the agent invocation.
@@ -390,6 +401,20 @@ fn build_extra_args(kind: AgentKind, opts: &SpawnOpts, session_id: &str) -> Vec<
                 out.push(format!(
                     "mcp_servers.harness.args={}",
                     toml_string_array(&opts.mcp_server_args)
+                ));
+            }
+            for server in &opts.extra_mcp_servers {
+                out.push("-c".to_string());
+                out.push(format!(
+                    "mcp_servers.{}.command={}",
+                    server.name,
+                    toml_string(&server.command)
+                ));
+                out.push("-c".to_string());
+                out.push(format!(
+                    "mcp_servers.{}.args={}",
+                    server.name,
+                    toml_string_array(&server.args)
                 ));
             }
             // Pass the role/initial prompt as Codex's positional `[PROMPT]`
@@ -590,6 +615,15 @@ mod tests {
                 "--agent-id".into(),
                 "agent:codex-1".into(),
             ],
+            extra_mcp_servers: vec![McpServerConfig {
+                name: "crawl4ai".into(),
+                command: "npx".into(),
+                args: vec![
+                    "-y".into(),
+                    "mcp-remote".into(),
+                    "http://localhost:11235/mcp/sse".into(),
+                ],
+            }],
             auto_intro: Some("Harness tools are available.".into()),
             role_prompt: Some("Inspect the database.".into()),
             ..SpawnOpts::default()
@@ -617,6 +651,12 @@ mod tests {
         assert!(args.iter().any(|a| {
             a
             == "mcp_servers.harness.args=[\"--thread\", \"t1\", \"--agent-id\", \"agent:codex-1\"]"
+        }));
+        assert!(args
+            .iter()
+            .any(|a| a == "mcp_servers.crawl4ai.command=\"npx\""));
+        assert!(args.iter().any(|a| {
+            a == "mcp_servers.crawl4ai.args=[\"-y\", \"mcp-remote\", \"http://localhost:11235/mcp/sse\"]"
         }));
         assert!(args
             .last()

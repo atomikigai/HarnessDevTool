@@ -155,6 +155,7 @@ impl AppState {
         let spawner = Arc::new(ManagerSpawner {
             manager: manager.clone(),
             roles: roles.clone(),
+            tasks: Arc::new(task_store.clone()),
             binaries: binaries.clone(),
             mcp_server_binary: mcp_server_binary.clone(),
             harness_home: cfg.home.clone(),
@@ -318,6 +319,7 @@ fn detect_mcp_server_binary() -> Option<PathBuf> {
 struct ManagerSpawner {
     manager: Arc<Manager>,
     roles: Arc<RolesRegistry>,
+    tasks: Arc<TaskStore>,
     binaries: HashMap<AgentKind, PathBuf>,
     mcp_server_binary: Option<PathBuf>,
     harness_home: PathBuf,
@@ -411,6 +413,14 @@ impl SessionSpawner for ManagerSpawner {
             ..SpawnOpts::default()
         };
 
+        let load_crawl4ai = self
+            .tasks
+            .latest_active(&req.thread_id)
+            .ok()
+            .flatten()
+            .map(|task| crate::routes::sessions::task_mentions_documentation_url(&task))
+            .unwrap_or(false);
+
         // Per-session MCP config (mirrors the REST `create_session` path so
         // sub-agents see the same `task_*` tool surface as user-spawned
         // sessions).
@@ -424,24 +434,43 @@ impl SessionSpawner for ManagerSpawner {
                     return SpawnResult::Failed(format!("create mcp-configs dir: {e}"));
                 }
                 let path = configs_dir.join(format!("{mcp_id}.json"));
-                let config = json!({
-                    "mcpServers": {
-                        "harness": {
-                            "command": mcp_bin.display().to_string(),
-                            "args": [
-                                "--thread", req.thread_id,
-                                "--agent-id", agent_id,
-                                "--harness-home", self.harness_home.display().to_string(),
-                                "--server-url", self.server_url,
-                            ]
-                        }
-                    }
-                });
+                let mut mcp_servers = serde_json::Map::new();
+                mcp_servers.insert(
+                    "harness".to_string(),
+                    json!({
+                        "command": mcp_bin.display().to_string(),
+                        "args": [
+                            "--thread", req.thread_id,
+                            "--agent-id", agent_id,
+                            "--harness-home", self.harness_home.display().to_string(),
+                            "--server-url", self.server_url,
+                        ]
+                    }),
+                );
+                if load_crawl4ai {
+                    let crawl = crate::routes::sessions::crawl4ai_mcp_server();
+                    mcp_servers.insert(
+                        crawl.name,
+                        json!({
+                            "command": crawl.command,
+                            "args": crawl.args,
+                        }),
+                    );
+                }
+                let config = json!({ "mcpServers": serde_json::Value::Object(mcp_servers) });
                 if let Err(e) = std::fs::write(&path, serde_json::to_vec_pretty(&config).unwrap()) {
                     return SpawnResult::Failed(format!("write mcp config: {e}"));
                 }
                 opts.mcp_config_path = Some(path.clone());
-                opts.auto_intro = Some(crate::routes::sessions::harness_mcp_intro().to_string());
+                opts.auto_intro = Some(if load_crawl4ai {
+                    format!(
+                        "{}\n\n{}",
+                        crate::routes::sessions::harness_mcp_intro(),
+                        crate::routes::sessions::crawl4ai_context_intro()
+                    )
+                } else {
+                    crate::routes::sessions::harness_mcp_intro().to_string()
+                });
                 config_path = Some(path);
             }
         }

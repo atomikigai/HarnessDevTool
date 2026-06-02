@@ -2,7 +2,7 @@
 //!
 //! Approval policy (informational — enforcement lives in the harness's
 //! approval layer): `db_query` is gated on the leading SQL keyword being
-//! `SELECT` (or `EXPLAIN`/`SHOW`/`WITH`). Other keywords are flagged
+//! `SELECT` (or `EXPLAIN`/`SHOW`). Other keywords are flagged
 //! `requires_approval: true` in the response so the harness can prompt.
 
 use std::io::Write;
@@ -38,13 +38,76 @@ fn opt_str<'a>(args: &'a Value, key: &str) -> Option<&'a str> {
     args.get(key).and_then(|v| v.as_str())
 }
 
-const READ_ONLY_KEYWORDS: &[&str] = &["SELECT", "EXPLAIN", "SHOW", "WITH", "DESCRIBE", "DESC"];
+const READ_ONLY_KEYWORDS: &[&str] = &["SELECT", "EXPLAIN", "SHOW", "DESCRIBE", "DESC"];
 
 fn is_read_only(sql: &str) -> bool {
+    if has_multiple_statements(sql) {
+        return false;
+    }
     let kw = module_db::__leading_keyword(sql);
     READ_ONLY_KEYWORDS
         .iter()
         .any(|w| kw.eq_ignore_ascii_case(w))
+}
+
+fn has_multiple_statements(sql: &str) -> bool {
+    let mut chars = sql.chars().peekable();
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut in_line_comment = false;
+    let mut in_block_comment = false;
+
+    while let Some(ch) = chars.next() {
+        if in_line_comment {
+            if ch == '\n' {
+                in_line_comment = false;
+            }
+            continue;
+        }
+        if in_block_comment {
+            if ch == '*' && chars.peek() == Some(&'/') {
+                chars.next();
+                in_block_comment = false;
+            }
+            continue;
+        }
+        if in_single {
+            if ch == '\'' {
+                if chars.peek() == Some(&'\'') {
+                    chars.next();
+                } else {
+                    in_single = false;
+                }
+            }
+            continue;
+        }
+        if in_double {
+            if ch == '"' {
+                if chars.peek() == Some(&'"') {
+                    chars.next();
+                } else {
+                    in_double = false;
+                }
+            }
+            continue;
+        }
+
+        match ch {
+            '\'' => in_single = true,
+            '"' => in_double = true,
+            '-' if chars.peek() == Some(&'-') => {
+                chars.next();
+                in_line_comment = true;
+            }
+            '/' if chars.peek() == Some(&'*') => {
+                chars.next();
+                in_block_comment = true;
+            }
+            ';' if chars.clone().any(|c| !c.is_whitespace()) => return true,
+            _ => {}
+        }
+    }
+    false
 }
 
 pub fn query(mgr: &Manager, args: &Value) -> Result<Value, String> {
@@ -538,5 +601,16 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("PostgreSQL only"));
+    }
+
+    #[test]
+    fn read_only_gate_rejects_ctes_and_stacked_statements() {
+        assert!(is_read_only("SELECT * FROM users"));
+        assert!(is_read_only("SELECT ';' AS semi"));
+        assert!(is_read_only("SELECT 1;   "));
+        assert!(!is_read_only(
+            "WITH x AS (DELETE FROM users RETURNING *) SELECT * FROM x"
+        ));
+        assert!(!is_read_only("SELECT * FROM users; DROP TABLE users"));
     }
 }

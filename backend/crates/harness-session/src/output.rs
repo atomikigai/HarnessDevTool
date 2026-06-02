@@ -29,13 +29,9 @@ struct Inner {
 impl OutputWriter {
     pub fn open(dir: impl Into<PathBuf>) -> Result<Self, SessionError> {
         let dir = dir.into();
-        std::fs::create_dir_all(&dir)?;
+        ensure_private_dir(&dir)?;
         let path = dir.join("output.log");
-        let file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .read(true)
-            .open(&path)?;
+        let file = open_private_log(&path)?;
         let written = file.metadata()?.len();
         Ok(Self {
             dir,
@@ -113,10 +109,55 @@ impl OutputWriter {
 
 fn compress_file(src: &Path, dst: &Path) -> Result<(), SessionError> {
     let mut input = File::open(src)?;
-    let output = File::create(dst)?;
+    let output = create_private_file(dst)?;
     let mut encoder = zstd::Encoder::new(output, ZSTD_LEVEL)?;
     std::io::copy(&mut input, &mut encoder)?;
     encoder.finish()?;
+    Ok(())
+}
+
+fn ensure_private_dir(dir: &Path) -> Result<(), SessionError> {
+    std::fs::create_dir_all(dir)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
+
+fn open_private_log(path: &Path) -> Result<File, SessionError> {
+    let mut opts = OpenOptions::new();
+    opts.create(true).append(true).read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let file = opts.open(path)?;
+    set_private_file_permissions(path)?;
+    Ok(file)
+}
+
+fn create_private_file(path: &Path) -> Result<File, SessionError> {
+    let mut opts = OpenOptions::new();
+    opts.create(true).write(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let file = opts.open(path)?;
+    set_private_file_permissions(path)?;
+    Ok(file)
+}
+
+fn set_private_file_permissions(path: &Path) -> Result<(), SessionError> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    }
     Ok(())
 }
 
@@ -143,6 +184,26 @@ mod tests {
         w.flush().unwrap();
         let bytes = w.read_active().unwrap();
         assert_eq!(bytes, b"hello world");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn output_dir_and_log_are_private() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tmp("private");
+        let _w = OutputWriter::open(&dir).unwrap();
+
+        let dir_mode = std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
+        let log_mode = std::fs::metadata(dir.join("output.log"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+
+        assert_eq!(dir_mode, 0o700);
+        assert_eq!(log_mode, 0o600);
         std::fs::remove_dir_all(&dir).ok();
     }
 }

@@ -90,7 +90,7 @@ impl PolicyEngine {
             .iter()
             .find(|rule| rule.matches(tool, args))
             .map(|rule| rule.decision.clone())
-            .unwrap_or_else(|| state.default.clone())
+            .unwrap_or_else(|| fallback_decision(tool, &state.default))
     }
 
     pub fn timeout_secs(&self) -> u64 {
@@ -143,6 +143,34 @@ impl PolicyEngine {
     }
 }
 
+fn fallback_decision(tool: &str, default: &Decision) -> Decision {
+    if is_sensitive_tool(tool) {
+        Decision::Ask
+    } else {
+        default.clone()
+    }
+}
+
+fn is_sensitive_tool(tool: &str) -> bool {
+    matches!(
+        tool,
+        "task_create"
+            | "task_claim"
+            | "task_renew"
+            | "task_update"
+            | "task_release"
+            | "task_submit"
+            | "spec_write"
+            | "knowledge_pdf_ingest"
+            | "db_query"
+            | "db_backup"
+            | "db_memory_write"
+            | "session_spawn_child"
+            | "session_send_input"
+            | "session_cancel_child"
+    )
+}
+
 fn read_policy_file(path: &PathBuf) -> PolicyResult<PolicyFile> {
     match fs::read_to_string(path) {
         Ok(text) => Ok(toml_edit::de::from_str::<PolicyFile>(&text)?),
@@ -173,9 +201,44 @@ mod tests {
     }
 
     #[test]
-    fn evaluate_default_allow_when_no_rules() {
+    fn evaluate_default_allows_read_only_tools_when_no_rules() {
         let engine = PolicyEngine::load(tmp_path("missing.toml")).unwrap();
         assert_eq!(engine.evaluate("task_list", &json!({})), Decision::Allow);
+    }
+
+    #[test]
+    fn evaluate_default_asks_for_sensitive_tools_when_no_rules() {
+        let engine = PolicyEngine::load(tmp_path("missing.toml")).unwrap();
+
+        for tool in [
+            "task_create",
+            "task_update",
+            "spec_write",
+            "db_query",
+            "db_backup",
+            "db_memory_write",
+            "session_spawn_child",
+            "session_send_input",
+            "session_cancel_child",
+        ] {
+            assert_eq!(engine.evaluate(tool, &json!({})), Decision::Ask, "{tool}");
+        }
+    }
+
+    #[test]
+    fn explicit_rule_can_allow_sensitive_tool() {
+        let path = tmp_path("policy.toml");
+        fs::write(
+            &path,
+            r#"
+[[rules]]
+tool = "db_query"
+decision = "allow"
+"#,
+        )
+        .unwrap();
+        let engine = PolicyEngine::load(path).unwrap();
+        assert_eq!(engine.evaluate("db_query", &json!({})), Decision::Allow);
     }
 
     #[test]
@@ -220,7 +283,7 @@ path = "docs/*md"
         );
         assert_eq!(
             engine.evaluate("spec_write", &json!({ "path": "src/readme.md" })),
-            Decision::Allow
+            Decision::Ask
         );
     }
 
@@ -240,7 +303,7 @@ path = "*secret*"
         )
         .unwrap();
         let engine = PolicyEngine::load(path).unwrap();
-        assert_eq!(engine.evaluate("spec_write", &json!({})), Decision::Allow);
+        assert_eq!(engine.evaluate("spec_write", &json!({})), Decision::Ask);
     }
 
     #[test]

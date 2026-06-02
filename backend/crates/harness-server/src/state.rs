@@ -93,7 +93,7 @@ impl AppState {
             tracing::warn!(
                 path = %policy_path.display(),
                 error = %e,
-                "failed to load policy, using default allow policy"
+                "failed to load policy, using default policy"
             );
             PolicyEngine::default_at(policy_path)
         }));

@@ -9,7 +9,7 @@ use sqlx::Row as _;
 
 use crate::error::{DbError, DbResult};
 use crate::lease::{classify_txn, spawn_reaper, PinnedTab, TabLeases, TxnIntent};
-use crate::pool::{build_pool_for_input, DbPool, PoolCache};
+use crate::pool::{build_pool_for_input, build_read_only_pool, DbPool, PoolCache};
 use crate::query::{QueryRegistry, RunningQuery};
 use crate::row as row_ops;
 use crate::schema::introspect;
@@ -116,6 +116,12 @@ impl Manager {
 
     pub async fn databases_list(&self, connection_id: &str) -> DbResult<Vec<String>> {
         let conn = self.store.get(connection_id)?;
+        if matches!(conn.engine, Engine::Sqlite) {
+            if !std::path::Path::new(&conn.database).exists() {
+                return Err(DbError::NotFound(format!("sqlite file {}", conn.database)));
+            }
+            return Ok(vec![conn.database]);
+        }
         let pool = self.pools.get_or_init(&self.store, connection_id).await?;
         let names = match &pool {
             DbPool::Sqlite(_) => vec![conn.database.clone()],
@@ -145,10 +151,7 @@ impl Manager {
         database: Option<&str>,
     ) -> DbResult<SchemaTree> {
         let conn = self.store.get(connection_id)?;
-        let pool = self
-            .pools
-            .get_or_init_for(&self.store, connection_id, database)
-            .await?;
+        let pool = build_read_only_pool(&conn, database).await?;
         introspect(&pool, conn.engine, database).await
     }
 
@@ -390,10 +393,8 @@ impl Manager {
         connection_id: &str,
         req: crate::export::ExportRequest,
     ) -> DbResult<crate::export::ExportResult> {
-        let pool = self
-            .pools
-            .get_or_init_for(&self.store, connection_id, req.database.as_deref())
-            .await?;
+        let conn = self.store.get(connection_id)?;
+        let pool = build_read_only_pool(&conn, req.database.as_deref()).await?;
         crate::export::run_export(&pool, req.database.as_deref(), &req).await
     }
 
@@ -447,6 +448,31 @@ mod tests {
         let mgr = Manager::new(dir.path(), "default").unwrap();
 
         assert!(!mgr.query_cancel("missing").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn sqlite_databases_list_does_not_create_missing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = Manager::new(dir.path(), "default").unwrap();
+        let db_path = dir.path().join("missing.sqlite");
+        let conn = mgr
+            .connections_add(ConnectionInput {
+                name: "missing".to_string(),
+                engine: Engine::Sqlite,
+                host: None,
+                port: None,
+                database: db_path.display().to_string(),
+                username: None,
+                password: None,
+                ssl_mode: None,
+                params: Default::default(),
+            })
+            .unwrap();
+
+        let err = mgr.databases_list(&conn.id).await.unwrap_err();
+
+        assert!(matches!(err, DbError::NotFound(_)));
+        assert!(!db_path.exists());
     }
 
     #[tokio::test]

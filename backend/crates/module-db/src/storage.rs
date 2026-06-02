@@ -242,6 +242,23 @@ pub fn build_dsn(
     password: Option<&str>,
     database_override: Option<&str>,
 ) -> DbResult<String> {
+    build_dsn_with_sqlite_mode(conn, password, database_override, "rwc")
+}
+
+pub fn build_read_only_dsn(
+    conn: &Connection,
+    password: Option<&str>,
+    database_override: Option<&str>,
+) -> DbResult<String> {
+    build_dsn_with_sqlite_mode(conn, password, database_override, "ro")
+}
+
+fn build_dsn_with_sqlite_mode(
+    conn: &Connection,
+    password: Option<&str>,
+    database_override: Option<&str>,
+    sqlite_mode: &str,
+) -> DbResult<String> {
     use crate::types::Engine;
     // For Postgres/MySQL, prefer the override (if non-empty) over the saved
     // database. SQLite always uses the saved file path.
@@ -255,16 +272,18 @@ pub fn build_dsn(
         Engine::Sqlite => {
             // `database` is a filesystem path.
             // Pass the path verbatim; sqlx's sqlite driver expects `sqlite://<path>` or `sqlite:<path>`.
-            // We use the URI form with `?mode=rwc` so the file is created if missing.
             let path = &conn.database;
             let mut extras = String::new();
             for (k, v) in &conn.params {
+                if k.eq_ignore_ascii_case("mode") {
+                    continue;
+                }
                 extras.push('&');
                 extras.push_str(&urlencoded(k));
                 extras.push('=');
                 extras.push_str(&urlencoded(v));
             }
-            Ok(format!("sqlite://{path}?mode=rwc{extras}"))
+            Ok(format!("sqlite://{path}?mode={sqlite_mode}{extras}"))
         }
         Engine::Postgres => {
             let host = conn.host.as_deref().unwrap_or("localhost");
@@ -559,5 +578,26 @@ mod tests {
         let without = build_dsn(&c, None, None).unwrap();
         assert_eq!(with, without);
         assert_eq!(with, "sqlite:///tmp/app.sqlite?mode=rwc");
+    }
+
+    #[test]
+    fn sqlite_read_only_dsn_uses_ro_mode() {
+        let c = base(Engine::Sqlite, "/tmp/app.sqlite");
+        let dsn = build_read_only_dsn(&c, None, None).unwrap();
+
+        assert_eq!(dsn, "sqlite:///tmp/app.sqlite?mode=ro");
+    }
+
+    #[test]
+    fn sqlite_dsn_ignores_user_supplied_mode_param() {
+        let mut c = base(Engine::Sqlite, "/tmp/app.sqlite");
+        c.params = BTreeMap::from([
+            ("mode".to_string(), "rwc".to_string()),
+            ("cache".to_string(), "shared".to_string()),
+        ]);
+
+        let dsn = build_read_only_dsn(&c, None, None).unwrap();
+
+        assert_eq!(dsn, "sqlite:///tmp/app.sqlite?mode=ro&cache=shared");
     }
 }

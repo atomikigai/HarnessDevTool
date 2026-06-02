@@ -20,7 +20,7 @@ use sqlx::{MySqlPool, PgPool, SqlitePool};
 use tokio::sync::Mutex;
 
 use crate::error::{DbError, DbResult};
-use crate::storage::{build_dsn, fetch_password, ConnectionsStore};
+use crate::storage::{build_dsn, build_read_only_dsn, fetch_password, ConnectionsStore};
 use crate::types::{Connection, Engine};
 
 /// Per-engine pool enum. Dispatched on at query/schema/row sites.
@@ -155,6 +155,44 @@ pub async fn build_pool(conn: &Connection, database_override: Option<&str>) -> D
         Engine::Mysql => {
             let pool = MySqlPoolOptions::new()
                 .max_connections(8)
+                .connect(&dsn)
+                .await
+                .map_err(DbError::from)?;
+            Ok(DbPool::Mysql(pool))
+        }
+    }
+}
+
+pub async fn build_read_only_pool(
+    conn: &Connection,
+    database_override: Option<&str>,
+) -> DbResult<DbPool> {
+    let password = if conn.password_ref.is_some() {
+        fetch_password(&conn.id)?
+    } else {
+        None
+    };
+    let dsn = build_read_only_dsn(conn, password.as_deref(), database_override)?;
+    match conn.engine {
+        Engine::Sqlite => {
+            let pool = SqlitePoolOptions::new()
+                .max_connections(2)
+                .connect(&dsn)
+                .await
+                .map_err(DbError::from)?;
+            Ok(DbPool::Sqlite(pool))
+        }
+        Engine::Postgres => {
+            let pool = PgPoolOptions::new()
+                .max_connections(2)
+                .connect(&dsn)
+                .await
+                .map_err(DbError::from)?;
+            Ok(DbPool::Postgres(pool))
+        }
+        Engine::Mysql => {
+            let pool = MySqlPoolOptions::new()
+                .max_connections(2)
                 .connect(&dsn)
                 .await
                 .map_err(DbError::from)?;

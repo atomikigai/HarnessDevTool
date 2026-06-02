@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use chrono::Utc;
+use serde::de::DeserializeOwned;
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -216,16 +217,7 @@ impl Store {
             return Ok(Vec::new());
         }
         let f = File::open(&path)?;
-        let reader = BufReader::new(f);
-        let mut out = Vec::new();
-        for line in reader.lines() {
-            let line = line?;
-            if line.trim().is_empty() {
-                continue;
-            }
-            out.push(serde_json::from_str(&line)?);
-        }
-        Ok(out)
+        read_jsonl_lossy(BufReader::new(f), &path)
     }
 
     /// Append a single event to a thread's `events.jsonl`. Returns the seq written.
@@ -250,17 +242,33 @@ impl Store {
             return Ok(Vec::new());
         }
         let f = File::open(&path)?;
-        let reader = BufReader::new(f);
-        let mut out = Vec::new();
-        for line in reader.lines() {
-            let line = line?;
-            if line.trim().is_empty() {
-                continue;
-            }
-            out.push(serde_json::from_str(&line)?);
-        }
-        Ok(out)
+        read_jsonl_lossy(BufReader::new(f), &path)
     }
+}
+
+fn read_jsonl_lossy<T: DeserializeOwned>(
+    reader: impl BufRead,
+    path: &Path,
+) -> Result<Vec<T>, StoreError> {
+    let mut out = Vec::new();
+    for (line_no, line) in reader.lines().enumerate() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        match serde_json::from_str(&line) {
+            Ok(value) => out.push(value),
+            Err(error) => {
+                tracing::warn!(
+                    path = %path.display(),
+                    line = line_no + 1,
+                    error = %error,
+                    "skipping corrupt jsonl record"
+                );
+            }
+        }
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -298,6 +306,35 @@ mod tests {
         let read = store.read_events(&t.id).unwrap();
         assert_eq!(read.len(), 1);
         assert_eq!(read[0].event_type, "tick");
+    }
+
+    #[test]
+    fn read_events_skips_corrupt_jsonl_records() {
+        let home = tmp_home();
+        let store = Store::new(home.path()).unwrap();
+        let t = store.create_thread(None).unwrap();
+        let ev = Event {
+            seq: 0,
+            at: 123,
+            event_type: "tick".into(),
+            items: vec![],
+        };
+        let ev2 = Event {
+            seq: 1,
+            at: 124,
+            event_type: "tock".into(),
+            items: vec![],
+        };
+        let path = store.threads_dir().join(&t.id).join("events.jsonl");
+        let mut f = OpenOptions::new().append(true).open(path).unwrap();
+        writeln!(f, "{}", serde_json::to_string(&ev).unwrap()).unwrap();
+        writeln!(f, "{{not-json").unwrap();
+        writeln!(f, "{}", serde_json::to_string(&ev2).unwrap()).unwrap();
+
+        let read = store.read_events(&t.id).unwrap();
+        assert_eq!(read.len(), 2);
+        assert_eq!(read[0].event_type, "tick");
+        assert_eq!(read[1].event_type, "tock");
     }
 
     #[test]
@@ -369,6 +406,42 @@ mod tests {
         let read = store.read_handoffs(&t.id, "T-0001").unwrap();
         assert_eq!(read.len(), 2);
         assert_eq!(read[0].files_changed, vec!["src/orders.rs"]);
+    }
+
+    #[test]
+    fn read_handoffs_skips_corrupt_jsonl_records() {
+        let home = tmp_home();
+        let store = Store::new(home.path()).unwrap();
+        let t = store.create_thread(None).unwrap();
+        let handoff = Handoff {
+            at: 123,
+            from: "agent:frontend-1".to_string(),
+            to_role: "qa".to_string(),
+            task_id: "T-0001".to_string(),
+            status: "ready_for_verification".to_string(),
+            goal: "Verify pagination".to_string(),
+            assumptions: vec![],
+            files_changed: vec!["src/orders.rs".to_string()],
+            commands_run: vec!["cargo test orders".to_string()],
+            verification_passed: vec!["cargo test orders".to_string()],
+            verification_not_run: vec![],
+            blocked_on: vec![],
+            next_agent_action: "QA runs edge cases".to_string(),
+        };
+        let mut handoff2 = handoff.clone();
+        handoff2.status = "accepted".to_string();
+        let handoffs_dir = store.threads_dir().join(&t.id).join("handoffs");
+        std::fs::create_dir_all(&handoffs_dir).unwrap();
+        let path = handoffs_dir.join("T-0001.jsonl");
+        let mut f = File::create(path).unwrap();
+        writeln!(f, "{}", serde_json::to_string(&handoff).unwrap()).unwrap();
+        writeln!(f, "{{not-json").unwrap();
+        writeln!(f, "{}", serde_json::to_string(&handoff2).unwrap()).unwrap();
+
+        let read = store.read_handoffs(&t.id, "T-0001").unwrap();
+        assert_eq!(read.len(), 2);
+        assert_eq!(read[0].status, "ready_for_verification");
+        assert_eq!(read[1].status, "accepted");
     }
 }
 

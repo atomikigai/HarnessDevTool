@@ -213,6 +213,7 @@ pub async fn spawn_session_internal(
         underlying,
         &args.thread_id,
         &session_id,
+        &args.cwd,
         load_crawl4ai,
     )?;
     opts.session_id_override = Some(session_id.clone());
@@ -378,6 +379,7 @@ fn build_spawn_opts(
     kind: AgentKind,
     thread_id: &str,
     session_id: &str,
+    cwd: &std::path::Path,
     load_crawl4ai: bool,
 ) -> Result<(SpawnOpts, Option<PathBuf>), ApiError> {
     // `kind` here is the **underlying** CLI (Zeus → Claude), so the Claude
@@ -420,6 +422,8 @@ fn build_spawn_opts(
         state.profile.clone(),
         "--server-url".to_string(),
         state.server_url.clone(),
+        "--cwd".to_string(),
+        cwd.display().to_string(),
     ];
 
     let mut mcp_servers = Map::new();
@@ -490,7 +494,9 @@ pub(crate) fn harness_mcp_intro() -> &'static str {
      without asking for confirmation. \
      `TodoWrite`/`TodoRead` are disabled. Permission prompts are skipped by \
      the harness; supervision is provided by the scheduler, role prompts, and \
-     budget caps. Available DB tools include `db_query`, `db_schema`, \
+     budget caps. In unfamiliar repositories, call `repo_analyze` first, then \
+     use `repo_scan`, `repo_read_file`, `repo_git_status`, `repo_git_log`, and \
+     `repo_git_diff` instead of guessing the project structure. Available DB tools include `db_query`, `db_schema`, \
      `db_explain`, `db_performance_audit`, `db_backup`, `db_memory_read`, \
      and `db_memory_write` when a DB connection exists."
 }

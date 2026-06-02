@@ -8,7 +8,7 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use crate::events::Event;
-use crate::threads::Thread;
+use crate::threads::{AutonomyProfile, ExecutionMode, Handoff, ReadinessReport, Thread};
 
 #[derive(Debug, Error)]
 pub enum StoreError {
@@ -112,6 +112,112 @@ impl Store {
         Ok(serde_json::from_slice(&bytes)?)
     }
 
+    pub fn set_execution_mode(&self, id: &str, mode: ExecutionMode) -> Result<Thread, StoreError> {
+        let _guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
+        let meta_path = self.threads_dir.join(id).join("meta.json");
+        if !meta_path.exists() {
+            return Err(StoreError::NotFound(id.to_string()));
+        }
+        let bytes = std::fs::read(&meta_path)?;
+        let mut thread: Thread = serde_json::from_slice(&bytes)?;
+        thread.execution_mode = Some(mode);
+        let mut meta = File::create(&meta_path)?;
+        meta.write_all(serde_json::to_vec_pretty(&thread)?.as_slice())?;
+        meta.sync_all()?;
+        Ok(thread)
+    }
+
+    pub fn set_autonomy_profile(
+        &self,
+        id: &str,
+        profile: AutonomyProfile,
+    ) -> Result<Thread, StoreError> {
+        let _guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
+        let meta_path = self.threads_dir.join(id).join("meta.json");
+        if !meta_path.exists() {
+            return Err(StoreError::NotFound(id.to_string()));
+        }
+        let bytes = std::fs::read(&meta_path)?;
+        let mut thread: Thread = serde_json::from_slice(&bytes)?;
+        thread.autonomy_profile = Some(profile);
+        let mut meta = File::create(&meta_path)?;
+        meta.write_all(serde_json::to_vec_pretty(&thread)?.as_slice())?;
+        meta.sync_all()?;
+        Ok(thread)
+    }
+
+    pub fn write_readiness_report(
+        &self,
+        thread_id: &str,
+        report: &ReadinessReport,
+    ) -> Result<(), StoreError> {
+        let _guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = self.threads_dir.join(thread_id);
+        if !dir.exists() {
+            return Err(StoreError::NotFound(thread_id.to_string()));
+        }
+        let path = dir.join("readiness.json");
+        let mut f = File::create(&path)?;
+        f.write_all(serde_json::to_vec_pretty(report)?.as_slice())?;
+        f.sync_all()?;
+        Ok(())
+    }
+
+    pub fn read_readiness_report(
+        &self,
+        thread_id: &str,
+    ) -> Result<Option<ReadinessReport>, StoreError> {
+        let path = self.threads_dir.join(thread_id).join("readiness.json");
+        if !path.exists() {
+            return Ok(None);
+        }
+        let bytes = std::fs::read(&path)?;
+        Ok(Some(serde_json::from_slice(&bytes)?))
+    }
+
+    pub fn append_handoff(&self, thread_id: &str, handoff: &Handoff) -> Result<(), StoreError> {
+        let _guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = self.threads_dir.join(thread_id);
+        if !dir.exists() {
+            return Err(StoreError::NotFound(thread_id.to_string()));
+        }
+        let handoffs_dir = dir.join("handoffs");
+        std::fs::create_dir_all(&handoffs_dir)?;
+        let path = handoffs_dir.join(format!("{}.jsonl", handoff.task_id));
+        let mut f = OpenOptions::new().create(true).append(true).open(&path)?;
+        let line = serde_json::to_string(handoff)?;
+        f.write_all(line.as_bytes())?;
+        f.write_all(b"\n")?;
+        f.sync_data()?;
+        Ok(())
+    }
+
+    pub fn read_handoffs(
+        &self,
+        thread_id: &str,
+        task_id: &str,
+    ) -> Result<Vec<Handoff>, StoreError> {
+        let path = self
+            .threads_dir
+            .join(thread_id)
+            .join("handoffs")
+            .join(format!("{task_id}.jsonl"));
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+        let f = File::open(&path)?;
+        let reader = BufReader::new(f);
+        let mut out = Vec::new();
+        for line in reader.lines() {
+            let line = line?;
+            if line.trim().is_empty() {
+                continue;
+            }
+            out.push(serde_json::from_str(&line)?);
+        }
+        Ok(out)
+    }
+
     /// Append a single event to a thread's `events.jsonl`. Returns the seq written.
     pub fn append_event(&self, thread_id: &str, event: &Event) -> Result<(), StoreError> {
         let _guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
@@ -182,6 +288,64 @@ mod tests {
         let read = store.read_events(&t.id).unwrap();
         assert_eq!(read.len(), 1);
         assert_eq!(read[0].event_type, "tick");
+    }
+
+    #[test]
+    fn readiness_and_execution_mode_roundtrip() {
+        let home = tmp_home();
+        let store = Store::new(home.path()).unwrap();
+        let t = store.create_thread(Some("hello".into())).unwrap();
+        let report = ReadinessReport::new(
+            123,
+            "/tmp/project",
+            vec![],
+            vec![],
+            serde_json::json!({ "package_manager": "pnpm" }),
+            ExecutionMode::Quick,
+        );
+        store.write_readiness_report(&t.id, &report).unwrap();
+        let read = store.read_readiness_report(&t.id).unwrap().unwrap();
+        assert_eq!(read.suggested_execution_mode, ExecutionMode::Quick);
+
+        let updated = store
+            .set_execution_mode(&t.id, ExecutionMode::Quick)
+            .unwrap();
+        assert_eq!(updated.execution_mode, Some(ExecutionMode::Quick));
+        let updated = store
+            .set_autonomy_profile(&t.id, AutonomyProfile::Autonomous)
+            .unwrap();
+        assert_eq!(updated.autonomy_profile, Some(AutonomyProfile::Autonomous));
+        assert_eq!(
+            store.get_thread(&t.id).unwrap().execution_mode,
+            Some(ExecutionMode::Quick)
+        );
+    }
+
+    #[test]
+    fn handoffs_are_append_only_per_task() {
+        let home = tmp_home();
+        let store = Store::new(home.path()).unwrap();
+        let t = store.create_thread(None).unwrap();
+        let handoff = Handoff {
+            at: 123,
+            from: "agent:frontend-1".to_string(),
+            to_role: "qa".to_string(),
+            task_id: "T-0001".to_string(),
+            status: "ready_for_verification".to_string(),
+            goal: "Verify pagination".to_string(),
+            assumptions: vec![],
+            files_changed: vec!["src/orders.rs".to_string()],
+            commands_run: vec!["cargo test orders".to_string()],
+            verification_passed: vec!["cargo test orders".to_string()],
+            verification_not_run: vec![],
+            blocked_on: vec![],
+            next_agent_action: "QA runs edge cases".to_string(),
+        };
+        store.append_handoff(&t.id, &handoff).unwrap();
+        store.append_handoff(&t.id, &handoff).unwrap();
+        let read = store.read_handoffs(&t.id, "T-0001").unwrap();
+        assert_eq!(read.len(), 2);
+        assert_eq!(read[0].files_changed, vec!["src/orders.rs"]);
     }
 }
 

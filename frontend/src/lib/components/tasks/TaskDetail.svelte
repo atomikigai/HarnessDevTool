@@ -25,7 +25,7 @@
     Loader2
   } from '$lib/icons';
   import type { Task, AcceptanceCheck, PatchTaskRequest } from '$lib/api/models/task';
-  import { api, ApiError } from '$lib/api/client';
+  import { api, ApiError, type Handoff } from '$lib/api/client';
   import { toast } from 'svelte-sonner';
   import { formatDistanceToNow } from 'date-fns';
   import { patchTaskSchema, safeParse } from '$lib/api/schemas/task';
@@ -46,6 +46,8 @@
   let rawError = $state<string | null>(null);
   let abandonOpen = $state(false);
   let pauseOpen = $state(false);
+  let handoffs = $state<Handoff[]>([]);
+  let handoffsLoading = $state(false);
 
   const allVerified = $derived(
     task.acceptance.checks.length > 0 && task.acceptance.checks.every((c) => c.verified)
@@ -74,6 +76,23 @@
       busy = false;
     }
   }
+
+  async function loadHandoffs() {
+    handoffsLoading = true;
+    try {
+      const res = await api.tasks.handoffs(threadId, task.id);
+      handoffs = res.data ?? [];
+    } catch {
+      handoffs = [];
+    } finally {
+      handoffsLoading = false;
+    }
+  }
+
+  $effect(() => {
+    void task.id;
+    void loadHandoffs();
+  });
 
   function toggleCheck(check: AcceptanceCheck) {
     // Only allow toggling if the status logically permits it (in_progress / pending_verify).
@@ -258,6 +277,47 @@
         </div>
       {/if}
     </dl>
+
+    <!-- Handoffs -->
+    <section class="mb-4 rounded-md border p-3" style="border-color: var(--border-subtle);">
+      <div class="mb-2 flex items-center justify-between">
+        <h3 class="text-sm font-medium" style="color: var(--fg-default);">Handoffs</h3>
+        {#if handoffsLoading}
+          <Loader2 class="h-3.5 w-3.5 animate-spin" style="color: var(--fg-muted);" />
+        {/if}
+      </div>
+      {#if handoffs.length === 0}
+        <p class="text-xs" style="color: var(--fg-muted);">No handoff recorded yet.</p>
+      {:else}
+        <div class="space-y-2">
+          {#each handoffs as h, i (`${h.at}-${i}`)}
+            <article
+              class="rounded border px-2.5 py-2 text-xs"
+              style="border-color: var(--border-subtle); background: var(--surface-titlebar);"
+            >
+              <div class="mb-1 flex flex-wrap items-center gap-1.5">
+                <span class="font-mono" style="color: var(--fg-muted);">{h.from}</span>
+                <span style="color: var(--fg-muted);">→</span>
+                <span class="font-mono" style="color: var(--accent);">{h.to_role}</span>
+                <span
+                  class="rounded px-1.5 py-0.5"
+                  style="background: var(--accent-soft); color: var(--accent);"
+                >
+                  {h.status}
+                </span>
+              </div>
+              <p class="font-medium" style="color: var(--fg-default);">{h.goal}</p>
+              <p class="mt-1" style="color: var(--fg-muted);">{h.next_agent_action}</p>
+              {#if h.commands_run.length > 0}
+                <div class="mt-2 font-mono text-[11px]" style="color: var(--fg-muted);">
+                  {h.commands_run.join(' · ')}
+                </div>
+              {/if}
+            </article>
+          {/each}
+        </div>
+      {/if}
+    </section>
 
     <!-- Acceptance -->
     <section class="mb-4">

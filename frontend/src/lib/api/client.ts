@@ -105,7 +105,31 @@ export interface ThreadSummary {
   id: string;
   title?: string | null;
   created_at?: string;
+  execution_mode?: ExecutionMode | null;
+  autonomy_profile?: AutonomyProfile | null;
+  readiness?: ReadinessReport | null;
   sessions?: SessionMeta[];
+}
+
+export type ExecutionMode = 'quick' | 'standard' | 'project' | 'exploratory' | 'blocked';
+export type ReadinessStatus = 'ready' | 'ready_with_warnings' | 'blocked';
+export type AutonomyProfile = 'manual' | 'assisted' | 'autonomous' | 'ci';
+
+export interface ReadinessIssue {
+  id: string;
+  kind: string;
+  message: string;
+  how_to_fix?: string | null;
+}
+
+export interface ReadinessReport {
+  status: ReadinessStatus;
+  checked_at: number;
+  cwd: string;
+  blocking: ReadinessIssue[];
+  warnings: ReadinessIssue[];
+  facts: unknown;
+  suggested_execution_mode: ExecutionMode;
 }
 
 export type SessionKind =
@@ -240,6 +264,24 @@ export interface ListTasksFilters {
   assignee?: string;
 }
 
+export interface Handoff {
+  at: number;
+  from: string;
+  to_role: string;
+  task_id: string;
+  status: string;
+  goal: string;
+  assumptions: string[];
+  files_changed: string[];
+  commands_run: string[];
+  verification_passed: string[];
+  verification_not_run: string[];
+  blocked_on: string[];
+  next_agent_action: string;
+}
+
+export type CreateHandoffRequest = Omit<Handoff, 'at' | 'task_id'>;
+
 export interface PauseAllState {
   paused: boolean;
 }
@@ -327,14 +369,45 @@ export const api = {
         method: 'DELETE',
         body,
         signal
+      }),
+    handoffs: (threadId: string, taskId: string, signal?: AbortSignal) =>
+      apiRequest<Handoff[]>(`/threads/${threadId}/tasks/${taskId}/handoffs`, { signal }),
+    createHandoff: (
+      threadId: string,
+      taskId: string,
+      body: CreateHandoffRequest,
+      signal?: AbortSignal
+    ) =>
+      apiRequest<Handoff>(`/threads/${threadId}/tasks/${taskId}/handoffs`, {
+        method: 'POST',
+        body,
+        signal
       })
   },
   threads: {
     list: (signal?: AbortSignal) => apiRequest<ThreadSummary[]>('/threads', { signal }),
-    create: (title?: string, signal?: AbortSignal) =>
-      apiRequest<{ id: string }>('/threads', {
+    create: (title?: string, autonomyProfile?: AutonomyProfile, signal?: AbortSignal) =>
+      apiRequest<{ id: string; readiness: ReadinessReport }>('/threads', {
         method: 'POST',
-        body: title ? { title } : undefined,
+        body:
+          title || autonomyProfile
+            ? { title: title || undefined, autonomy_profile: autonomyProfile }
+            : undefined,
+        signal
+      }),
+    readiness: (threadId: string, signal?: AbortSignal) =>
+      apiRequest<ReadinessReport>(`/threads/${threadId}/readiness`, { signal }),
+    recalculateReadiness: (threadId: string, cwd?: string, signal?: AbortSignal) => {
+      const qs = cwd?.trim() ? `?cwd=${encodeURIComponent(cwd.trim())}` : '';
+      return apiRequest<ReadinessReport>(`/threads/${threadId}/readiness${qs}`, {
+        method: 'POST',
+        signal
+      });
+    },
+    setAutonomy: (threadId: string, autonomyProfile: AutonomyProfile, signal?: AbortSignal) =>
+      apiRequest<ThreadSummary>(`/threads/${threadId}/autonomy`, {
+        method: 'POST',
+        body: { autonomy_profile: autonomyProfile },
         signal
       })
   },

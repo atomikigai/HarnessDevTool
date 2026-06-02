@@ -5,6 +5,7 @@ use std::time::Duration;
 use axum::extract::{Path, State};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use harness_core::AutonomyProfile;
 use harness_policy::{Decision, RememberScope, Rule};
 use serde::{Deserialize, Serialize};
 
@@ -45,6 +46,9 @@ async fn check(
     let decision = match decision {
         Decision::Allow => Decision::Allow,
         Decision::Deny => Decision::Deny,
+        Decision::Ask if should_auto_allow_for_thread(&state, body.thread_id.as_deref()) => {
+            Decision::Allow
+        }
         Decision::Ask => {
             let timeout = Duration::from_secs(state.policy.timeout_secs());
             state
@@ -62,6 +66,22 @@ async fn check(
         }
     };
     Json(CheckResponse { decision })
+}
+
+fn should_auto_allow_for_thread(state: &AppState, thread_id: Option<&str>) -> bool {
+    let Some(thread_id) = thread_id else {
+        return false;
+    };
+    match state.store.get_thread(thread_id) {
+        Ok(thread) => matches!(
+            thread.autonomy_profile,
+            Some(AutonomyProfile::Autonomous | AutonomyProfile::Ci)
+        ),
+        Err(e) => {
+            tracing::warn!(thread_id, error = %e, "approval autonomy lookup failed");
+            false
+        }
+    }
 }
 
 async fn list(State(state): State<Arc<AppState>>) -> Json<Vec<ApprovalSummary>> {

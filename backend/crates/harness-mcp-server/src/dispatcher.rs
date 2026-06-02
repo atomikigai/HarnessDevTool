@@ -11,8 +11,8 @@ use crate::protocol::{
     SERVER_NAME, SERVER_VERSION,
 };
 use crate::tools::{
-    self, db as db_tools, knowledge as knowledge_tools, session as session_tools, skills, spec,
-    tasks, wrap_error, wrap_text,
+    self, db as db_tools, knowledge as knowledge_tools, repo, session as session_tools, skills,
+    spec, tasks, wrap_error, wrap_text,
 };
 use harness_core::TaskStore;
 use module_db::Manager as DbManager;
@@ -33,6 +33,7 @@ pub struct Dispatcher {
     /// broadcast bus emits `task.created` and the SSE stream pushes the new
     /// task into the right panel without the user having to refresh.
     server_url: Option<String>,
+    cwd: PathBuf,
 }
 
 impl Dispatcher {
@@ -45,6 +46,7 @@ impl Dispatcher {
             None,
             "default".into(),
             None,
+            std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
         )
     }
 
@@ -55,6 +57,7 @@ impl Dispatcher {
         session_id: Option<String>,
         profile: String,
         server_url: Option<String>,
+        cwd: PathBuf,
     ) -> Result<Self, String> {
         let store = TaskStore::with_profile(&harness_home, &profile).map_err(|e| e.to_string())?;
         let db = DbManager::new(&harness_home, &profile).map_err(|e| e.to_string())?;
@@ -67,6 +70,7 @@ impl Dispatcher {
             agent_id,
             session_id,
             server_url,
+            cwd,
         })
     }
 
@@ -149,6 +153,13 @@ impl Dispatcher {
                 knowledge_tools::pdf_ingest(&self.harness_home, &self.profile, &args)
             }
             "skills_search" => skills::search(&args),
+            "repo_analyze" => repo::analyze(&self.cwd, &args),
+            "repo_scan" => repo::scan(&self.cwd, &args),
+            "repo_read_file" => repo::read_file(&self.cwd, &args),
+            "repo_git_status" => repo::git_status(&self.cwd, &args),
+            "repo_git_log" => repo::git_log(&self.cwd, &args),
+            "repo_git_diff" => repo::git_diff(&self.cwd, &args),
+            "repo_codebase_memory_status" => repo::codebase_memory_status(&self.cwd, &args),
             "db_query" => db_tools::query(&self.db, &args),
             "db_schema" => db_tools::schema(&self.db, &args),
             "db_explain" => db_tools::explain(&self.db, &args),
@@ -217,23 +228,27 @@ impl Dispatcher {
                 Ok(value) => match value.get("decision").and_then(|v| v.as_str()) {
                     Some("allow") => None,
                     Some("deny") => Some(format!("tool call denied by policy: {tool_name}")),
-                    Some(other) => {
-                        warn!(decision = %other, "approval check returned unknown decision, continuing");
-                        None
-                    }
+                    Some(other) => Some(format!(
+                        "approval check returned unknown decision `{other}` for {tool_name}; failing closed"
+                    )),
                     None => {
-                        warn!("approval check response missing decision, continuing");
-                        None
+                        Some(format!(
+                            "approval check response missing decision for {tool_name}; failing closed"
+                        ))
                     }
                 },
                 Err(e) => {
-                    warn!(error = %e, "approval check response parse failed, continuing");
-                    None
+                    warn!(error = %e, "approval check response parse failed");
+                    Some(format!(
+                        "approval check response parse failed for {tool_name}; failing closed"
+                    ))
                 }
             },
             Err(e) => {
-                warn!(error = %e, "approval check failed, continuing");
-                None
+                warn!(error = %e, "approval check failed");
+                Some(format!(
+                    "approval check failed for {tool_name}; failing closed"
+                ))
             }
         }
     }
@@ -266,6 +281,21 @@ mod tests {
     fn mk(thread: &str, agent: &str) -> (Dispatcher, PathBuf) {
         let home = tmp_home();
         let d = Dispatcher::new(home.clone(), thread.to_string(), agent.to_string()).unwrap();
+        (d, home)
+    }
+
+    fn mk_with_cwd(thread: &str, agent: &str, cwd: PathBuf) -> (Dispatcher, PathBuf) {
+        let home = tmp_home();
+        let d = Dispatcher::new_with_server(
+            home.clone(),
+            thread.to_string(),
+            agent.to_string(),
+            None,
+            "default".into(),
+            None,
+            cwd,
+        )
+        .unwrap();
         (d, home)
     }
 
@@ -465,5 +495,37 @@ mod tests {
         let resp = d.handle(parse_request(read_line).unwrap()).unwrap();
         let text = resp["result"]["content"][0]["text"].as_str().unwrap();
         assert!(text.contains("# Spec\\nBody"));
+    }
+
+    #[test]
+    fn repo_analyze_reports_stack_and_codebase_memory_status() {
+        let cwd = tmp_home();
+        let (d, _home) = mk_with_cwd("t-repo", "agent:planner", cwd.clone());
+        std::fs::write(cwd.join("Cargo.toml"), "[package]\nname = \"demo\"\n").unwrap();
+        std::fs::write(
+            cwd.join("package.json"),
+            r#"{"scripts":{"test":"vitest"},"devDependencies":{"vite":"latest"}}"#,
+        )
+        .unwrap();
+        std::fs::write(cwd.join("pnpm-lock.yaml"), "").unwrap();
+        let line = r#"{"jsonrpc":"2.0","id":41,"method":"tools/call","params":{"name":"repo_analyze","arguments":{}}}"#;
+        let resp = d.handle(parse_request(line).unwrap()).unwrap();
+        let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+        let value: serde_json::Value = serde_json::from_str(text).unwrap();
+        let stack = value["stack"].as_array().unwrap();
+        assert!(stack.iter().any(|v| v == "rust"));
+        assert!(stack.iter().any(|v| v == "node"));
+        assert_eq!(value["package_manager"], "pnpm");
+        assert!(value["codebase_memory"]["recommended"].as_bool().unwrap());
+    }
+
+    #[test]
+    fn repo_read_file_rejects_parent_escape() {
+        let (d, _) = mk("t-repo-safe", "agent:planner");
+        let line = r#"{"jsonrpc":"2.0","id":42,"method":"tools/call","params":{"name":"repo_read_file","arguments":{"path":"../secret.txt"}}}"#;
+        let resp = d.handle(parse_request(line).unwrap()).unwrap();
+        assert_eq!(resp["result"]["isError"], true);
+        let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("must not escape"));
     }
 }

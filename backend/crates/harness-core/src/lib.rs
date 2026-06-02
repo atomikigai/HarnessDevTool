@@ -19,7 +19,7 @@ pub use budget::{
     BudgetWarningSink, ClaudeTranscriptReporter, CodexStubReporter, CostReporter, SessionCost,
     StubReporter, Usage,
 };
-pub use events::Event;
+pub use events::{Event, Item};
 pub use knowledge::{
     check_pdftotext, ingest_pdf, ingest_text, KnowledgeIngestRequest, KnowledgeIngestResult,
     KnowledgeShard, PdfTextToolStatus,
@@ -35,7 +35,10 @@ pub use tasks::{
     AcceptanceCheck, Artifacts, ClaimResult, HistoryEvent, Lease, ListFilters, Task, TaskDraft,
     TaskEvent, TaskPatch, TaskStatus, TaskStore,
 };
-pub use threads::Thread;
+pub use threads::{
+    AutonomyProfile, ExecutionMode, Handoff, ReadinessIssue, ReadinessReport, ReadinessStatus,
+    Thread,
+};
 
 /// Crate-level result type for task/agent operations.
 pub type Result<T> = std::result::Result<T, Error>;

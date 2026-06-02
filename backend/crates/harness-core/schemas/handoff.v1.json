@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://harness.local/schemas/handoff.v1.json",
+  "title": "Harness Handoff v1",
+  "type": "object",
+  "required": [
+    "at",
+    "from",
+    "to_role",
+    "task_id",
+    "status",
+    "goal",
+    "next_agent_action"
+  ],
+  "properties": {
+    "at": { "type": "integer" },
+    "from": { "type": "string", "minLength": 1 },
+    "to_role": { "type": "string", "minLength": 1 },
+    "task_id": { "type": "string", "minLength": 1 },
+    "status": { "type": "string", "minLength": 1 },
+    "goal": { "type": "string", "minLength": 1 },
+    "assumptions": { "type": "array", "items": { "type": "string" } },
+    "files_changed": { "type": "array", "items": { "type": "string" } },
+    "commands_run": { "type": "array", "items": { "type": "string" } },
+    "verification_passed": { "type": "array", "items": { "type": "string" } },
+    "verification_not_run": { "type": "array", "items": { "type": "string" } },
+    "blocked_on": { "type": "array", "items": { "type": "string" } },
+    "next_agent_action": { "type": "string", "minLength": 1 }
+  },
+  "additionalProperties": false
+}

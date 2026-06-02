@@ -10,7 +10,7 @@
   import { Button } from '$lib/components/ui/button';
   import { Input } from '$lib/components/ui/input';
   import { Label } from '$lib/components/ui/label';
-  import { api, ApiError, type SessionKind } from '$lib/api/client';
+  import { api, ApiError, type AutonomyProfile, type SessionKind } from '$lib/api/client';
   import { goto } from '$app/navigation';
   import { toast } from 'svelte-sonner';
   import { Loader2 } from '$lib/icons';
@@ -33,12 +33,14 @@
   let { open = $bindable(false), threadId = null, onCreated }: Props = $props();
 
   let kind = $state<SessionKind>('claude');
+  let autonomy = $state<AutonomyProfile>('assisted');
   let cwd = $state<string>('');
   let submitting = $state<boolean>(false);
   let error = $state<string | null>(null);
 
   function reset() {
     kind = 'claude';
+    autonomy = 'assisted';
     cwd = '';
     error = null;
     submitting = false;
@@ -83,14 +85,23 @@
     error = null;
     try {
       let tid = threadId;
+      const requestedCwd = cwd.trim() ? cwd.trim() : undefined;
       if (!tid) {
-        const t = await api.threads.create();
+        const t = await api.threads.create(undefined, autonomy);
         tid = t.data.id;
+        if (requestedCwd) {
+          try {
+            await api.threads.recalculateReadiness(tid, requestedCwd);
+          } catch {
+            // Session creation is still allowed; the banner will show the
+            // previous readiness state and the user can recalculate later.
+          }
+        }
       }
       const { cols, rows } = estimateInitialSize();
       const res = await api.sessions.create(tid, {
         kind,
-        cwd: cwd.trim() ? cwd.trim() : undefined,
+        cwd: requestedCwd,
         cols,
         rows
       });
@@ -162,8 +173,8 @@
         {#if kind === 'zeus'}
           <p class="text-[11px] leading-relaxed text-emerald-400/90">
             Zeus is an orchestrator session — it plans and delegates work across the CLIs by role,
-            falling back to Claude on quota/error. Under the hood it runs a Claude PTY with the
-            Zeus orchestrator briefing; real multi-CLI worker spawning lands with F3.
+            falling back to Claude on quota/error. Under the hood it runs a Claude PTY with the Zeus
+            orchestrator briefing; real multi-CLI worker spawning lands with F3.
           </p>
         {/if}
       </div>
@@ -173,6 +184,32 @@
         <p class="text-xs text-[var(--fg-muted)]">
           Defaults to the backend process cwd when empty.
         </p>
+      </div>
+      <div class="flex flex-col gap-2">
+        <Label for="autonomy">Autonomy</Label>
+        <div class="grid grid-cols-4 gap-2" role="radiogroup" id="autonomy">
+          {#each ['manual', 'assisted', 'autonomous', 'ci'] as const as opt (opt)}
+            <button
+              type="button"
+              role="radio"
+              aria-checked={autonomy === opt}
+              class="rounded-md border px-2 py-2 text-xs capitalize transition-colors {autonomy ===
+              opt
+                ? 'border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent)] font-medium'
+                : 'border-[var(--border-input)] bg-[var(--surface-titlebar)] text-[var(--fg-muted)] hover:text-[var(--fg-default)]'}"
+              onclick={() => (autonomy = opt)}
+              title={opt === 'manual'
+                ? 'Ask before sensitive actions.'
+                : opt === 'assisted'
+                  ? 'Default: assume reversible choices, ask for real blockers.'
+                  : opt === 'autonomous'
+                    ? 'Run without interruption inside policy and budget.'
+                    : 'Headless: do not ask; fail with a structured blocker.'}
+            >
+              {opt}
+            </button>
+          {/each}
+        </div>
       </div>
       {#if error}
         <p

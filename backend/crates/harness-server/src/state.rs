@@ -53,6 +53,7 @@ pub struct AppState {
     /// the profiles routes to report current state. Switching profiles
     /// requires a backend restart today; see `routes/profiles.rs`.
     pub profile: String,
+    pub autonomy_profile: harness_core::AutonomyProfile,
     /// Path to the `harness-mcp-server` binary used by the bridge. `None` if
     /// it could not be located; spawn then proceeds without MCP injection.
     pub mcp_server_binary: Option<PathBuf>,
@@ -190,6 +191,7 @@ impl AppState {
             binaries,
             harness_home: cfg.home.clone(),
             profile: cfg.profile.clone(),
+            autonomy_profile: cfg.autonomy_profile,
             mcp_server_binary,
             server_url,
             mcp_configs,
@@ -444,6 +446,7 @@ impl SessionSpawner for ManagerSpawner {
                             "--agent-id", agent_id,
                             "--harness-home", self.harness_home.display().to_string(),
                             "--server-url", self.server_url,
+                            "--cwd", cwd.display().to_string(),
                         ]
                     }),
                 );

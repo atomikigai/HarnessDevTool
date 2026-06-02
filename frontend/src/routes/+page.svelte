@@ -42,9 +42,7 @@
     if (typeof window === 'undefined') return null;
     // Fall back to legacy global key (pre-profile) so existing users don't
     // see their selection vanish after the upgrade.
-    return (
-      localStorage.getItem(sessionKey(profile)) ?? localStorage.getItem(SELECTED_SESSION_KEY)
-    );
+    return localStorage.getItem(sessionKey(profile)) ?? localStorage.getItem(SELECTED_SESSION_KEY);
   }
   function writePersistedSession(profile: string, id: string | null) {
     if (typeof window === 'undefined') return;
@@ -97,6 +95,14 @@
   const selectedSession = $derived<SessionMeta | null>(
     selectedSessionId ? (allSessions.find((s) => s.id === selectedSessionId) ?? null) : null
   );
+
+  const selectedThread = $derived(
+    selectedSession
+      ? (sessionsState.threads.find((t) => t.id === selectedSession.thread_id) ?? null)
+      : null
+  );
+
+  const readiness = $derived(selectedThread?.readiness ?? null);
 
   // Per-thread task progress — only computed for the currently-selected
   // thread (the tasks SSE only subscribes to one thread at a time). All
@@ -218,6 +224,23 @@
     refreshSessions();
     selectedSessionId = newId;
   }
+
+  async function refreshReadiness() {
+    if (!selectedThread) return;
+    try {
+      await api.threads.recalculateReadiness(selectedThread.id, selectedSession?.cwd ?? undefined);
+      refreshSessions();
+      toast.success('Readiness refreshed');
+    } catch (err) {
+      const msg =
+        err instanceof ApiError
+          ? ((err.body as { error?: string } | undefined)?.error ?? err.message)
+          : err instanceof Error
+            ? err.message
+            : String(err);
+      toast.error(`Readiness failed: ${msg}`);
+    }
+  }
 </script>
 
 <div class="flex h-full min-h-0 flex-col">
@@ -277,6 +300,55 @@
       </Button>
     </div>
   </header>
+
+  {#if selectedThread && readiness}
+    <div
+      class="flex shrink-0 items-center justify-between gap-4 border-b px-5 py-2"
+      style="
+        border-color: var(--border-subtle);
+        background: {readiness.status === 'blocked'
+        ? 'color-mix(in srgb, var(--dot-danger) 10%, var(--surface-panel))'
+        : readiness.status === 'ready_with_warnings'
+          ? 'color-mix(in srgb, var(--dot-warn) 10%, var(--surface-panel))'
+          : 'var(--surface-panel)'};
+      "
+    >
+      <div class="flex min-w-0 items-center gap-2 text-xs">
+        {#if readiness.status === 'ready'}
+          <CircleCheck class="h-4 w-4 shrink-0" style="color: var(--dot-success);" />
+        {:else}
+          <CircleAlert
+            class="h-4 w-4 shrink-0"
+            style="color: {readiness.status === 'blocked'
+              ? 'var(--dot-danger)'
+              : 'var(--dot-warn)'};"
+          />
+        {/if}
+        <span class="font-medium" style="color: var(--fg-default);">
+          {readiness.status === 'blocked'
+            ? 'Blocked'
+            : readiness.status === 'ready_with_warnings'
+              ? 'Ready with warnings'
+              : 'Ready'}
+        </span>
+        <span class="truncate" style="color: var(--fg-muted);">
+          Mode {readiness.suggested_execution_mode} · Autonomy {selectedThread.autonomy_profile ??
+            'assisted'}
+          {#if readiness.blocking.length > 0}
+            · {readiness.blocking[0].message}
+          {:else if readiness.warnings.length > 0}
+            · {readiness.warnings.length} warning{readiness.warnings.length === 1 ? '' : 's'}
+          {:else}
+            · {readiness.cwd}
+          {/if}
+        </span>
+      </div>
+      <Button variant="outline" size="sm" onclick={refreshReadiness}>
+        <RefreshCw class="h-3.5 w-3.5" />
+        Recheck
+      </Button>
+    </div>
+  {/if}
 
   <!-- Three-column body -->
   <div class="flex min-h-0 flex-1">

@@ -2,8 +2,12 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::get;
 use axum::{Json, Router};
-use harness_core::{AcceptanceCheck, ListFilters, Task, TaskDraft, TaskPatch, TaskStatus};
+use chrono::Utc;
+use harness_core::{
+    AcceptanceCheck, Event, Handoff, Item, ListFilters, Task, TaskDraft, TaskPatch, TaskStatus,
+};
 use serde::Deserialize;
+use serde_json::json;
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -16,6 +20,10 @@ pub fn router() -> Router<Arc<AppState>> {
         .route(
             "/api/threads/:tid/tasks/:task_id",
             get(get_one).patch(patch_one).delete(delete_one),
+        )
+        .route(
+            "/api/threads/:tid/tasks/:task_id/handoffs",
+            get(list_handoffs).post(create_handoff),
         )
 }
 
@@ -124,6 +132,27 @@ pub struct PatchBody {
     pub patch: TaskPatch,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct HandoffBody {
+    pub from: String,
+    pub to_role: String,
+    pub status: String,
+    pub goal: String,
+    #[serde(default)]
+    pub assumptions: Vec<String>,
+    #[serde(default)]
+    pub files_changed: Vec<String>,
+    #[serde(default)]
+    pub commands_run: Vec<String>,
+    #[serde(default)]
+    pub verification_passed: Vec<String>,
+    #[serde(default)]
+    pub verification_not_run: Vec<String>,
+    #[serde(default)]
+    pub blocked_on: Vec<String>,
+    pub next_agent_action: String,
+}
+
 async fn patch_one(
     State(s): State<Arc<AppState>>,
     Path((tid, task_id)): Path<(String, String)>,
@@ -145,4 +174,66 @@ async fn delete_one(
 ) -> ApiResult<StatusCode> {
     s.tasks.delete(&tid, &task_id, body.why, &body.by)?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+async fn list_handoffs(
+    State(s): State<Arc<AppState>>,
+    Path((tid, task_id)): Path<(String, String)>,
+) -> ApiResult<Json<Vec<Handoff>>> {
+    // Validate task exists so callers get the same 404 semantics as get_one.
+    let _ = s.tasks.get(&tid, &task_id)?;
+    Ok(Json(s.store.read_handoffs(&tid, &task_id)?))
+}
+
+async fn create_handoff(
+    State(s): State<Arc<AppState>>,
+    Path((tid, task_id)): Path<(String, String)>,
+    Json(body): Json<HandoffBody>,
+) -> ApiResult<(StatusCode, Json<Handoff>)> {
+    let _ = s.tasks.get(&tid, &task_id)?;
+    if body.from.trim().is_empty()
+        || body.to_role.trim().is_empty()
+        || body.status.trim().is_empty()
+        || body.goal.trim().is_empty()
+        || body.next_agent_action.trim().is_empty()
+    {
+        return Err(ApiError::BadRequest(
+            "from, to_role, status, goal and next_agent_action are required".to_string(),
+        ));
+    }
+    let handoff = Handoff {
+        at: Utc::now().timestamp_millis(),
+        from: body.from,
+        to_role: body.to_role,
+        task_id: task_id.clone(),
+        status: body.status,
+        goal: body.goal,
+        assumptions: body.assumptions,
+        files_changed: body.files_changed,
+        commands_run: body.commands_run,
+        verification_passed: body.verification_passed,
+        verification_not_run: body.verification_not_run,
+        blocked_on: body.blocked_on,
+        next_agent_action: body.next_agent_action,
+    };
+    s.store.append_handoff(&tid, &handoff)?;
+
+    let seq = s.store.read_events(&tid)?.len() as u64;
+    let event = Event {
+        seq,
+        at: Utc::now().timestamp_millis(),
+        event_type: "handoff.created".to_string(),
+        items: vec![Item::Text {
+            text: serde_json::to_string(&json!({
+                "task_id": task_id,
+                "from": handoff.from,
+                "to_role": handoff.to_role,
+                "status": handoff.status,
+            }))
+            .unwrap_or_else(|_| "{}".to_string()),
+        }],
+    };
+    s.store.append_event(&tid, &event)?;
+
+    Ok((StatusCode::CREATED, Json(handoff)))
 }

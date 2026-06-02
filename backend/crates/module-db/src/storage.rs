@@ -172,7 +172,7 @@ fn validate_input(input: &ConnectionInput) -> DbResult<()> {
             }
         }
         Engine::Postgres | Engine::Mysql => {
-            if input.host.as_deref().is_none_or(|s| s.trim().is_empty()) {
+            if input.host.as_deref().map_or(true, |s| s.trim().is_empty()) {
                 return Err(DbError::Validation(format!(
                     "{} host is required",
                     input.engine.as_str()

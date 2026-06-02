@@ -3,6 +3,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
+use harness_core::AutonomyProfile;
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -17,6 +18,9 @@ pub struct Config {
     /// All stores key into `$HARNESS_HOME/profiles/<profile>/…`. Switching
     /// profiles today requires a backend restart; hot-swap is a future slice.
     pub profile: String,
+    /// Default autonomy profile for new threads. Project/thread overrides land
+    /// in the A2 follow-up; env keeps this slice simple and explicit.
+    pub autonomy_profile: AutonomyProfile,
 }
 
 impl Config {
@@ -37,12 +41,14 @@ impl Config {
             .unwrap_or_else(|_| "http://localhost:8081".to_string());
 
         let profile = resolve_profile(&home);
+        let autonomy_profile = resolve_autonomy_profile();
 
         Ok(Self {
             bind,
             home,
             cors_origin,
             profile,
+            autonomy_profile,
         })
     }
 }
@@ -69,4 +75,18 @@ fn resolve_profile(home: &std::path::Path) -> String {
         }
     }
     "default".to_string()
+}
+
+fn resolve_autonomy_profile() -> AutonomyProfile {
+    match env::var("HARNESS_AUTONOMY_PROFILE")
+        .unwrap_or_else(|_| "assisted".to_string())
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "manual" => AutonomyProfile::Manual,
+        "autonomous" => AutonomyProfile::Autonomous,
+        "ci" => AutonomyProfile::Ci,
+        _ => AutonomyProfile::Assisted,
+    }
 }

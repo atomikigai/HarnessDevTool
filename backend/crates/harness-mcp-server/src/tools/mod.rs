@@ -1,5 +1,6 @@
 pub mod db;
 pub mod knowledge;
+pub mod repo;
 pub mod session;
 pub mod skills;
 pub mod spec;
@@ -357,6 +358,78 @@ pub fn list_descriptors() -> Vec<ToolDescriptor> {
                     "top_k": { "type": "integer", "minimum": 1 }
                 }
             }),
+        },
+        ToolDescriptor {
+            name: "repo_analyze".into(),
+            description: "Analyze the current workspace deterministically: stack signals, package manager, key files, scripts, env files, git state, and codebase-memory-mcp availability. Use before planning in unknown repos."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Optional workspace-relative subpath." }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "repo_scan".into(),
+            description: "List files under the current workspace with depth and result limits. Paths are workspace-relative and never escape cwd."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string" },
+                    "max_depth": { "type": "integer", "minimum": 0 },
+                    "limit": { "type": "integer", "minimum": 1 }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "repo_read_file".into(),
+            description: "Read a text file from the workspace with size limits. Refuses paths outside cwd."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["path"],
+                "properties": {
+                    "path": { "type": "string" },
+                    "max_bytes": { "type": "integer", "minimum": 1 },
+                    "head_lines": { "type": "integer", "minimum": 1 }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "repo_git_status".into(),
+            description: "Return `git status --short --branch` for the workspace.".into(),
+            input_schema: json!({ "type": "object", "properties": {} }),
+        },
+        ToolDescriptor {
+            name: "repo_git_log".into(),
+            description: "Return recent git commits for the workspace.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "limit": { "type": "integer", "minimum": 1 },
+                    "path": { "type": "string" }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "repo_git_diff".into(),
+            description: "Return git diff for the workspace, optionally scoped to a path.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string" },
+                    "staged": { "type": "boolean" },
+                    "max_bytes": { "type": "integer", "minimum": 1 }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "repo_codebase_memory_status".into(),
+            description: "Report whether codebase-memory-mcp is installed and whether a local index marker exists for this workspace. The harness treats it as an optional code-intelligence accelerator."
+                .into(),
+            input_schema: json!({ "type": "object", "properties": {} }),
         },
         // ── Session tree (Zeus orchestrator) ────────────────────────────
         ToolDescriptor {

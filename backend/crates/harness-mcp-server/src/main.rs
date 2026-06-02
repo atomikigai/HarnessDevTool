@@ -106,6 +106,8 @@ struct CliArgs {
     /// new task. Without it, `task_create` falls back to a direct filesystem
     /// write but cannot notify the HTTP server (sessions panel will lag).
     server_url: Option<String>,
+    /// Workspace root this MCP instance may inspect.
+    cwd: PathBuf,
 }
 
 fn parse_args() -> Result<CliArgs, String> {
@@ -115,6 +117,7 @@ fn parse_args() -> Result<CliArgs, String> {
     let mut harness_home: Option<PathBuf> = None;
     let mut profile: Option<String> = None;
     let mut server_url: Option<String> = std::env::var("HARNESS_SERVER_URL").ok();
+    let mut cwd: Option<PathBuf> = None;
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
@@ -149,9 +152,13 @@ fn parse_args() -> Result<CliArgs, String> {
                 server_url = Some(next(i)?.clone());
                 i += 2;
             }
+            "--cwd" => {
+                cwd = Some(PathBuf::from(next(i)?));
+                i += 2;
+            }
             "-h" | "--help" => {
                 eprintln!(
-                    "usage: harness-mcp-server --thread <tid> --agent-id <aid> [--session-id <sid>] --harness-home <path> [--profile <profile>] [--server-url <url>]"
+                    "usage: harness-mcp-server --thread <tid> --agent-id <aid> [--session-id <sid>] --harness-home <path> [--profile <profile>] [--server-url <url>] [--cwd <path>]"
                 );
                 std::process::exit(0);
             }
@@ -165,6 +172,7 @@ fn parse_args() -> Result<CliArgs, String> {
         harness_home: harness_home.ok_or_else(|| "missing --harness-home".to_string())?,
         profile: profile.unwrap_or_else(|| "default".to_string()),
         server_url,
+        cwd: cwd.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))),
     })
 }
 
@@ -200,6 +208,7 @@ fn main() -> ExitCode {
         args.session_id.clone(),
         args.profile.clone(),
         args.server_url.clone(),
+        args.cwd.clone(),
     ) {
         Ok(d) => d,
         Err(e) => {

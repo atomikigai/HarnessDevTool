@@ -694,6 +694,7 @@ mod tests {
                 home,
                 cors_origin: "http://localhost:8080".to_string(),
                 profile: "default".to_string(),
+                autonomy_profile: harness_core::AutonomyProfile::Assisted,
             })
             .unwrap(),
         )

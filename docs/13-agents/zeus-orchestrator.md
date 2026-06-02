@@ -29,7 +29,8 @@ Zeus elige por componente y deja a Claude como **fallback uniforme** cuando un C
 | Orquestador central         | **Claude**              | Planifica, delega, valida, coordina handoffs.                                    |
 | IDE / humano en loop        | **Cursor**              | Revisión, edición, reglas del proyecto, control manual.                          |
 | Backend worker              | Claude o Codex          | Claude para arquitectura; Codex para implementación.                             |
-| Frontend worker             | Cursor / Codex / Claude | Cursor para iteración visual; Codex para cambios rápidos; Claude para estructura.|
+| Frontend visual worker      | **Cursor**              | Pantallas, CSS, layout, componentes visuales, responsive y polish.               |
+| Frontend logic worker       | Codex / Claude          | Stores, API client, validación, routing y cambios mecánicos rápidos.             |
 | DB worker                   | **Claude**              | Migraciones, impacto, consistencia, reasoning.                                   |
 | QA worker                   | Codex o Claude          | Codex para tests; Claude para escenarios y criterios.                            |
 | PR / refactor worker        | **Codex**               | Cambios de código, tests, reviews, releases.                                     |
@@ -39,10 +40,17 @@ Zeus elige por componente y deja a Claude como **fallback uniforme** cuando un C
 
 **Claude es el destino de fallback universal.** Si el CLI primario para un rol está sin cuota / errored / no instalado, Zeus reintenta con Claude. Esto se basa en que Claude tiene cuota más generosa en el setup actual del usuario y reasoning aceptable en todos los roles.
 
-Orden de selección por rol (ejemplo, frontend worker):
-1. Primario: `Cursor` (mejor en iteración visual).
-2. Secundario: `Codex` (cambios rápidos).
-3. Fallback: `Claude` (estructura — y siempre disponible).
+Orden de selección por rol:
+1. Frontend visual (`*.svelte`, `app.css`, layout, responsive, a11y visual, shadcn): `Cursor -> Codex -> Claude`.
+2. Frontend logic (stores, API client, validators, data flow): `Codex -> Claude -> Cursor`.
+3. Backend/refactor/tests: `Codex` o `Claude` según arquitectura vs implementación.
+4. DB/arquitectura: `Claude`.
+
+Regla especial de Zeus: cuando el trabajo sea construir o pulir pantallas,
+componentes visuales, CSS, responsive, densidad de UI, estados hover/focus o
+consistencia de diseño, Zeus debe preferir `Cursor` aunque el dominio sea
+`frontend` genérico. Codex queda como secundario para cambios rápidos y Claude
+como fallback estructural.
 
 El fallback dispara una entrada en el audit log con `reason: quota_exceeded | binary_missing | runtime_error`.
 
@@ -79,6 +87,10 @@ En F3 esto se endurece con:
 
 - Zeus solo orquesta CLIs **del set canónico** (ver [[agents/supported-clis]]). No hay agentes custom.
 - Capabilities MCP por sub-sesión las define [[agents/role-capability-matrix]] según el rol asignado, no según el CLI elegido.
+- Cursor es primario para frontend visual, pero debe operar con el mismo
+  contrato de task, handoff y audit que el resto. Mientras Cursor no tenga MCP
+  injection equivalente, Zeus solo debe usarlo para visual work cuando pueda
+  recibir contexto suficiente por prompt/PTY y devolver evidencia verificable.
 - Budget hard cap del thread aplica al conjunto Zeus + hijas — no por hija.
 - Si Claude (el fallback) está también caído, Zeus marca la task `blocked` con `why_blocked = "no fallback CLI available"`.
 - Los subagentes iniciados por workers son válidos, pero heredan el mismo árbol

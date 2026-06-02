@@ -4,7 +4,7 @@ title: Approval flow (humano in the loop)
 shard: 03-harness-core
 tags: [approval, human-in-the-loop, safety]
 summary: Pausa antes de acciones sensibles; espera allow/deny del humano vía SSE/UI.
-related: [agents/overview, harness-core/tool-execution, memory/lifecycle, architecture/ipc-protocol]
+related: [agents/overview, agents/autonomy-protocol, harness-core/tool-execution, memory/lifecycle, architecture/ipc-protocol]
 sources: []
 ---
 
@@ -22,6 +22,13 @@ Modos por thread:
 - `auto` — todo se ejecuta sin preguntar. CI / batch.
 - `risky-only` — solo tools que el catálogo marca sensibles (default).
 - `every-call` — pide para cada tool del harness-bridge. Solo para debugging.
+
+El `approval_mode` efectivo puede derivarse del `autonomy_profile` del thread
+cuando no se define manualmente. Ver [[agents/autonomy-protocol]]:
+- `manual` → `every-call` para tools sensibles.
+- `assisted` → `risky-only`.
+- `autonomous` → `auto` para allowlists del proyecto y `risky-only` fuera de ellas.
+- `ci` → `auto`; si falta aprobacion o recurso, falla con error estructurado.
 
 Tools típicamente con `requires_approval`:
 - `memory.note`, `memory.update` (siempre, salvo orchestrator)

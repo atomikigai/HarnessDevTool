@@ -18,7 +18,7 @@ sources: []
 |----------------|-------------------|---------------------|--------------------------------------------------------------------|
 | Claude Code    | `Claude`          | `claude`            | Reference implementation; MCP wired.                               |
 | Codex          | `Codex`           | `codex`             | OpenAI; MCP wired via per-invocation `-c mcp_servers.*` overrides. |
-| Cursor Agent   | `Cursor`          | `cursor-agent`      | Sin MCP injection todavía.                                         |
+| Cursor Agent   | `Cursor`          | `cursor-agent`      | Primario para frontend visual en Zeus; sin MCP injection todavía.  |
 | Antigravity    | `Antigravity`     | `agy`               | Cubre el rol de cloud/Workspace/context (sin MCP injection).       |
 | **Zeus**       | `Zeus`            | *(virtual → Claude)*| **No es un CLI** — orquestador. Corre un Claude PTY con el briefing de Zeus hasta F3. Ver [[agents/zeus-orchestrator]]. |
 
@@ -37,6 +37,12 @@ sources: []
 | Auth bind-mount (`~/.X/`)        | `.claude` | `.codex` | `.cursor` | `.antigravity` | `.claude`  |
 
 `✗` = no soportado por el CLI o aún no investigado. Zeus hoy hereda todas las features de Claude (su underlying CLI); F3 cambiará esto al introducir delegation real.
+
+Nota de routing: aunque Cursor todavía no tenga MCP injection, Zeus debe
+preferirlo para implementación visual de pantallas, CSS, layout, responsive y
+polish cuando pueda darle contexto suficiente por prompt y verificar el
+resultado con tests/screenshot/handoff. Para frontend lógico o cambios de datos,
+Codex/Claude siguen siendo mejores hasta completar la integración de Cursor.
 
 ## Cómo el harness los spawnea
 

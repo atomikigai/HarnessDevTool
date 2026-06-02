@@ -56,6 +56,7 @@ sources: []
 |---|---|---|
 | Single-user local self-host | **Sí** | scope del proyecto |
 | Approval mode default | **`risky-only`** | balance fatiga/seguridad |
+| Autonomy profile default | **`assisted`** | permite asumir decisiones reversibles sin convertir proyectos nuevos en ejecucion headless |
 | Sandbox default | **`workspace`** | RW solo en project_root |
 | Learner mode | **`proposed/` (revisión humana)** | filosofía Rust: nada cambia sin verse |
 | Curator LLM review | **off en F5, on en F6** | empezar barato |
@@ -108,6 +109,7 @@ sources: []
 | Distribución | **Self-hosted only** — Dockerfile + compose en el repo, usuario clona y builda. No publicar a registries públicos | Q19 cerrada. Re-abrir si surge demanda real |
 | `harness-mcp-server` runtime | **In-process** vía feature `embedded` por default; child process documentado como fallback | N1 cerrada. Interfaz MCP stdio JSONL idéntica en ambos modos |
 | Sandbox de tools del CLI hijo | **Confiamos en el sandbox del CLI** (`claude`/`codex`/`cursor`/`agy`); `harness-sandbox` envuelve solo lo que el bridge ejecuta directamente | N3 cerrada. Mayoría del bridge es read-only |
+| Protocolo de autonomia | **Readiness check + execution mode + autonomy profile + handoff schema** antes de planificar caro | Evita bloqueos tardios por credenciales/env y evita usar DAG completo para cambios cortos |
 | Auth bind-mount container | **Bind-mount RW compartido** de `~/.claude/`, `~/.codex/`, `~/.cursor/`, `~/.antigravity/`. Refresh tokens sobreviven destruir el container | N4 cerrada. Restricción documentada: no correr el mismo CLI con otra cuenta en host paralelo |
 | Adjuntos a sesiones | **`POST /api/sessions/:sid/attach`** multipart → `$HARNESS_HOME/.runtime/attach/<sid>/`. Tools MCP `attach.list/read` exponen archivos al CLI hijo | N5 cerrada. Habilita que CLIs vean imágenes/PDF/docs/archivos arbitrarios. Cleanup al cerrar sesión o TTL 24h |
 

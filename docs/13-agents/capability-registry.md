@@ -21,6 +21,7 @@ sources: []
 | **playwright** | stdio (npm) | `browser.*`, `e2e.*` | On-demand | Automatización de browser; E2E tests. |
 | **fetch** | stdio (npm) | `http.get`, `http.post` (allow-listed) | On-demand | Llamadas HTTP simples; sandboxed allowlist. |
 | **github** | http (oauth) | `gh.repo.*`, `gh.pr.*`, `gh.issue.*` | On-demand | F4+; auth con token del usuario. |
+| **codebase-memory** | stdio (external) | structural graph queries, symbols, callers/callees, blast radius | On-demand | Opcional. El harness lo detecta como `codebase-memory-mcp` y lo usa como acelerador de repo intelligence; wrappers propios viven en `repo.*`. |
 | **filesystem** | stdio (npm) | `fs.read`, `fs.write`, `fs.tree` | Mediado | En desuso: usamos `shell.exec` sandboxed para FS. |
 
 ### Reglas
@@ -103,7 +104,7 @@ Estas son las MCP tools que expone `harness-bridge`. Patrón de namespace:
 | `skills.*` | `search`, `get`, `manage` | F5; antes de F5 devuelven `[]` |
 | `capability.*` | `request`, `list_loaded` | Solicitar/listar capabilities en runtime |
 | `memory.*` | `search`, `get` | F5; FTS5 sobre events.jsonl |
-| `repo.*` | `scan`, `read_file`, `git_log`, `git_diff` | Read-only del workspace |
+| `repo.*` | `analyze`, `scan`, `read_file`, `git_status`, `git_log`, `git_diff`, `codebase_memory_status` | Read-only del workspace; primera lectura recomendada en repos desconocidos |
 | `budget.*` | `remaining` | Solo lectura |
 | `agents.*` | `list`, `describe` | Para el orchestrator |
 | `mcps.*` | `list_available`, `describe` | Inspección del catálogo |

@@ -23,24 +23,151 @@ revisar, aprobar y ejecutar sin mezclar scopes.
 6. **Mejoras y bugs del DB Manager** — ejecutada; tarea creada desde la inspección de validación DB.
 7. **Iconos lucide para schemas, tablas y vistas en DB** — ejecutada; mejora visual pequeña del árbol DB.
 8. **Context menu avanzado para tablas/vistas DB** — ejecutada; exportar formatos y generar queries en nueva pestaña.
-9. **Task 12: TaskBrief first-class** — separar contrato de trabajo de acceptance checks.
-10. **Task 13: Separar `task.create` y `task.propose`** — workers proponen, planner/orchestrator crea.
-11. **Task 14: Capability policy middleware mínimo** — enforcement real de roles/tools/resources.
-12. **Task 15: Eventos append-only unificados** — task/agent/spec/artifact/audit con semántica común.
-13. **Task 16: Metadata fuerte de subagentes** — ownership, rol, task, parent/root y scopes.
-14. **Task 17: `spec.md` append-only con versiones** — referencias estables desde tasks.
-15. **Task 18: Artifacts como entidad/evento real** — metadata recuperable para diff, logs, screenshots.
-16. **Task 19: Razones estructuradas en tasks** — blocked/paused/rejected/needs_human.
-17. **Task 20: Scheduler explain/debug** — explicar por qué asignó o saltó una task.
-18. **Task 21: Budget por task/agente** — costo por thread/session/task/role y retries.
-19. **Task 22: Reconciliador de estado** — detectar inconsistencias task/session/artifact.
-20. **Task 23: Replay/debug timeline** — vista reconstruible de un thread completo.
-21. **Task 24: Tipos TS generados desde Rust para tasks** — reemplazar hand-rolled frontend models.
-22. **Task 25: E2E pequeño planner→worker→evaluator** — antes del TODO app challenge completo.
-23. **Task 26: Árbol aislado de sesiones y mailbox de subagentes** — comunicación controlada, multi-nivel y auditable.
-24. **Task 9: Agente DB para conexión activa** — agente especializado con acceso controlado a la BD, backups y puente con Agents.
-25. **Task 10: Esqueleto mínimo del módulo SSH** — slice grande; arrancar después de cerrar pendientes chicos.
-26. **Task 11: Botón `+ task` en tab Tasks** — mejora secundaria para control manual.
+9. **Task A1: Readiness check + execution mode** — base ejecutada; follow-up: checks de deps/ports/budget mas profundos y bloqueo efectivo antes de spawns caros.
+10. **Task A2: Autonomy profile + approvals policy** — base ejecutada; follow-up: allowlists por project.toml/policy y selector editable en thread activo.
+11. **Task A3: Team handoff schema** — base ejecutada; follow-up: enforcement obligatorio `generator -> evaluator` antes de `pending_verify`.
+12. **Task A4: Repo intelligence + codebase-memory-mcp** — base ejecutada; follow-up: index orchestration/cache y wrappers profundos de grafo.
+13. **Task 12: TaskBrief first-class** — separar contrato de trabajo de acceptance checks.
+14. **Task 13: Separar `task.create` y `task.propose`** — workers proponen, planner/orchestrator crea.
+15. **Task 14: Capability policy middleware mínimo** — enforcement real de roles/tools/resources.
+16. **Task 15: Eventos append-only unificados** — task/agent/spec/artifact/audit con semántica común.
+17. **Task 16: Metadata fuerte de subagentes** — ownership, rol, task, parent/root y scopes.
+18. **Task 17: `spec.md` append-only con versiones** — referencias estables desde tasks.
+19. **Task 18: Artifacts como entidad/evento real** — metadata recuperable para diff, logs, screenshots.
+20. **Task 19: Razones estructuradas en tasks** — blocked/paused/rejected/needs_human.
+21. **Task 20: Scheduler explain/debug** — explicar por qué asignó o saltó una task.
+22. **Task 21: Budget por task/agente** — costo por thread/session/task/role y retries.
+23. **Task 22: Reconciliador de estado** — detectar inconsistencias task/session/artifact.
+24. **Task 23: Replay/debug timeline** — vista reconstruible de un thread completo.
+25. **Task 24: Tipos TS generados desde Rust para tasks** — reemplazar hand-rolled frontend models.
+26. **Task 25: E2E pequeño planner→worker→evaluator** — antes del TODO app challenge completo.
+27. **Task 26: Árbol aislado de sesiones y mailbox de subagentes** — comunicación controlada, multi-nivel y auditable.
+28. **Task 9: Agente DB para conexión activa** — agente especializado con acceso controlado a la BD, backups y puente con Agents.
+29. **Task 10: Esqueleto mínimo del módulo SSH** — slice grande; arrancar después de cerrar pendientes chicos.
+30. **Task 11: Botón `+ task` en tab Tasks** — mejora secundaria para control manual.
+
+## A1. Readiness check + execution mode
+
+Objetivo:
+Detectar bloqueos de entorno antes de gastar tokens y elegir el flujo correcto
+para trabajos cortos o largos.
+
+Contexto:
+Ver [[agents/autonomy-protocol]]. Debe vivir en backend/core, exponerse por API
+y quedar persistido como evento append-only por thread.
+
+Tarea:
+1. Agregar modelo `ReadinessReport` con status `ready|ready_with_warnings|blocked`.
+2. Implementar checks basicos: repo, commands, cli_auth, env, budget.
+3. Persistir evento `thread.readiness.checked`.
+4. Agregar `execution_mode` en metadata del thread.
+5. Exponer endpoint para recalcular readiness.
+6. UI muestra banner compacto con blockers/warnings.
+
+Resultado esperado:
+Al crear un thread, el harness sabe si puede trabajar, que falta y si el request
+debe ir por `quick`, `standard`, `project`, `exploratory` o `blocked`.
+
+Estado implementado:
+- `ReadinessReport` persistido en `readiness.json`.
+- Eventos `thread.readiness.checked`.
+- Endpoint `GET/POST /api/threads/:id/readiness`.
+- Banner UI en Dashboard para el thread seleccionado.
+- Checks iniciales: repo, commands, cli_auth, env.
+- `execution_mode` persistido en `meta.json`.
+
+## A2. Autonomy profile + approvals policy
+
+Objetivo:
+Permitir ejecucion sin interrupciones cuando el usuario lo habilita, sin perder
+controles de seguridad por defecto.
+
+Contexto:
+Config `autonomy_profile` y approval flow. Perfiles: `manual`, `assisted`,
+`autonomous`, `ci`.
+
+Tarea:
+1. Agregar config resuelta por profile/project/thread.
+2. Mapear autonomy profile a approval behavior.
+3. Hacer que `ci` falle con error estructurado en vez de esperar input humano.
+4. Hacer que `autonomous` respete allowlists de project.toml/policy.
+5. UI selector por thread con descripcion corta.
+
+Resultado esperado:
+El usuario puede escoger cuanto permiso tiene el equipo antes de iniciar el
+trabajo y el scheduler/bridge actuan de forma consistente.
+
+Estado implementado:
+- `AutonomyProfile` persistido en `meta.json`.
+- Default backend via `HARNESS_AUTONOMY_PROFILE` con fallback `assisted`.
+- Selector en New Session.
+- Endpoint `POST /api/threads/:id/autonomy`.
+- Approval check auto-resuelve `Ask -> Allow` para threads `autonomous` y `ci`.
+
+## A3. Team handoff schema
+
+Objetivo:
+Hacer comunicacion entre agentes eficiente, auditable y accionable.
+
+Contexto:
+Los agentes no hablan entre ellos en vivo; usan task notes, artifacts y eventos.
+
+Tarea:
+1. Definir schema `handoff.v1.json`.
+2. Agregar evento `handoff.created`.
+3. Exigir handoff `generator -> evaluator` antes de `pending_verify`.
+4. Exigir handoff `evaluator -> generator` en `verify-fail`.
+5. Mostrar handoffs en TaskDetail.
+
+Resultado esperado:
+QA recibe evidencia clara, feedback vuelve accionable y los threads largos se
+pueden resumir sin releer todo el PTY.
+
+Estado implementado:
+- Schema `handoff.v1.json`.
+- Handoffs append-only por task en `handoffs/<task>.jsonl`.
+- Evento `handoff.created` en `events.jsonl`.
+- Endpoint `GET/POST /api/threads/:tid/tasks/:task_id/handoffs`.
+- TaskDetail muestra handoffs existentes.
+
+## A4. Repo intelligence + codebase-memory-mcp
+
+Objetivo:
+Dar al planner y workers una vista estructural del repo antes de explorar
+archivo por archivo, y usar `codebase-memory-mcp` como acelerador opcional de
+grafo/call-chain cuando esté instalado.
+
+Contexto:
+El catálogo de rails prometía `repo.*`, pero el bridge real no las exponía.
+Esta tarea cierra el primer corte: rails determinísticas propias y detección de
+`codebase-memory-mcp`.
+
+Tarea:
+1. Pasar el `cwd` de cada sesión al `harness-mcp-server`.
+2. Exponer MCP tools `repo_analyze`, `repo_scan`, `repo_read_file`,
+   `repo_git_status`, `repo_git_log`, `repo_git_diff`,
+   `repo_codebase_memory_status`.
+3. Hacer que las tools rechacen paths fuera del workspace.
+4. Añadir `codebase-memory-mcp` al readiness report como acelerador opcional.
+5. Cambiar approval check del MCP a fail-closed cuando el server responde mal.
+6. Briefing del harness indica usar `repo_analyze` en repos desconocidos.
+
+Resultado esperado:
+El agente puede entender stack, scripts, archivos clave, git state y estructura
+básica del repo por rails tipadas antes de leer archivos manualmente.
+
+Estado implementado:
+- Rails `repo_*` en `harness-mcp-server`.
+- `codebase-memory-mcp` visible en readiness y `repo_codebase_memory_status`.
+- Path safety para lectura/scan.
+- Policy check fail-closed si `/api/approvals/check` falla o responde inválido.
+
+Follow-up:
+- Orquestar instalación/configuración de `codebase-memory-mcp` desde el harness.
+- Cachear índice por repo/HEAD.
+- Wrappers profundos sobre grafo: symbols, callers, callees, routes,
+  blast_radius.
+- Generar `ARCHITECTURE.md` desde `repo_analyze` + grafo.
 
 ## 1. Tab Agents con sesiones hijas reales
 

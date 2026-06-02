@@ -4,7 +4,7 @@ title: Archivos de configuración
 shard: 09-cross-cutting
 tags: [config, toml, files]
 summary: Layout y precedencia de configs.
-related: [harness-core/auth-and-config, architecture/state-persistence]
+related: [harness-core/auth-and-config, architecture/state-persistence, agents/autonomy-protocol]
 sources: []
 ---
 
@@ -26,6 +26,7 @@ default_profile = "personal"
 [profiles.personal]
 model = "claude-opus-4-7"
 approval_mode = "risky-only"
+autonomy_profile = "assisted"
 
 [provider.anthropic]
 auth = "keyring:anthropic-api-key"
@@ -49,6 +50,11 @@ sandbox.level = "workspace-net"
 
 [budget]
 usd_max = 50
+
+[autonomy]
+profile = "autonomous"     # manual | assisted | autonomous | ci
+allow_install = true
+allow_network = true
 ```
 
 ### `<project>/AGENTS.md`

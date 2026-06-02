@@ -86,11 +86,13 @@ Resultado: agentes **más precisos**, menos tokens en "explorar", menos retries.
 ### `repo.*`
 | Tool | Args | Devuelve |
 |---|---|---|
-| `repo.scan` | `path, globs[]` | árbol de archivos matching |
-| `repo.read_file` | `path, head_n?` | contenido (truncable) |
-| `repo.git_log` | `path?, n?` | últimos N commits |
-| `repo.git_diff` | `from, to, path?` | diff |
-| `repo.branch_info` | — | branch actual + tracking |
+| `repo.analyze` | `path?` | stack, package manager, scripts, key files, git state, codebase-memory status |
+| `repo.scan` | `path?, max_depth?, limit?` | árbol limitado de archivos del workspace |
+| `repo.read_file` | `path, max_bytes?, head_lines?` | contenido truncable |
+| `repo.git_status` | — | branch actual, tracking y cambios |
+| `repo.git_log` | `path?, limit?` | últimos N commits |
+| `repo.git_diff` | `path?, staged?, max_bytes?` | diff truncable |
+| `repo.codebase_memory_status` | — | estado del acelerador opcional `codebase-memory-mcp` |
 
 ### `budget.*`
 | Tool | Args | Devuelve |
@@ -117,8 +119,11 @@ Resultado: agentes **más precisos**, menos tokens en "explorar", menos retries.
 ## Ejemplo: orchestrator usando rails
 
 ```
-LLM ─► repo.scan(path="src", globs=["**/*.svelte","**/*.rs"])
-Rust ◄─ { svelte_files: [...], rust_files: [...] }
+LLM ─► repo.analyze()
+Rust ◄─ { stack: ["rust", "svelte"], package_manager: "pnpm", key_files: [...] }
+
+LLM ─► repo.scan(path="src", max_depth=3, limit=120)
+Rust ◄─ { files: ["src/main.rs", "src/routes/+page.svelte", ...] }
 
 LLM ─► agents.list()
 Rust ◄─ [{ name: "frontend", ... }, { name: "backend", ... }, ...]

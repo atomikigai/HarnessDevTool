@@ -4,7 +4,7 @@ title: Agentes — overview
 shard: 13-agents
 tags: [agents, overview, registry, roles]
 summary: Índice de agentes, mapa rol × dominio y diagrama del loop con rails de Rust.
-related: [agents/spawn-lifecycle, agents/smart-loading, agents/capability-registry, agents/rust-rails, foundations/lessons-learned]
+related: [agents/autonomy-protocol, agents/spawn-lifecycle, agents/smart-loading, agents/capability-registry, agents/rust-rails, foundations/lessons-learned]
 sources: [foundations/lessons-learned, foundations/anthropic-principles]
 ---
 
@@ -46,7 +46,8 @@ sources: [foundations/lessons-learned, foundations/anthropic-principles]
 2. **Efímeros**. Un agente vive lo que dura su task. Recuperación de crash = nuevo spawn. Ver [[agents/spawn-lifecycle]].
 3. **Razonan sobre menús, no inventan**. Toda decisión del agente que requiera "saber qué hay" pasa por una rail de Rust. Ver [[agents/rust-rails]].
 4. **Comunican por archivos**. Ningún agente habla con otro en vivo. spec.md / tasks/*.toml / artifacts/ son el bus.
-5. **Rol ≠ dominio**. Un agente con rol `generator` puede tener dominio `frontend` o ninguno; el dominio es un módulo componible.
+5. **Autonomía proporcional**. El harness decide `quick | standard | project | exploratory | blocked` antes de gastar tokens y aplica el perfil `manual | assisted | autonomous | ci`. Ver [[agents/autonomy-protocol]].
+6. **Rol ≠ dominio**. Un agente con rol `generator` puede tener dominio `frontend` o ninguno; el dominio es un módulo componible.
 
 ## Diagrama de roles en el loop
 
@@ -54,6 +55,11 @@ sources: [foundations/lessons-learned, foundations/anthropic-principles]
             USER
              │ prompt
              ▼
+     ┌─────────────────┐
+     │ readiness check │  (repo/env/cli_auth/budget)
+     └────────┬────────┘
+              │ execution_mode + autonomy_profile
+              ▼
      ┌─────────────────┐
      │  orchestrator   │  (planner; F2)
      │  planner        │  ── usa rails: agents.*, repo.*, budget.*

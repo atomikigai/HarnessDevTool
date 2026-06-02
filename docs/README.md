@@ -120,6 +120,7 @@ Promovido a runtime principal en la sección 13. Los shards en este dir son tomb
 ### 13 · Agentes (runtime) ⭐
 **Mecanismo**
 - [[agents/overview]] — Roles, mapa de agentes, diagrama del loop.
+- [[agents/autonomy-protocol]] — Readiness, modos de ejecucion, perfiles de autonomia y handoffs.
 - [[agents/spawn-lifecycle]] — Efímero, lease, recovery.
 - [[agents/smart-loading]] — 3 niveles de decisión (declaración, recomendación, runtime).
 - [[agents/capability-registry]] — Catálogo canónico de MCPs, skill-tags, tools.

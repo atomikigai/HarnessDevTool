@@ -24,6 +24,7 @@ Audit rápido del 2026-05-27:
 - Zeus/sub-agentes está en estado puente: `kind=zeus` corre sobre Claude y el MCP expone `session_spawn_child/list/send_input/cancel/read_child_summary`.
 - Observación 2026-05-27: Claude pudo iniciar un subagente Codex y dejarlo trabajando. Bug pendiente: el panel derecho (`SessionRightPanel` / tab Agents) no mostró el agente activo aunque la orquestación sí funcionó.
 - Pendiente para cerrar F3 completo: policy/capability loader, `task.propose`, `spec.md` append-only, artifacts/events, roles por perfil con autorización fuerte, UI de spec/live cost, y test de aceptación "TODO app" end-to-end.
+- Ajuste de coherencia: antes de endurecer roles/capabilities, implementar [[agents/autonomy-protocol]] para readiness check, execution modes, autonomy profiles y handoffs. Sin esto el equipo puede planificar de mas en tareas cortas o bloquearse tarde por credenciales/env faltantes.
 
 ### Backend — scheduler
 - [x] `harness-core::scheduler`:
@@ -35,8 +36,21 @@ Audit rápido del 2026-05-27:
   - [x] Cooldown tras `verify-fail`: no re-asignar misma task al mismo generator inmediatamente.
 - [x] Logging del scheduler como spans `tracing`: `scheduling.tick { queued, in_progress, pending_verify, idle_agents }`.
 
+### Backend — autonomia y readiness
+- [x] `ReadinessReport` por thread con checks iniciales repo/commands/cli_auth/env.
+- [x] `execution_mode`: `quick | standard | project | exploratory | blocked`.
+- [x] `autonomy_profile`: `manual | assisted | autonomous | ci`.
+- [x] Mapping inicial de autonomy profile a approval behavior (`autonomous`/`ci` auto-allow).
+- [x] Eventos append-only `thread.readiness.checked`, `thread.autonomy.changed`, `handoff.created`.
+- [x] Schema `handoff.v1.json` y persistencia append-only de handoffs por task.
+- [ ] Checks profundos: deps, ports, budget, external resources.
+- [ ] Enforcement obligatorio `generator -> evaluator` antes de `pending_verify`.
+
 ### Backend — Zeus orchestrator (work item)
 - [ ] Implementar el routing rol → CLI según la matriz canónica de [[agents/zeus-orchestrator]].
+- [ ] Routing especial frontend visual: tasks de pantallas, CSS, layout,
+  responsive, shadcn/polish y a11y visual se delegan a Cursor primero; frontend
+  logic/API/stores usa Codex/Claude.
 - [ ] Selector con fallback uniforme a Claude (quota / binary missing / runtime error).
 - [ ] Audit log para cada fallback (`reason: quota_exceeded | binary_missing | runtime_error`).
 - [ ] `POST /api/threads/:tid/sessions { kind: "zeus" }` deja de devolver 400 BadRequest cuando esto esté listo.

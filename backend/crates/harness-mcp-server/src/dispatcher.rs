@@ -528,4 +528,19 @@ mod tests {
         let text = resp["result"]["content"][0]["text"].as_str().unwrap();
         assert!(text.contains("must not escape"));
     }
+
+    #[test]
+    fn repo_read_file_truncates_on_utf8_boundary() {
+        let cwd = tmp_home();
+        let (d, _home) = mk_with_cwd("t-repo-utf8", "agent:planner", cwd.clone());
+        std::fs::write(cwd.join("note.txt"), "aéz").unwrap();
+
+        let line = r#"{"jsonrpc":"2.0","id":43,"method":"tools/call","params":{"name":"repo_read_file","arguments":{"path":"note.txt","max_bytes":2}}}"#;
+        let resp = d.handle(parse_request(line).unwrap()).unwrap();
+        assert_ne!(resp["result"]["isError"], true);
+        let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+        let value: serde_json::Value = serde_json::from_str(text).unwrap();
+        assert_eq!(value["content"], "a");
+        assert_eq!(value["truncated"], true);
+    }
 }

@@ -96,7 +96,7 @@ pub fn read_file(root: &Path, args: &Value) -> Result<Value, String> {
         std::fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
     let truncated = content.len() > max_bytes;
     if truncated {
-        content.truncate(max_bytes);
+        truncate_utf8_safe(&mut content, max_bytes);
     }
     if let Some(head_lines) = args.get("head_lines").and_then(Value::as_u64) {
         let lines: Vec<&str> = content.lines().take(head_lines as usize).collect();
@@ -108,6 +108,14 @@ pub fn read_file(root: &Path, args: &Value) -> Result<Value, String> {
         "truncated": truncated,
         "content": content,
     }))
+}
+
+fn truncate_utf8_safe(content: &mut String, max_bytes: usize) {
+    let mut end = max_bytes.min(content.len());
+    while !content.is_char_boundary(end) {
+        end -= 1;
+    }
+    content.truncate(end);
 }
 
 pub fn git_status(root: &Path, _args: &Value) -> Result<Value, String> {

@@ -5,6 +5,7 @@
 pub mod agents;
 pub mod budget;
 pub mod events;
+pub mod ids;
 pub mod knowledge;
 pub mod pause;
 pub mod roles;
@@ -20,6 +21,7 @@ pub use budget::{
     StubReporter, Usage,
 };
 pub use events::{Event, Item};
+pub use ids::{validate_path_id, validate_profile_id, validate_task_id, validate_thread_id};
 pub use knowledge::{
     check_pdftotext, ingest_pdf, ingest_text, KnowledgeIngestRequest, KnowledgeIngestResult,
     KnowledgeShard, PdfTextToolStatus,

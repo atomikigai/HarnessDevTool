@@ -7,8 +7,8 @@ use serde_json::{json, Value};
 use std::str::FromStr;
 
 use harness_core::{
-    AcceptanceCheck, Artifacts, ClaimResult, ListFilters, TaskDraft, TaskPatch, TaskStatus,
-    TaskStore,
+    validate_task_id, validate_thread_id, AcceptanceCheck, Artifacts, ClaimResult, ListFilters,
+    TaskDraft, TaskPatch, TaskStatus, TaskStore,
 };
 
 fn str_arg<'a>(args: &'a Value, key: &str) -> Result<&'a str, String> {
@@ -19,6 +19,21 @@ fn str_arg<'a>(args: &'a Value, key: &str) -> Result<&'a str, String> {
 
 fn opt_str<'a>(args: &'a Value, key: &str) -> Option<&'a str> {
     args.get(key).and_then(|v| v.as_str())
+}
+
+fn valid_thread_or_default<'a>(
+    args: &'a Value,
+    default_thread: &'a str,
+) -> Result<&'a str, String> {
+    let thread_id = opt_str(args, "thread_id").unwrap_or(default_thread);
+    validate_thread_id(thread_id)?;
+    Ok(thread_id)
+}
+
+fn valid_task_arg(args: &Value) -> Result<&str, String> {
+    let task_id = str_arg(args, "task_id")?;
+    validate_task_id(task_id)?;
+    Ok(task_id)
 }
 
 fn string_array_arg(args: &Value, key: &str) -> Vec<String> {
@@ -233,9 +248,7 @@ pub fn create(
     server_url: Option<&str>,
     args: &Value,
 ) -> Result<Value, String> {
-    let thread_id = opt_str(args, "thread_id")
-        .unwrap_or(default_thread)
-        .to_string();
+    let thread_id = valid_thread_or_default(args, default_thread)?.to_string();
     let title = str_arg(args, "title")?.to_string();
     let parent = opt_str(args, "parent").map(String::from);
     let depends_on = string_array_arg(args, "depends_on");
@@ -289,7 +302,7 @@ pub fn create(
 }
 
 pub fn list(store: &TaskStore, default_thread: &str, args: &Value) -> Result<Value, String> {
-    let thread_id = opt_str(args, "thread_id").unwrap_or(default_thread);
+    let thread_id = valid_thread_or_default(args, default_thread)?;
     let status = match opt_str(args, "status") {
         Some(s) => Some(TaskStatus::from_str(s).map_err(|e| format!("bad status: {e}"))?),
         None => None,
@@ -303,25 +316,16 @@ pub fn list(store: &TaskStore, default_thread: &str, args: &Value) -> Result<Val
     Ok(json!(tasks))
 }
 
-/// `thread_id` defaults to the dispatcher's bound thread when not given —
-/// the `Task` struct itself does not carry its thread (lives in path), so
-/// orchestrators that called `task_create` without an explicit `thread_id`
-/// have no way to recover it from the response. Falling back here keeps the
-/// MCP tool surface ergonomic and consistent across the family.
-fn thread_or_default<'a>(args: &'a Value, default_thread: &'a str) -> &'a str {
-    opt_str(args, "thread_id").unwrap_or(default_thread)
-}
-
 pub fn get(store: &TaskStore, default_thread: &str, args: &Value) -> Result<Value, String> {
-    let thread_id = thread_or_default(args, default_thread);
-    let task_id = str_arg(args, "task_id")?;
+    let thread_id = valid_thread_or_default(args, default_thread)?;
+    let task_id = valid_task_arg(args)?;
     let t = store.get(thread_id, task_id).map_err(map_err)?;
     Ok(json!(t))
 }
 
 pub fn claim(store: &TaskStore, default_thread: &str, args: &Value) -> Result<Value, String> {
-    let thread_id = thread_or_default(args, default_thread);
-    let task_id = str_arg(args, "task_id")?;
+    let thread_id = valid_thread_or_default(args, default_thread)?;
+    let task_id = valid_task_arg(args)?;
     let agent_id = str_arg(args, "agent_id")?;
     let ttl_s = args.get("ttl_s").and_then(|v| v.as_u64()).unwrap_or(60);
     match store
@@ -338,8 +342,8 @@ pub fn claim(store: &TaskStore, default_thread: &str, args: &Value) -> Result<Va
 }
 
 pub fn renew(store: &TaskStore, default_thread: &str, args: &Value) -> Result<Value, String> {
-    let thread_id = thread_or_default(args, default_thread);
-    let task_id = str_arg(args, "task_id")?;
+    let thread_id = valid_thread_or_default(args, default_thread)?;
+    let task_id = valid_task_arg(args)?;
     let agent_id = str_arg(args, "agent_id")?;
     let lease = store.renew(thread_id, task_id, agent_id).map_err(map_err)?;
     Ok(json!({ "lease": lease }))
@@ -351,8 +355,8 @@ pub fn update(
     agent_id: &str,
     args: &Value,
 ) -> Result<Value, String> {
-    let thread_id = thread_or_default(args, default_thread);
-    let task_id = str_arg(args, "task_id")?;
+    let thread_id = valid_thread_or_default(args, default_thread)?;
+    let task_id = valid_task_arg(args)?;
     let patch_v = args
         .get("patch")
         .ok_or_else(|| "missing arg: patch".to_string())?;
@@ -365,8 +369,8 @@ pub fn update(
 }
 
 pub fn release(store: &TaskStore, default_thread: &str, args: &Value) -> Result<Value, String> {
-    let thread_id = thread_or_default(args, default_thread);
-    let task_id = str_arg(args, "task_id")?;
+    let thread_id = valid_thread_or_default(args, default_thread)?;
+    let task_id = valid_task_arg(args)?;
     let agent_id = str_arg(args, "agent_id")?;
     store
         .release(thread_id, task_id, agent_id)
@@ -380,8 +384,8 @@ pub fn submit(
     agent_id: &str,
     args: &Value,
 ) -> Result<Value, String> {
-    let thread_id = thread_or_default(args, default_thread);
-    let task_id = str_arg(args, "task_id")?;
+    let thread_id = valid_thread_or_default(args, default_thread)?;
+    let task_id = valid_task_arg(args)?;
     let artifacts_v = args
         .get("artifacts")
         .ok_or_else(|| "missing arg: artifacts".to_string())?;

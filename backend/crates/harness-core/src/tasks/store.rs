@@ -20,7 +20,7 @@ use super::model::{
     Task, TaskDraft, TaskPatch, TaskStatus,
 };
 use super::state_machine::validate_transition;
-use crate::Error;
+use crate::{validate_profile_id, validate_task_id, validate_thread_id, Error};
 
 const BROADCAST_CAP: usize = 256;
 
@@ -65,6 +65,7 @@ impl TaskStore {
 
     /// Create a store scoped to a specific profile (workspace) id.
     pub fn with_profile(home: &Path, profile: &str) -> Result<Self, Error> {
+        validate_profile_id(profile).map_err(Error::Validation)?;
         let threads_root = home.join("profiles").join(profile).join("threads");
         fs::create_dir_all(&threads_root)?;
         Ok(Self {
@@ -81,12 +82,14 @@ impl TaskStore {
             .join("threads")
     }
 
-    fn thread_dir(&self, tid: &str) -> PathBuf {
-        self.threads_root().join(tid).join("tasks")
+    fn thread_dir(&self, tid: &str) -> Result<PathBuf, Error> {
+        validate_thread_id(tid).map_err(Error::Validation)?;
+        Ok(self.threads_root().join(tid).join("tasks"))
     }
 
-    fn task_path(&self, tid: &str, task_id: &str) -> PathBuf {
-        self.thread_dir(tid).join(format!("{task_id}.toml"))
+    fn task_path(&self, tid: &str, task_id: &str) -> Result<PathBuf, Error> {
+        validate_task_id(task_id).map_err(Error::Validation)?;
+        Ok(self.thread_dir(tid)?.join(format!("{task_id}.toml")))
     }
 
     fn ensure_thread(
@@ -97,7 +100,7 @@ impl TaskStore {
         if let Some(s) = threads.get(tid) {
             return Ok((s.index.clone(), s.bus.clone()));
         }
-        let dir = self.thread_dir(tid);
+        let dir = self.thread_dir(tid)?;
         fs::create_dir_all(&dir)?;
         let index = Arc::new(Mutex::new(Index::open(&dir.join("index.db"))?));
         self.rebuild_index_inner(tid, &dir, &index)?;
@@ -152,7 +155,7 @@ impl TaskStore {
         };
         let mut out = Vec::with_capacity(ids.len());
         for id in ids {
-            out.push(read_task_file(&self.task_path(tid, &id))?);
+            out.push(read_task_file(&self.task_path(tid, &id)?)?);
         }
         Ok(out)
     }
@@ -160,7 +163,7 @@ impl TaskStore {
     /// Read a single task.
     pub fn get(&self, tid: &str, task_id: &str) -> Result<Task, Error> {
         self.ensure_thread(tid)?;
-        let path = self.task_path(tid, task_id);
+        let path = self.task_path(tid, task_id)?;
         if !path.exists() {
             return Err(Error::NotFound(task_id.into()));
         }
@@ -201,7 +204,7 @@ impl TaskStore {
             )));
         }
         let (index, bus) = self.ensure_thread(tid)?;
-        let dir = self.thread_dir(tid);
+        let dir = self.thread_dir(tid)?;
         let id = next_id(&dir)?;
         let now = Utc::now();
         let status = if draft.depends_on.is_empty() {
@@ -249,7 +252,7 @@ impl TaskStore {
                 }],
             },
         };
-        let path = self.task_path(tid, &id);
+        let path = self.task_path(tid, &id)?;
         write_task_atomic(&path, &task)?;
         {
             let idx = index.lock().expect("index mutex poisoned");
@@ -273,7 +276,7 @@ impl TaskStore {
         by: &str,
     ) -> Result<Task, Error> {
         let (index, bus) = self.ensure_thread(tid)?;
-        let path = self.task_path(tid, task_id);
+        let path = self.task_path(tid, task_id)?;
         let (task, (prev_status, changed_fields)) =
             with_locked_task(&path, |task| apply_patch(task, &patch, by))?;
 
@@ -310,7 +313,7 @@ impl TaskStore {
         ttl: Duration,
     ) -> Result<ClaimResult, Error> {
         let (index, _) = self.ensure_thread(tid)?;
-        let path = self.task_path(tid, task_id);
+        let path = self.task_path(tid, task_id)?;
         let now = Utc::now();
         let (_task, outcome) = with_locked_task(&path, |task| {
             if let Some(l) = &task.claim_lease {
@@ -356,7 +359,7 @@ impl TaskStore {
         note: &str,
     ) -> Result<Lease, Error> {
         let (index, _) = self.ensure_thread(tid)?;
-        let path = self.task_path(tid, task_id);
+        let path = self.task_path(tid, task_id)?;
         let now = Utc::now();
         let (_t, lease) = with_locked_task(&path, |task| {
             if let Some(prev) = task.assignee.take() {
@@ -401,7 +404,7 @@ impl TaskStore {
 
     /// Refresh the lease TTL. Errors if `agent_id` is not the current holder.
     pub fn renew(&self, tid: &str, task_id: &str, agent_id: &str) -> Result<Lease, Error> {
-        let path = self.task_path(tid, task_id);
+        let path = self.task_path(tid, task_id)?;
         let now = Utc::now();
         let (_, lease) = with_locked_task(&path, |task| {
             let cur = task
@@ -426,7 +429,7 @@ impl TaskStore {
 
     /// Release the lease (graceful).
     pub fn release(&self, tid: &str, task_id: &str, agent_id: &str) -> Result<(), Error> {
-        let path = self.task_path(tid, task_id);
+        let path = self.task_path(tid, task_id)?;
         with_locked_task(&path, |task| {
             if let Some(l) = &task.claim_lease {
                 if l.holder != agent_id {
@@ -471,10 +474,14 @@ impl TaskStore {
     /// Subscribe to events for `tid`. Returns immediately even if nobody has
     /// touched the thread yet (creates the broadcast bus on demand).
     pub fn subscribe(&self, tid: &str) -> broadcast::Receiver<TaskEvent> {
-        let (_, tx) = self
-            .ensure_thread(tid)
-            .expect("ensure_thread should not fail on read path");
-        tx.subscribe()
+        match self.ensure_thread(tid) {
+            Ok((_, tx)) => tx.subscribe(),
+            Err(e) => {
+                tracing::warn!(error = ?e, thread = %tid, "task subscribe rejected invalid thread");
+                let (_tx, rx) = broadcast::channel(1);
+                rx
+            }
+        }
     }
 
     /// Internal: get the broadcast sender so the scheduler can emit events.
@@ -508,7 +515,7 @@ impl TaskStore {
         task_id: &str,
         f: impl FnOnce(&mut Task) -> Result<R, Error>,
     ) -> Result<R, Error> {
-        let path = self.task_path(tid, task_id);
+        let path = self.task_path(tid, task_id)?;
         let (_, out) = with_locked_task(&path, |t| f(t))?;
         let (index, _) = self.ensure_thread(tid)?;
         let t = read_task_file(&path)?;
@@ -682,6 +689,17 @@ mod tests {
         assert_eq!(got.title, "first");
         let all = s.list("thr-1", ListFilters::default()).unwrap();
         assert_eq!(all.len(), 1);
+    }
+
+    #[test]
+    fn rejects_path_traversal_ids() {
+        let (_dir, s) = store();
+
+        let err = s.list("../escape", ListFilters::default()).unwrap_err();
+        assert!(matches!(err, Error::Validation(_)));
+
+        let err = s.get("thr-1", "../T-0001").unwrap_err();
+        assert!(matches!(err, Error::Validation(_)));
     }
 
     #[test]

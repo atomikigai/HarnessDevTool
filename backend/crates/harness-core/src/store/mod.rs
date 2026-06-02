@@ -9,6 +9,7 @@ use uuid::Uuid;
 
 use crate::events::Event;
 use crate::threads::{AutonomyProfile, ExecutionMode, Handoff, ReadinessReport, Thread};
+use crate::{validate_profile_id, validate_task_id, validate_thread_id};
 
 #[derive(Debug, Error)]
 pub enum StoreError {
@@ -18,6 +19,8 @@ pub enum StoreError {
     Json(#[from] serde_json::Error),
     #[error("not found: {0}")]
     NotFound(String),
+    #[error("validation: {0}")]
+    Validation(String),
 }
 
 /// Filesystem-backed store rooted at `<home>/profiles/<profile>`.
@@ -39,6 +42,7 @@ impl Store {
     }
 
     pub fn with_profile(home: impl AsRef<Path>, profile: &str) -> Result<Self, StoreError> {
+        validate_profile_id(profile).map_err(StoreError::Validation)?;
         let threads_dir = home.as_ref().join("profiles").join(profile).join("threads");
         std::fs::create_dir_all(&threads_dir)?;
         Ok(Self {
@@ -49,6 +53,11 @@ impl Store {
 
     pub fn threads_dir(&self) -> &Path {
         &self.threads_dir
+    }
+
+    fn thread_dir(&self, thread_id: &str) -> Result<PathBuf, StoreError> {
+        validate_thread_id(thread_id).map_err(StoreError::Validation)?;
+        Ok(self.threads_dir.join(thread_id))
     }
 
     pub fn create_thread(&self, title: Option<String>) -> Result<Thread, StoreError> {
@@ -104,7 +113,7 @@ impl Store {
     }
 
     pub fn get_thread(&self, id: &str) -> Result<Thread, StoreError> {
-        let meta_path = self.threads_dir.join(id).join("meta.json");
+        let meta_path = self.thread_dir(id)?.join("meta.json");
         if !meta_path.exists() {
             return Err(StoreError::NotFound(id.to_string()));
         }
@@ -114,7 +123,7 @@ impl Store {
 
     pub fn set_execution_mode(&self, id: &str, mode: ExecutionMode) -> Result<Thread, StoreError> {
         let _guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
-        let meta_path = self.threads_dir.join(id).join("meta.json");
+        let meta_path = self.thread_dir(id)?.join("meta.json");
         if !meta_path.exists() {
             return Err(StoreError::NotFound(id.to_string()));
         }
@@ -133,7 +142,7 @@ impl Store {
         profile: AutonomyProfile,
     ) -> Result<Thread, StoreError> {
         let _guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
-        let meta_path = self.threads_dir.join(id).join("meta.json");
+        let meta_path = self.thread_dir(id)?.join("meta.json");
         if !meta_path.exists() {
             return Err(StoreError::NotFound(id.to_string()));
         }
@@ -152,7 +161,7 @@ impl Store {
         report: &ReadinessReport,
     ) -> Result<(), StoreError> {
         let _guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
-        let dir = self.threads_dir.join(thread_id);
+        let dir = self.thread_dir(thread_id)?;
         if !dir.exists() {
             return Err(StoreError::NotFound(thread_id.to_string()));
         }
@@ -167,7 +176,7 @@ impl Store {
         &self,
         thread_id: &str,
     ) -> Result<Option<ReadinessReport>, StoreError> {
-        let path = self.threads_dir.join(thread_id).join("readiness.json");
+        let path = self.thread_dir(thread_id)?.join("readiness.json");
         if !path.exists() {
             return Ok(None);
         }
@@ -177,7 +186,8 @@ impl Store {
 
     pub fn append_handoff(&self, thread_id: &str, handoff: &Handoff) -> Result<(), StoreError> {
         let _guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
-        let dir = self.threads_dir.join(thread_id);
+        validate_task_id(&handoff.task_id).map_err(StoreError::Validation)?;
+        let dir = self.thread_dir(thread_id)?;
         if !dir.exists() {
             return Err(StoreError::NotFound(thread_id.to_string()));
         }
@@ -197,9 +207,9 @@ impl Store {
         thread_id: &str,
         task_id: &str,
     ) -> Result<Vec<Handoff>, StoreError> {
+        validate_task_id(task_id).map_err(StoreError::Validation)?;
         let path = self
-            .threads_dir
-            .join(thread_id)
+            .thread_dir(thread_id)?
             .join("handoffs")
             .join(format!("{task_id}.jsonl"));
         if !path.exists() {
@@ -221,7 +231,7 @@ impl Store {
     /// Append a single event to a thread's `events.jsonl`. Returns the seq written.
     pub fn append_event(&self, thread_id: &str, event: &Event) -> Result<(), StoreError> {
         let _guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
-        let dir = self.threads_dir.join(thread_id);
+        let dir = self.thread_dir(thread_id)?;
         if !dir.exists() {
             return Err(StoreError::NotFound(thread_id.to_string()));
         }
@@ -235,7 +245,7 @@ impl Store {
     }
 
     pub fn read_events(&self, thread_id: &str) -> Result<Vec<Event>, StoreError> {
-        let path = self.threads_dir.join(thread_id).join("events.jsonl");
+        let path = self.thread_dir(thread_id)?.join("events.jsonl");
         if !path.exists() {
             return Ok(Vec::new());
         }
@@ -288,6 +298,19 @@ mod tests {
         let read = store.read_events(&t.id).unwrap();
         assert_eq!(read.len(), 1);
         assert_eq!(read[0].event_type, "tick");
+    }
+
+    #[test]
+    fn rejects_path_traversal_ids() {
+        let home = tmp_home();
+        let store = Store::new(home.path()).unwrap();
+        let t = store.create_thread(None).unwrap();
+
+        let err = store.read_events("../escape").unwrap_err();
+        assert!(matches!(err, StoreError::Validation(_)));
+
+        let err = store.read_handoffs(&t.id, "../T-0001").unwrap_err();
+        assert!(matches!(err, StoreError::Validation(_)));
     }
 
     #[test]

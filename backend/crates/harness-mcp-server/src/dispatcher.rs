@@ -530,6 +530,32 @@ mod tests {
     }
 
     #[test]
+    fn spec_read_rejects_invalid_thread_id() {
+        let (d, _) = mk("t-spec-safe", "agent:planner");
+        let line = r#"{"jsonrpc":"2.0","id":43,"method":"tools/call","params":{"name":"spec_read","arguments":{"thread_id":"../escape"}}}"#;
+        let resp = d.handle(parse_request(line).unwrap()).unwrap();
+        assert_eq!(resp["result"]["isError"], true);
+        let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("thread_id"));
+    }
+
+    #[test]
+    fn task_tools_reject_invalid_path_ids() {
+        let (d, _) = mk("t-task-safe", "agent:planner");
+        let bad_thread = r#"{"jsonrpc":"2.0","id":44,"method":"tools/call","params":{"name":"task_list","arguments":{"thread_id":"../escape"}}}"#;
+        let resp = d.handle(parse_request(bad_thread).unwrap()).unwrap();
+        assert_eq!(resp["result"]["isError"], true);
+        let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("thread_id"));
+
+        let bad_task = r#"{"jsonrpc":"2.0","id":45,"method":"tools/call","params":{"name":"task_get","arguments":{"task_id":"../T-0001"}}}"#;
+        let resp = d.handle(parse_request(bad_task).unwrap()).unwrap();
+        assert_eq!(resp["result"]["isError"], true);
+        let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("task_id"));
+    }
+
+    #[test]
     fn repo_read_file_truncates_on_utf8_boundary() {
         let cwd = tmp_home();
         let (d, _home) = mk_with_cwd("t-repo-utf8", "agent:planner", cwd.clone());

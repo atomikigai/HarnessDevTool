@@ -17,6 +17,7 @@ use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::Utc;
+use harness_core::validate_profile_id;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{ApiError, ApiResult};
@@ -132,18 +133,7 @@ async fn create_profile(
     Json(body): Json<CreateBody>,
 ) -> ApiResult<(StatusCode, Json<ProfileSummary>)> {
     let id = body.id.trim().to_string();
-    if id.is_empty() {
-        return Err(ApiError::BadRequest("id required".into()));
-    }
-    // Defensive — only allow filesystem-safe ids. No path traversal.
-    if !id
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
-    {
-        return Err(ApiError::BadRequest(
-            "id must be ascii alphanumeric + `-` or `_`".into(),
-        ));
-    }
+    validate_profile_id(&id).map_err(ApiError::BadRequest)?;
 
     let dir = state.harness_home.join("profiles").join(&id);
     if dir.exists() {
@@ -231,6 +221,7 @@ async fn activate(
     State(state): State<Arc<AppState>>,
     AxPath(id): AxPath<String>,
 ) -> ApiResult<Json<ActivateResponse>> {
+    validate_profile_id(&id).map_err(ApiError::BadRequest)?;
     let dir = state.harness_home.join("profiles").join(&id);
     if !dir.exists() {
         // Allow activating "default" even if its dir is empty — it gets

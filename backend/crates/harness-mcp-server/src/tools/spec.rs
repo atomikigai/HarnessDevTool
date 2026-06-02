@@ -7,6 +7,8 @@ use std::time::Duration;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
+use harness_core::validate_thread_id;
+
 const MAX_SPEC_BYTES: usize = 1_048_576;
 
 pub fn read(home: &Path, default_thread: &str, args: &Value) -> Result<Value, String> {
@@ -14,6 +16,7 @@ pub fn read(home: &Path, default_thread: &str, args: &Value) -> Result<Value, St
         .get("thread_id")
         .and_then(|v| v.as_str())
         .unwrap_or(default_thread);
+    validate_thread_id(thread_id).map_err(|e| format!("spec_read: {e}"))?;
     let path = home
         .join("profiles")
         .join("default")
@@ -30,7 +33,7 @@ pub fn read(home: &Path, default_thread: &str, args: &Value) -> Result<Value, St
 
 pub fn write(home: &Path, server_url: Option<&str>, args: &Value) -> Result<Value, String> {
     let thread_id = str_arg(args, "thread_id")?;
-    validate_thread_id(thread_id)?;
+    validate_thread_id(thread_id).map_err(|e| format!("spec_write: {e}"))?;
     let content = str_arg(args, "content")?;
     validate_content(content)?;
     let etag = opt_str_arg(args, "etag")?;
@@ -126,19 +129,6 @@ fn opt_str_arg<'a>(args: &'a Value, key: &str) -> Result<Option<&'a str>, String
             .ok_or_else(|| format!("non-string arg: {key}")),
         None => Ok(None),
     }
-}
-
-fn validate_thread_id(thread_id: &str) -> Result<(), String> {
-    if thread_id.is_empty() {
-        return Err("spec_write: thread_id must not be empty".to_string());
-    }
-    if !thread_id
-        .bytes()
-        .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
-    {
-        return Err("spec_write: invalid thread_id".to_string());
-    }
-    Ok(())
 }
 
 fn validate_content(content: &str) -> Result<(), String> {

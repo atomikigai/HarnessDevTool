@@ -3,7 +3,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use harness_core::AutonomyProfile;
+use harness_core::{validate_profile_id, AutonomyProfile};
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -63,15 +63,19 @@ fn default_home() -> Result<PathBuf> {
 fn resolve_profile(home: &std::path::Path) -> String {
     if let Ok(v) = env::var("HARNESS_PROFILE") {
         let trimmed = v.trim();
-        if !trimmed.is_empty() {
+        if validate_profile_id(trimmed).is_ok() {
             return trimmed.to_string();
+        } else if !trimmed.is_empty() {
+            tracing::warn!("ignoring invalid HARNESS_PROFILE");
         }
     }
     let pointer = home.join("active_profile");
     if let Ok(contents) = std::fs::read_to_string(&pointer) {
         let trimmed = contents.trim();
-        if !trimmed.is_empty() {
+        if validate_profile_id(trimmed).is_ok() {
             return trimmed.to_string();
+        } else if !trimmed.is_empty() {
+            tracing::warn!(path = %pointer.display(), "ignoring invalid active_profile");
         }
     }
     "default".to_string()

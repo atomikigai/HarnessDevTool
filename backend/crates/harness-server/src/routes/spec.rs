@@ -8,7 +8,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 use chrono::Utc;
-use harness_core::TaskEvent;
+use harness_core::{validate_thread_id, TaskEvent};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -32,7 +32,7 @@ async fn read(
     State(s): State<Arc<AppState>>,
     AxumPath(tid): AxumPath<String>,
 ) -> ApiResult<Json<ReadResponse>> {
-    validate_thread_id(&tid)?;
+    validate_thread_id(&tid).map_err(ApiError::BadRequest)?;
     let path = spec_path(&s.harness_home, &tid);
     let bytes = match std::fs::read(&path) {
         Ok(bytes) => bytes,
@@ -68,7 +68,9 @@ async fn write(
     AxumPath(tid): AxumPath<String>,
     Json(body): Json<WriteBody>,
 ) -> Result<Json<WriteResponse>, Response> {
-    validate_thread_id(&tid).map_err(IntoResponse::into_response)?;
+    validate_thread_id(&tid)
+        .map_err(ApiError::BadRequest)
+        .map_err(IntoResponse::into_response)?;
     validate_content(&body.content).map_err(IntoResponse::into_response)?;
 
     let path = spec_path(&s.harness_home, &tid);
@@ -149,21 +151,6 @@ fn spec_path(home: &Path, thread_id: &str) -> PathBuf {
         .join("threads")
         .join(thread_id)
         .join("spec.md")
-}
-
-fn validate_thread_id(thread_id: &str) -> ApiResult<()> {
-    if thread_id.is_empty() {
-        return Err(ApiError::BadRequest(
-            "thread_id must not be empty".to_string(),
-        ));
-    }
-    if !thread_id
-        .bytes()
-        .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
-    {
-        return Err(ApiError::BadRequest("invalid thread_id".to_string()));
-    }
-    Ok(())
 }
 
 fn validate_content(content: &str) -> ApiResult<()> {

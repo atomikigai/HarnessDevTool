@@ -118,6 +118,7 @@ mod tests {
             claim_lease: None,
             previous_assignees: vec![],
             labels: vec![],
+            brief: None,
             acceptance: AcceptanceBlock::default(),
             artifacts: Artifacts::default(),
             notes: Notes::default(),

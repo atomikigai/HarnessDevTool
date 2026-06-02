@@ -8,7 +8,7 @@ use std::str::FromStr;
 
 use harness_core::{
     validate_task_id, validate_thread_id, AcceptanceCheck, Artifacts, ClaimResult, ListFilters,
-    TaskDraft, TaskPatch, TaskStatus, TaskStore,
+    TaskBrief, TaskDraft, TaskPatch, TaskStatus, TaskStore,
 };
 
 fn str_arg<'a>(args: &'a Value, key: &str) -> Result<&'a str, String> {
@@ -122,10 +122,13 @@ fn validate_task_brief_object(brief: &Value) -> Result<(), String> {
     }
 }
 
-fn render_task_brief(brief: &Value) -> Result<Option<String>, String> {
+fn parse_task_brief(brief: &Value) -> Result<Option<TaskBrief>, String> {
     let Some(brief) = brief.as_object().map(|_| brief) else {
         return match brief.as_str() {
-            Some(s) if !s.trim().is_empty() => Ok(Some(s.trim().to_string())),
+            Some(s) if !s.trim().is_empty() => Ok(Some(TaskBrief {
+                objective: s.trim().to_string(),
+                ..TaskBrief::default()
+            })),
             Some(_) => Ok(None),
             None => Err("brief must be an object or string".into()),
         };
@@ -133,81 +136,40 @@ fn render_task_brief(brief: &Value) -> Result<Option<String>, String> {
 
     validate_task_brief_object(brief)?;
 
-    let objetivo = brief_field(brief, "objetivo", "objective")
+    let objective = brief_field(brief, "objetivo", "objective")
         .unwrap_or("")
-        .trim();
-    let contexto = brief_field(brief, "contexto", "context")
+        .trim()
+        .to_string();
+    let context = brief_field(brief, "contexto", "context")
         .unwrap_or("")
-        .trim();
-    let tareas = brief_list(brief, "tarea", "tasks");
-    let reglas = brief_list(brief, "reglas", "rules");
-    let resultado = brief_field(brief, "resultado_esperado", "expected_result")
+        .trim()
+        .to_string();
+    let tasks = brief_list(brief, "tarea", "tasks")
+        .into_iter()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>();
+    let rules = brief_list(brief, "reglas", "rules")
+        .into_iter()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>();
+    let expected_result = brief_field(brief, "resultado_esperado", "expected_result")
         .unwrap_or("")
-        .trim();
+        .trim()
+        .to_string();
 
-    if objetivo.is_empty()
-        && contexto.is_empty()
-        && tareas.is_empty()
-        && reglas.is_empty()
-        && resultado.is_empty()
-    {
-        return Ok(None);
-    }
-
-    let mut out = String::new();
-    out.push_str("Objetivo:\n");
-    out.push_str(if objetivo.is_empty() {
-        "(sin objetivo)"
-    } else {
-        objetivo
-    });
-    out.push_str("\n\nContexto:\n");
-    out.push_str(if contexto.is_empty() {
-        "(sin contexto)"
-    } else {
-        contexto
-    });
-    out.push_str("\n\nTarea:\n");
-    if tareas.is_empty() {
-        out.push_str("1. (sin pasos)\n");
-    } else {
-        for (idx, tarea) in tareas.iter().enumerate() {
-            out.push_str(&format!("{}. {}\n", idx + 1, tarea.trim()));
-        }
-    }
-    out.push_str("\nReglas:\n");
-    if reglas.is_empty() {
-        out.push_str(
-            "- No romper.\n- Cambios mínimos.\n- Seguir estilo existente.\n- Agregar test.\n",
-        );
-    } else {
-        for regla in reglas {
-            out.push_str(&format!("- {}\n", regla.trim()));
-        }
-    }
-    out.push_str("\nResultado esperado:\n");
-    out.push_str(if resultado.is_empty() {
-        "(sin resultado esperado)"
-    } else {
-        resultado
-    });
-
-    Ok(Some(out))
+    Ok(Some(TaskBrief {
+        objective,
+        context,
+        tasks,
+        rules,
+        expected_result,
+    }))
 }
 
 fn acceptance_from_args(args: &Value) -> Result<Vec<AcceptanceCheck>, String> {
     let mut checks: Vec<AcceptanceCheck> = Vec::new();
-
-    if let Some(brief) = args.get("brief") {
-        if let Some(rendered) = render_task_brief(brief)? {
-            checks.push(AcceptanceCheck {
-                id: "BRIEF".into(),
-                text: rendered,
-                verified: false,
-                verified_by: None,
-            });
-        }
-    }
 
     if let Some(arr) = args
         .get("acceptance")
@@ -233,6 +195,13 @@ fn acceptance_from_args(args: &Value) -> Result<Vec<AcceptanceCheck>, String> {
     Ok(checks)
 }
 
+fn brief_from_args(args: &Value) -> Result<Option<TaskBrief>, String> {
+    match args.get("brief") {
+        Some(brief) => parse_task_brief(brief),
+        None => Ok(None),
+    }
+}
+
 /// `task_create` — primary path: delegate to the harness-server REST endpoint
 /// so the in-process `TaskStore` (the one the SSE stream subscribes to) does
 /// the write. That guarantees the right panel updates without a refresh.
@@ -254,6 +223,7 @@ pub fn create(
     let parent = opt_str(args, "parent").map(String::from);
     let depends_on = string_array_arg(args, "depends_on");
     let labels = string_array_arg(args, "labels");
+    let brief = brief_from_args(args)?;
     let acceptance = acceptance_from_args(args)?;
 
     if let Some(base) = server_url {
@@ -269,6 +239,7 @@ pub fn create(
             "parent": parent,
             "depends_on": depends_on,
             "labels": labels,
+            "brief": brief,
             "acceptance": { "checks": acceptance.iter().map(|c| json!({
                 "id": c.id,
                 "text": c.text,
@@ -295,6 +266,7 @@ pub fn create(
         title,
         parent,
         depends_on,
+        brief,
         acceptance,
         labels,
         created_by: agent_id.to_string(),

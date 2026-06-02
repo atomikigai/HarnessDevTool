@@ -21,6 +21,14 @@ export const acceptanceCheckSchema = v.object({
   verified_by: v.optional(v.string())
 });
 
+export const taskBriefSchema = v.object({
+  objective: v.string(),
+  context: v.string(),
+  tasks: v.array(v.string()),
+  rules: v.array(v.string()),
+  expected_result: v.string()
+});
+
 export const createTaskSchema = v.object({
   title: v.pipe(
     v.string(),
@@ -29,6 +37,7 @@ export const createTaskSchema = v.object({
   ),
   parent: v.optional(v.string()),
   depends_on: v.optional(v.array(v.string())),
+  brief: v.optional(taskBriefSchema),
   acceptance: v.optional(
     v.object({
       checks: v.pipe(

@@ -52,6 +52,16 @@
   const allVerified = $derived(
     task.acceptance.checks.length > 0 && task.acceptance.checks.every((c) => c.verified)
   );
+  const hasBrief = $derived(
+    !!task.brief &&
+      !!(
+        task.brief.objective.trim() ||
+        task.brief.context.trim() ||
+        task.brief.tasks.length ||
+        task.brief.rules.length ||
+        task.brief.expected_result.trim()
+      )
+  );
 
   async function patch(body: PatchTaskRequest, optimisticMsg?: string) {
     const validation = safeParse(patchTaskSchema, body);
@@ -277,6 +287,58 @@
         </div>
       {/if}
     </dl>
+
+    <!-- Brief -->
+    {#if hasBrief && task.brief}
+      <section class="mb-4">
+        <h3 class="h-eyebrow mb-2">Brief</h3>
+        <div
+          class="rounded-md border px-3 py-2.5 text-sm"
+          style="border-color: var(--border-subtle); background: var(--surface-window);"
+        >
+          {#if task.brief.objective.trim()}
+            <div class="mb-2">
+              <p class="text-[10px] uppercase" style="color: var(--fg-muted);">Objective</p>
+              <p style="color: var(--fg-default);">{task.brief.objective}</p>
+            </div>
+          {/if}
+          {#if task.brief.context.trim()}
+            <div class="mb-2">
+              <p class="text-[10px] uppercase" style="color: var(--fg-muted);">Context</p>
+              <p class="whitespace-pre-wrap" style="color: var(--fg-default);">
+                {task.brief.context}
+              </p>
+            </div>
+          {/if}
+          {#if task.brief.tasks.length > 0}
+            <div class="mb-2">
+              <p class="text-[10px] uppercase" style="color: var(--fg-muted);">Work</p>
+              <ol class="ml-4 list-decimal space-y-1" style="color: var(--fg-default);">
+                {#each task.brief.tasks as item, idx (`${idx}-${item}`)}
+                  <li>{item}</li>
+                {/each}
+              </ol>
+            </div>
+          {/if}
+          {#if task.brief.rules.length > 0}
+            <div class="mb-2">
+              <p class="text-[10px] uppercase" style="color: var(--fg-muted);">Rules</p>
+              <ul class="ml-4 list-disc space-y-1" style="color: var(--fg-default);">
+                {#each task.brief.rules as item, idx (`${idx}-${item}`)}
+                  <li>{item}</li>
+                {/each}
+              </ul>
+            </div>
+          {/if}
+          {#if task.brief.expected_result.trim()}
+            <div>
+              <p class="text-[10px] uppercase" style="color: var(--fg-muted);">Expected result</p>
+              <p style="color: var(--fg-default);">{task.brief.expected_result}</p>
+            </div>
+          {/if}
+        </div>
+      </section>
+    {/if}
 
     <!-- Handoffs -->
     <section class="mb-4 rounded-md border p-3" style="border-color: var(--border-subtle);">

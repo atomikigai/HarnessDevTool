@@ -395,15 +395,22 @@ mod tests {
         let text = resp["result"]["content"][0]["text"].as_str().unwrap();
         let created: serde_json::Value = serde_json::from_str(text).unwrap();
         assert_eq!(created["title"], "Wire task brief");
-        assert_eq!(created["acceptance"]["checks"][0]["id"], "BRIEF");
-        let brief_text = created["acceptance"]["checks"][0]["text"].as_str().unwrap();
-        assert!(brief_text.contains("Objetivo:\nPermitir handoff claro al worker."));
-        assert!(
-            brief_text.contains("Tarea:\n1. Crear task con brief\n2. Recuperar task con task_get")
+        assert_eq!(
+            created["brief"]["objective"],
+            "Permitir handoff claro al worker."
         );
-        assert!(
-            brief_text.contains("Resultado esperado:\nEl worker puede leer el contrato completo.")
+        assert_eq!(
+            created["brief"]["context"],
+            "MCP task_create debe conservar memoria entre sesiones."
         );
+        assert_eq!(created["brief"]["tasks"][0], "Crear task con brief");
+        assert_eq!(created["brief"]["tasks"][1], "Recuperar task con task_get");
+        assert_eq!(created["brief"]["rules"][0], "No romper");
+        assert_eq!(
+            created["brief"]["expected_result"],
+            "El worker puede leer el contrato completo."
+        );
+        assert_eq!(created["acceptance"]["checks"].as_array().unwrap().len(), 0);
 
         let task_id = created["id"].as_str().unwrap();
         let get_line = format!(
@@ -413,10 +420,7 @@ mod tests {
         let text = resp["result"]["content"][0]["text"].as_str().unwrap();
         let fetched: serde_json::Value = serde_json::from_str(text).unwrap();
         assert_eq!(fetched["id"], task_id);
-        assert_eq!(
-            fetched["acceptance"]["checks"][0]["text"],
-            created["acceptance"]["checks"][0]["text"]
-        );
+        assert_eq!(fetched["brief"], created["brief"]);
     }
 
     #[test]
@@ -468,11 +472,11 @@ mod tests {
         assert_ne!(resp["result"]["isError"], true);
         let text = resp["result"]["content"][0]["text"].as_str().unwrap();
         let created: serde_json::Value = serde_json::from_str(text).unwrap();
-        assert_eq!(created["acceptance"]["checks"][0]["id"], "BRIEF");
         assert_eq!(
-            created["acceptance"]["checks"][0]["text"],
+            created["brief"]["objective"],
             "Plain text brief from an older caller."
         );
+        assert_eq!(created["acceptance"]["checks"].as_array().unwrap().len(), 0);
     }
 
     #[test]

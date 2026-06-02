@@ -48,6 +48,17 @@
     },
     "previous_assignees": { "type": "array", "items": { "type": "string" } },
     "labels": { "type": "array", "items": { "type": "string" } },
+    "brief": {
+      "type": ["object", "null"],
+      "required": ["objective", "context", "tasks", "rules", "expected_result"],
+      "properties": {
+        "objective": { "type": "string" },
+        "context": { "type": "string" },
+        "tasks": { "type": "array", "items": { "type": "string" } },
+        "rules": { "type": "array", "items": { "type": "string" } },
+        "expected_result": { "type": "string" }
+      }
+    },
     "acceptance": {
       "type": "object",
       "properties": {

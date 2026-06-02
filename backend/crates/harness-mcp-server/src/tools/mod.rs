@@ -44,7 +44,7 @@ pub fn list_descriptors() -> Vec<ToolDescriptor> {
             description: "Create a new task in the current (or named) thread. Emits a \
                           task.created SSE event so the UI updates immediately. Orchestrators \
                           should pass `brief` using Objetivo/Contexto/Tarea/Reglas/Resultado \
-                          esperado; the brief is persisted in acceptance checks so workers can \
+                          esperado; the brief is persisted as first-class task context so workers can \
                           recover it with task_get across sessions. Returns the created Task object."
                 .into(),
             input_schema: json!({

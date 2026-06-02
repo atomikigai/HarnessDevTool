@@ -44,6 +44,14 @@ export interface TaskNotes {
   feedback?: unknown[];
 }
 
+export interface TaskBrief {
+  objective: string;
+  context: string;
+  tasks: string[];
+  rules: string[];
+  expected_result: string;
+}
+
 export interface Task {
   schema_version: number;
   id: string;
@@ -61,6 +69,7 @@ export interface Task {
   claim_lease?: Lease;
   previous_assignees: string[];
   labels: string[];
+  brief?: TaskBrief;
   acceptance: { checks: AcceptanceCheck[] };
   artifacts: TaskArtifacts;
   notes: TaskNotes;
@@ -71,6 +80,7 @@ export interface CreateTaskRequest {
   title: string;
   parent?: string;
   depends_on?: string[];
+  brief?: TaskBrief;
   acceptance?: { checks: { text: string }[] };
   labels?: string[];
   created_by: string;

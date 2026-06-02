@@ -106,6 +106,22 @@ pub struct HistoryEvent {
     pub to: String,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[cfg_attr(feature = "ts-export", derive(TS))]
+#[cfg_attr(feature = "ts-export", ts(export, export_to = "../../../bindings/"))]
+pub struct TaskBrief {
+    #[serde(default)]
+    pub objective: String,
+    #[serde(default)]
+    pub context: String,
+    #[serde(default)]
+    pub tasks: Vec<String>,
+    #[serde(default)]
+    pub rules: Vec<String>,
+    #[serde(default)]
+    pub expected_result: String,
+}
+
 /// Full task document — 1:1 with the on-disk TOML.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[cfg_attr(feature = "ts-export", derive(TS))]
@@ -141,6 +157,8 @@ pub struct Task {
     #[serde(default)]
     pub labels: Vec<String>,
 
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub brief: Option<TaskBrief>,
     #[serde(default)]
     pub acceptance: AcceptanceBlock,
     #[serde(default)]
@@ -181,6 +199,7 @@ pub struct TaskDraft {
     pub title: String,
     pub parent: Option<String>,
     pub depends_on: Vec<String>,
+    pub brief: Option<TaskBrief>,
     pub acceptance: Vec<AcceptanceCheck>,
     pub labels: Vec<String>,
     pub created_by: String,

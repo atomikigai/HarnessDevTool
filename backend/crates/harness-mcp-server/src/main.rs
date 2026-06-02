@@ -111,15 +111,19 @@ struct CliArgs {
 }
 
 fn parse_args() -> Result<CliArgs, String> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    parse_args_from(args)
+}
+
+fn parse_args_from(args: Vec<String>) -> Result<CliArgs, String> {
     let mut thread_id: Option<String> = None;
     let mut agent_id: Option<String> = None;
     let mut session_id: Option<String> = None;
     let mut harness_home: Option<PathBuf> = None;
     let mut profile: Option<String> = None;
-    let mut server_url: Option<String> = std::env::var("HARNESS_SERVER_URL").ok();
+    let mut server_url: Option<String> = None;
     let mut cwd: Option<PathBuf> = None;
 
-    let args: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
     while i < args.len() {
         let a = &args[i];
@@ -269,7 +273,7 @@ fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::{read_wire_message, write_wire_message, WireMode};
+    use super::{parse_args_from, read_wire_message, write_wire_message, WireMode};
     use std::io::Cursor;
 
     #[test]
@@ -303,5 +307,37 @@ mod tests {
             wire,
             format!("Content-Length: {}\r\n\r\n{}", body.len(), body)
         );
+    }
+
+    #[test]
+    fn server_url_is_absent_without_trusted_cli_flag() {
+        let args = parse_args_from(vec![
+            "--thread".into(),
+            "thread-1".into(),
+            "--agent-id".into(),
+            "agent:codex-1".into(),
+            "--harness-home".into(),
+            "/tmp/harness".into(),
+        ])
+        .unwrap();
+
+        assert_eq!(args.server_url, None);
+    }
+
+    #[test]
+    fn server_url_comes_from_trusted_cli_flag() {
+        let args = parse_args_from(vec![
+            "--thread".into(),
+            "thread-1".into(),
+            "--agent-id".into(),
+            "agent:codex-1".into(),
+            "--harness-home".into(),
+            "/tmp/harness".into(),
+            "--server-url".into(),
+            "http://127.0.0.1:7777".into(),
+        ])
+        .unwrap();
+
+        assert_eq!(args.server_url.as_deref(), Some("http://127.0.0.1:7777"));
     }
 }

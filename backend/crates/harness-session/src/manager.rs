@@ -204,6 +204,7 @@ impl Manager {
         let inject_via_pty = !matches!(kind, AgentKind::Codex);
         if inject_via_pty {
             if let Some(payload) = opts.role_prompt {
+                let payload = sanitize_pty_prompt(&payload);
                 let s = session.clone();
                 let sid = s.id().to_string();
                 tokio::spawn(async move {
@@ -510,6 +511,13 @@ fn toml_string_array(values: &[String]) -> String {
     format!("[{parts}]")
 }
 
+fn sanitize_pty_prompt(prompt: &str) -> String {
+    prompt
+        .chars()
+        .filter(|ch| !ch.is_control() || matches!(ch, '\n' | '\r' | '\t'))
+        .collect::<String>()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -602,6 +610,15 @@ mod tests {
         };
         let args = build_extra_args(AgentKind::Claude, &opts, "sid");
         assert!(!args.iter().any(|a| a == "--append-system-prompt"));
+    }
+
+    #[test]
+    fn pty_prompt_sanitizer_strips_terminal_escape_bytes() {
+        let prompt = "before\x1b[201~\n\x1b]0;title\x07after";
+        let sanitized = sanitize_pty_prompt(prompt);
+
+        assert_eq!(sanitized, "before[201~\n]0;titleafter");
+        assert!(!sanitized.contains('\u{1b}'));
     }
 
     #[test]

@@ -27,8 +27,8 @@ revisar, aprobar y ejecutar sin mezclar scopes.
 10. **Task A2: Autonomy profile + approvals policy** — base ejecutada; follow-up: allowlists por project.toml/policy y selector editable en thread activo.
 11. **Task A3: Team handoff schema** — base ejecutada; follow-up: enforcement obligatorio `generator -> evaluator` antes de `pending_verify`.
 12. **Task A4: Repo intelligence + codebase-memory-mcp** — base ejecutada; follow-up: index orchestration/cache y wrappers profundos de grafo.
-13. **Task 12: TaskBrief first-class** — separar contrato de trabajo de acceptance checks.
-14. **Task 13: Separar `task.create` y `task.propose`** — workers proponen, planner/orchestrator crea.
+13. **Task 12: TaskBrief first-class** — ejecutada; brief estructurado (objective/context/tasks/rules/expected_result) como campo propio del Task, fuera de acceptance checks, con compat de brief string legacy. Rebaseada sobre el batch de hardening de seguridad y pusheada a main.
+14. **Task 13: Separar `task.create` y `task.propose`** — siguiente; workers proponen, planner/orchestrator crea. Antes de codear: auditar la crate `harness-policy` (`src/engine.rs`, llegó con el batch de hardening) para decidir si el deny de `task_create` a workers vive ahí o en un check mínimo, dejando el middleware completo para Task 14.
 15. **Task 14: Capability policy middleware mínimo** — enforcement real de roles/tools/resources.
 16. **Task 15: Eventos append-only unificados** — task/agent/spec/artifact/audit con semántica común.
 17. **Task 16: Metadata fuerte de subagentes** — ownership, rol, task, parent/root y scopes.

@@ -232,6 +232,52 @@ async fn row_insert_refuses_pkless_table() {
 }
 
 #[tokio::test]
+async fn row_crud_quotes_embedded_identifier_quotes() {
+    let (mgr, dir) = fresh_manager();
+    let db_path = dir.path().join("quoted.db");
+    let c = mgr
+        .connections_add(sqlite_input(&db_path, "quoted"))
+        .unwrap();
+    mgr.query_run(
+        &c.id,
+        None,
+        r#"CREATE TABLE "odd""table" ("id" INTEGER PRIMARY KEY, "a""b" TEXT NOT NULL)"#,
+        None,
+        10,
+        0,
+    )
+    .await
+    .unwrap();
+
+    let mut values = HashMap::new();
+    values.insert("a\"b".to_string(), Value::Text("before".into()));
+    let row = mgr
+        .row_insert(&c.id, None, None, "odd\"table", values)
+        .await
+        .expect("insert quoted identifiers");
+    assert_eq!(
+        row.cells.get("a\"b").unwrap(),
+        &Value::Text("before".into())
+    );
+
+    let mut pk = HashMap::new();
+    pk.insert("id".to_string(), Value::Int(1));
+    let mut update = HashMap::new();
+    update.insert("a\"b".to_string(), Value::Text("after".into()));
+    let row = mgr
+        .row_update(&c.id, None, None, "odd\"table", pk.clone(), update)
+        .await
+        .expect("update quoted identifiers");
+    assert_eq!(row.cells.get("a\"b").unwrap(), &Value::Text("after".into()));
+
+    let deleted = mgr
+        .row_delete(&c.id, None, None, "odd\"table", pk)
+        .await
+        .expect("delete quoted identifiers");
+    assert_eq!(deleted, 1);
+}
+
+#[tokio::test]
 async fn sqlite_query_run_ignores_database_override() {
     // The /db UI sometimes passes a `database` (the dropdown selection) even
     // for SQLite connections, where it's meaningless. The backend must treat

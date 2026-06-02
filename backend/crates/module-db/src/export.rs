@@ -438,13 +438,12 @@ fn render_create_table(
     table: &Table,
     selected: &[&Column],
 ) -> String {
-    let q = ident_quote(engine);
     let qtable = qualify(engine, schema, &table.name);
     let mut lines: Vec<String> = Vec::new();
     let kept: HashSet<&str> = selected.iter().map(|c| c.name.as_str()).collect();
 
     for c in selected {
-        let mut line = format!("  {q}{name}{q} {ty}", name = c.name, ty = c.r#type);
+        let mut line = format!("  {} {ty}", quote_ident(engine, &c.name), ty = c.r#type);
         if !c.nullable {
             line.push_str(" NOT NULL");
         }
@@ -462,7 +461,7 @@ fn render_create_table(
     let pk_cols: Vec<String> = selected
         .iter()
         .filter(|c| c.pk)
-        .map(|c| format!("{q}{}{q}", c.name))
+        .map(|c| quote_ident(engine, &c.name))
         .collect();
     if !pk_cols.is_empty() {
         lines.push(format!("  PRIMARY KEY ({})", pk_cols.join(", ")));
@@ -474,18 +473,19 @@ fn render_create_table(
             let cols = fk
                 .cols
                 .iter()
-                .map(|c| format!("{q}{c}{q}"))
+                .map(|c| quote_ident(engine, c))
                 .collect::<Vec<_>>()
                 .join(", ");
             let ref_cols = fk
                 .ref_cols
                 .iter()
-                .map(|c| format!("{q}{c}{q}"))
+                .map(|c| quote_ident(engine, c))
                 .collect::<Vec<_>>()
                 .join(", ");
             lines.push(format!(
-                "  CONSTRAINT {q}{}{q} FOREIGN KEY ({cols}) REFERENCES {q}{}{q} ({ref_cols})",
-                fk.name, fk.ref_table
+                "  CONSTRAINT {} FOREIGN KEY ({cols}) REFERENCES {} ({ref_cols})",
+                quote_ident(engine, &fk.name),
+                quote_ident(engine, &fk.ref_table)
             ));
         }
     }
@@ -506,13 +506,13 @@ fn render_create_table(
         let cols = ix
             .cols
             .iter()
-            .map(|c| format!("{q}{c}{q}"))
+            .map(|c| quote_ident(engine, c))
             .collect::<Vec<_>>()
             .join(", ");
         let unique = if ix.unique { "UNIQUE " } else { "" };
         out.push_str(&format!(
-            "CREATE {unique}INDEX {q}{}{q} ON {qtable} ({cols});\n",
-            ix.name
+            "CREATE {unique}INDEX {} ON {qtable} ({cols});\n",
+            quote_ident(engine, &ix.name)
         ));
     }
     out
@@ -533,11 +533,10 @@ fn render_inserts_into(
     if rows.is_empty() {
         return;
     }
-    let q = ident_quote(engine);
     let qtable = qualify(engine, schema, table_name);
     let cols = selected
         .iter()
-        .map(|c| format!("{q}{}{q}", c.name))
+        .map(|c| quote_ident(engine, &c.name))
         .collect::<Vec<_>>()
         .join(", ");
 
@@ -570,11 +569,10 @@ async fn fetch_all_rows(
     table: &str,
     selected: &[&Column],
 ) -> DbResult<(Vec<Vec<Value>>, bool)> {
-    let q = ident_quote(engine);
     let qtable = qualify(engine, schema, table);
     let col_list = selected
         .iter()
-        .map(|c| format!("{q}{}{q}", c.name))
+        .map(|c| quote_ident(engine, &c.name))
         .collect::<Vec<_>>()
         .join(", ");
     let mut out: Vec<Vec<Value>> = Vec::new();
@@ -635,16 +633,22 @@ fn ident_quote(engine: Engine) -> char {
     }
 }
 
+fn quote_ident(engine: Engine, ident: &str) -> String {
+    let quote = ident_quote(engine);
+    let escaped = ident.replace(quote, &format!("{quote}{quote}"));
+    format!("{quote}{escaped}{quote}")
+}
+
 fn qualify(engine: Engine, schema: Option<&str>, table: &str) -> String {
-    let q = ident_quote(engine);
+    let qtable = quote_ident(engine, table);
     match schema {
         // SQLite's only schema is "main"; including it in CREATE TABLE
         // statements would actually be wrong (you can't say
         // `CREATE TABLE "main"."t"`), so we drop it for SQLite.
         Some(s) if !(s.is_empty() || matches!(engine, Engine::Sqlite) && s == "main") => {
-            format!("{q}{s}{q}.{q}{table}{q}")
+            format!("{}.{}", quote_ident(engine, s), qtable)
         }
-        _ => format!("{q}{table}{q}"),
+        _ => qtable,
     }
 }
 

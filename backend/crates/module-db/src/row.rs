@@ -13,19 +13,33 @@ use crate::types::{Engine, Row};
 use crate::value::{decode_mysql_row, decode_postgres_row, decode_sqlite_row, Value};
 
 /// Build a fully-qualified table identifier with engine-specific quoting.
-fn qualify(engine: Engine, schema: Option<&str>, table: &str) -> String {
-    let q = quote_ident(engine);
+fn qualify(engine: Engine, schema: Option<&str>, table: &str) -> DbResult<String> {
+    let qtable = quote_ident(engine, table)?;
     match schema {
-        Some(s) if !s.is_empty() => format!("{q}{s}{q}.{q}{table}{q}"),
-        _ => format!("{q}{table}{q}"),
+        Some(s) if !s.is_empty() => Ok(format!("{}.{}", quote_ident(engine, s)?, qtable)),
+        _ => Ok(qtable),
     }
 }
 
-fn quote_ident(engine: Engine) -> char {
+fn ident_quote(engine: Engine) -> char {
     match engine {
         Engine::Mysql => '`',
         _ => '"',
     }
+}
+
+fn quote_ident(engine: Engine, ident: &str) -> DbResult<String> {
+    if ident.is_empty() {
+        return Err(DbError::Validation("identifier must not be empty".into()));
+    }
+    if ident.contains('\0') {
+        return Err(DbError::Validation(
+            "identifier must not contain NUL".into(),
+        ));
+    }
+    let quote = ident_quote(engine);
+    let escaped = ident.replace(quote, &format!("{quote}{quote}"));
+    Ok(format!("{quote}{escaped}{quote}"))
 }
 
 fn placeholder(engine: Engine, n: usize) -> String {
@@ -133,7 +147,6 @@ pub async fn insert(
     }
     let engine = pool.engine();
     let pks = primary_key_cols(pool, database, schema, table).await?;
-    let qident = quote_ident(engine);
 
     // Drop NULL/empty values so the database picks up column defaults (serial
     // sequences, CURRENT_TIMESTAMP, etc.). Binding NULL through sqlx::Any has
@@ -146,7 +159,7 @@ pub async fn insert(
         .filter(|(_, v)| !matches!(v, Value::Null))
         .map(|(k, _)| k.clone())
         .collect();
-    let qtable = qualify(engine, schema, table);
+    let qtable = qualify(engine, schema, table)?;
 
     let supports_returning = matches!(engine, Engine::Postgres | Engine::Sqlite);
     let sql = if cols.is_empty() {
@@ -165,8 +178,8 @@ pub async fn insert(
     } else {
         let col_list = cols
             .iter()
-            .map(|c| format!("{qident}{c}{qident}"))
-            .collect::<Vec<_>>()
+            .map(|c| quote_ident(engine, c))
+            .collect::<DbResult<Vec<_>>>()?
             .join(", ");
         let placeholders = (1..=cols.len())
             .map(|i| placeholder(engine, i))
@@ -208,7 +221,10 @@ pub async fn insert(
             // MySQL: re-select by LAST_INSERT_ID() for single auto-PK, else by provided PKs.
             if pks.len() == 1 && last_id != 0 {
                 let pk = &pks[0];
-                let sel = format!("SELECT * FROM {qtable} WHERE {qident}{pk}{qident} = ? LIMIT 1");
+                let sel = format!(
+                    "SELECT * FROM {qtable} WHERE {} = ? LIMIT 1",
+                    quote_ident(engine, pk)?
+                );
                 let row = sqlx::query(&sel).bind(last_id).fetch_one(p).await?;
                 let cells = named_map_mysql(&row);
                 return Ok(Row { cells });
@@ -244,25 +260,24 @@ pub async fn update(
         return Err(DbError::Validation("values is empty".into()));
     }
     let engine = pool.engine();
-    let qident = quote_ident(engine);
-    let qtable = qualify(engine, schema, table);
+    let qtable = qualify(engine, schema, table)?;
     let mut counter = 1usize;
     let set_parts: Vec<String> = values
         .keys()
         .map(|k| {
             let ph = placeholder(engine, counter);
             counter += 1;
-            format!("{qident}{k}{qident} = {ph}")
+            Ok(format!("{} = {ph}", quote_ident(engine, k)?))
         })
-        .collect();
+        .collect::<DbResult<Vec<_>>>()?;
     let where_parts: Vec<String> = pk
         .keys()
         .map(|k| {
             let ph = placeholder(engine, counter);
             counter += 1;
-            format!("{qident}{k}{qident} = {ph}")
+            Ok(format!("{} = {ph}", quote_ident(engine, k)?))
         })
-        .collect();
+        .collect::<DbResult<Vec<_>>>()?;
 
     let sql_core = format!(
         "UPDATE {qtable} SET {} WHERE {}",
@@ -315,8 +330,8 @@ pub async fn update(
             // Re-select by PK.
             let sel_where: Vec<String> = pk
                 .keys()
-                .map(|k| format!("{qident}{k}{qident} = ?"))
-                .collect();
+                .map(|k| Ok(format!("{} = ?", quote_ident(engine, k)?)))
+                .collect::<DbResult<Vec<_>>>()?;
             let sel = format!(
                 "SELECT * FROM {qtable} WHERE {} LIMIT 1",
                 sel_where.join(" AND ")
@@ -346,17 +361,16 @@ pub async fn delete(
         return Err(DbError::Validation("pk is empty".into()));
     }
     let engine = pool.engine();
-    let qident = quote_ident(engine);
-    let qtable = qualify(engine, schema, table);
+    let qtable = qualify(engine, schema, table)?;
     let mut counter = 1usize;
     let where_parts: Vec<String> = pk
         .keys()
         .map(|k| {
             let ph = placeholder(engine, counter);
             counter += 1;
-            format!("{qident}{k}{qident} = {ph}")
+            Ok(format!("{} = {ph}", quote_ident(engine, k)?))
         })
-        .collect();
+        .collect::<DbResult<Vec<_>>>()?;
     let sql = format!("DELETE FROM {qtable} WHERE {}", where_parts.join(" AND "));
     match pool {
         DbPool::Sqlite(p) => {
@@ -397,17 +411,16 @@ pub async fn duplicate(
 ) -> DbResult<Row> {
     let engine = pool.engine();
     let pks = primary_key_cols(pool, database, schema, table).await?;
-    let qident = quote_ident(engine);
-    let qtable = qualify(engine, schema, table);
+    let qtable = qualify(engine, schema, table)?;
     let mut counter = 1usize;
     let where_parts: Vec<String> = pk
         .keys()
         .map(|k| {
             let ph = placeholder(engine, counter);
             counter += 1;
-            format!("{qident}{k}{qident} = {ph}")
+            Ok(format!("{} = {ph}", quote_ident(engine, k)?))
         })
-        .collect();
+        .collect::<DbResult<Vec<_>>>()?;
     let sel = format!(
         "SELECT * FROM {qtable} WHERE {} LIMIT 1",
         where_parts.join(" AND ")
@@ -450,14 +463,17 @@ fn where_for_pks(
     pks: &[String],
     values: &HashMap<String, Value>,
 ) -> DbResult<(String, Vec<Value>)> {
-    let qident = quote_ident(engine);
     let mut parts = Vec::new();
     let mut binds = Vec::new();
     for (i, p) in (1..).zip(pks.iter()) {
         let v = values
             .get(p)
             .ok_or_else(|| DbError::Validation(format!("missing PK value: {p}")))?;
-        parts.push(format!("{qident}{p}{qident} = {}", placeholder(engine, i)));
+        parts.push(format!(
+            "{} = {}",
+            quote_ident(engine, p)?,
+            placeholder(engine, i)
+        ));
         binds.push(v.clone());
     }
     Ok((parts.join(" AND "), binds))

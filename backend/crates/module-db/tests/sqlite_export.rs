@@ -191,6 +191,52 @@ async fn sql_export_schema_only_and_schema_and_data() {
 }
 
 #[tokio::test]
+async fn sql_export_quotes_embedded_identifier_quotes() {
+    let (mgr, dir) = fresh_manager();
+    let path = dir.path().join("quoted.db");
+    let c = mgr.connections_add(sqlite_input(&path, "quoted")).unwrap();
+    mgr.query_run(
+        &c.id,
+        None,
+        r#"CREATE TABLE "odd""table" ("id" INTEGER PRIMARY KEY, "a""b" TEXT NOT NULL)"#,
+        None,
+        10,
+        0,
+    )
+    .await
+    .unwrap();
+    mgr.query_run(
+        &c.id,
+        None,
+        r#"INSERT INTO "odd""table" ("a""b") VALUES ('value')"#,
+        None,
+        10,
+        0,
+    )
+    .await
+    .unwrap();
+
+    let req = ExportRequest {
+        database: None,
+        target: ExportTarget::Table {
+            schema: Some("main".into()),
+            name: "odd\"table".into(),
+            columns: None,
+        },
+        format: ExportFormat::SqlInsert,
+        scope: ExportScope::SchemaAndData,
+    };
+    let res = mgr.export(&c.id, req).await.unwrap();
+    let s = String::from_utf8(res.body).unwrap();
+    assert!(s.contains("CREATE TABLE \"odd\"\"table\""), "{s}");
+    assert!(s.contains("\"a\"\"b\" TEXT NOT NULL"), "{s}");
+    assert!(
+        s.contains("INSERT INTO \"odd\"\"table\" (\"id\", \"a\"\"b\")"),
+        "{s}"
+    );
+}
+
+#[tokio::test]
 async fn column_subset_applies_to_all_formats() {
     let (mgr, dir) = fresh_manager();
     let path = dir.path().join("c.db");

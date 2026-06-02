@@ -27,6 +27,7 @@ fn opt_str<'a>(args: &'a Value, key: &str) -> Option<&'a str> {
 pub fn spawn_child(
     session_id: Option<&str>,
     server_url: Option<&str>,
+    api_token: Option<&str>,
     args: &Value,
 ) -> Result<Value, String> {
     let parent_sid = session_id.ok_or_else(|| {
@@ -52,16 +53,22 @@ pub fn spawn_child(
         "initial_prompt": initial_prompt,
         "cwd": cwd,
     });
-    ureq::post(&url)
-        .timeout(Duration::from_secs(10))
-        .send_json(&body)
+    let mut req = ureq::post(&url).timeout(Duration::from_secs(10));
+    if let Some(token) = api_token {
+        req = req.set("Authorization", &format!("Bearer {token}"));
+    }
+    req.send_json(&body)
         .map_err(|e| e.to_string())?
         .into_json::<Value>()
         .map_err(|e| e.to_string())
 }
 
 /// `session_list_children` — direct children of the current session.
-pub fn list_children(session_id: Option<&str>, server_url: Option<&str>) -> Result<Value, String> {
+pub fn list_children(
+    session_id: Option<&str>,
+    server_url: Option<&str>,
+    api_token: Option<&str>,
+) -> Result<Value, String> {
     let parent_sid =
         session_id.ok_or_else(|| "session.list_children requires --session-id".to_string())?;
     let server =
@@ -71,9 +78,11 @@ pub fn list_children(session_id: Option<&str>, server_url: Option<&str>) -> Resu
         server.trim_end_matches('/'),
         parent_sid
     );
-    ureq::get(&url)
-        .timeout(Duration::from_secs(5))
-        .call()
+    let mut req = ureq::get(&url).timeout(Duration::from_secs(5));
+    if let Some(token) = api_token {
+        req = req.set("Authorization", &format!("Bearer {token}"));
+    }
+    req.call()
         .map_err(|e| e.to_string())?
         .into_json::<Value>()
         .map_err(|e| e.to_string())
@@ -86,6 +95,7 @@ pub fn list_children(session_id: Option<&str>, server_url: Option<&str>) -> Resu
 pub fn send_input(
     session_id: Option<&str>,
     server_url: Option<&str>,
+    api_token: Option<&str>,
     args: &Value,
 ) -> Result<Value, String> {
     let parent_sid =
@@ -102,11 +112,13 @@ pub fn send_input(
         parent_sid,
         child_sid
     );
-    ureq::post(&url)
+    let mut req = ureq::post(&url)
         .timeout(Duration::from_secs(5))
-        .set("Content-Type", "application/octet-stream")
-        .send_bytes(text.as_bytes())
-        .map_err(|e| e.to_string())?;
+        .set("Content-Type", "application/octet-stream");
+    if let Some(token) = api_token {
+        req = req.set("Authorization", &format!("Bearer {token}"));
+    }
+    req.send_bytes(text.as_bytes()).map_err(|e| e.to_string())?;
     Ok(json!({ "ok": true, "bytes": text.len() }))
 }
 
@@ -115,6 +127,7 @@ pub fn send_input(
 pub fn cancel_child(
     session_id: Option<&str>,
     server_url: Option<&str>,
+    api_token: Option<&str>,
     args: &Value,
 ) -> Result<Value, String> {
     let parent_sid =
@@ -129,6 +142,9 @@ pub fn cancel_child(
         child_sid
     );
     let mut req = ureq::delete(&url).timeout(Duration::from_secs(5));
+    if let Some(token) = api_token {
+        req = req.set("Authorization", &format!("Bearer {token}"));
+    }
     if let Some(r) = reason {
         req = req.set("X-Cancel-Reason", r);
     }
@@ -142,6 +158,7 @@ pub fn cancel_child(
 pub fn read_child_summary(
     session_id: Option<&str>,
     server_url: Option<&str>,
+    api_token: Option<&str>,
     args: &Value,
 ) -> Result<Value, String> {
     let _parent_sid =
@@ -154,9 +171,11 @@ pub fn read_child_summary(
         server.trim_end_matches('/'),
         child_sid
     );
-    ureq::get(&url)
-        .timeout(Duration::from_secs(5))
-        .call()
+    let mut req = ureq::get(&url).timeout(Duration::from_secs(5));
+    if let Some(token) = api_token {
+        req = req.set("Authorization", &format!("Bearer {token}"));
+    }
+    req.call()
         .map_err(|e| e.to_string())?
         .into_json::<Value>()
         .map_err(|e| e.to_string())

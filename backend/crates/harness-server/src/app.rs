@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use axum::http::{header, HeaderName, HeaderValue, Method};
-use axum::Router;
+use axum::{middleware, Router};
 use tower::ServiceBuilder;
 use tower_http::compression::CompressionLayer;
 use tower_http::cors::{AllowOrigin, CorsLayer};
@@ -20,8 +20,20 @@ pub fn build_router(state: Arc<AppState>, cfg: &Config) -> Router {
         .allow_origin(AllowOrigin::exact(
             HeaderValue::from_str(&cfg.cors_origin).expect("invalid HARNESS_CORS_ORIGIN value"),
         ))
-        .allow_methods([Method::GET, Method::POST, Method::PUT, Method::OPTIONS])
-        .allow_headers([header::CONTENT_TYPE, header::ACCEPT, header::AUTHORIZATION])
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::DELETE,
+            Method::PATCH,
+            Method::OPTIONS,
+        ])
+        .allow_headers([
+            header::CONTENT_TYPE,
+            header::ACCEPT,
+            header::AUTHORIZATION,
+            PROTOCOL_VERSION_HEADER,
+        ])
         .expose_headers([PROTOCOL_VERSION_HEADER]);
 
     let protocol_header_layer = SetResponseHeaderLayer::overriding(
@@ -35,8 +47,7 @@ pub fn build_router(state: Arc<AppState>, cfg: &Config) -> Router {
         .layer(cors)
         .layer(CompressionLayer::new());
 
-    Router::new()
-        .merge(routes::health::router())
+    let protected = Router::new()
         .merge(routes::knowledge::router())
         .merge(routes::threads::router())
         .merge(routes::sessions::router())
@@ -50,6 +61,14 @@ pub fn build_router(state: Arc<AppState>, cfg: &Config) -> Router {
         .merge(routes::db::router())
         .merge(routes::profiles::router())
         .merge(routes::transcript::router())
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            crate::auth::require_api_token,
+        ));
+
+    Router::new()
+        .merge(routes::health::router())
+        .merge(protected)
         .layer(middleware)
         .with_state(state)
 }

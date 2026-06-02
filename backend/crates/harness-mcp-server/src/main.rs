@@ -108,6 +108,8 @@ struct CliArgs {
     server_url: Option<String>,
     /// Workspace root this MCP instance may inspect.
     cwd: PathBuf,
+    /// Shared backend API token passed by the trusted harness-server parent.
+    api_token: Option<String>,
 }
 
 fn parse_args() -> Result<CliArgs, String> {
@@ -123,6 +125,7 @@ fn parse_args_from(args: Vec<String>) -> Result<CliArgs, String> {
     let mut profile: Option<String> = None;
     let mut server_url: Option<String> = None;
     let mut cwd: Option<PathBuf> = None;
+    let mut api_token: Option<String> = None;
 
     let mut i = 0;
     while i < args.len() {
@@ -160,9 +163,13 @@ fn parse_args_from(args: Vec<String>) -> Result<CliArgs, String> {
                 cwd = Some(PathBuf::from(next(i)?));
                 i += 2;
             }
+            "--api-token" => {
+                api_token = Some(next(i)?.clone());
+                i += 2;
+            }
             "-h" | "--help" => {
                 eprintln!(
-                    "usage: harness-mcp-server --thread <tid> --agent-id <aid> [--session-id <sid>] --harness-home <path> [--profile <profile>] [--server-url <url>] [--cwd <path>]"
+                    "usage: harness-mcp-server --thread <tid> --agent-id <aid> [--session-id <sid>] --harness-home <path> [--profile <profile>] [--server-url <url>] [--cwd <path>] [--api-token <token>]"
                 );
                 std::process::exit(0);
             }
@@ -177,6 +184,7 @@ fn parse_args_from(args: Vec<String>) -> Result<CliArgs, String> {
         profile: profile.unwrap_or_else(|| "default".to_string()),
         server_url,
         cwd: cwd.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))),
+        api_token,
     })
 }
 
@@ -213,6 +221,7 @@ fn main() -> ExitCode {
         args.profile.clone(),
         args.server_url.clone(),
         args.cwd.clone(),
+        args.api_token.clone(),
     ) {
         Ok(d) => d,
         Err(e) => {
@@ -339,5 +348,22 @@ mod tests {
         .unwrap();
 
         assert_eq!(args.server_url.as_deref(), Some("http://127.0.0.1:7777"));
+    }
+
+    #[test]
+    fn api_token_comes_from_trusted_cli_flag() {
+        let args = parse_args_from(vec![
+            "--thread".into(),
+            "thread-1".into(),
+            "--agent-id".into(),
+            "agent:codex-1".into(),
+            "--harness-home".into(),
+            "/tmp/harness".into(),
+            "--api-token".into(),
+            "secret".into(),
+        ])
+        .unwrap();
+
+        assert_eq!(args.api_token.as_deref(), Some("secret"));
     }
 }

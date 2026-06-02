@@ -9,6 +9,7 @@ services:
       - "${BACKEND_PORT:-7777}:7777"
     environment:
       HARNESS_HOME: /data
+      HARNESS_API_TOKEN: ${HARNESS_API_TOKEN:?Set HARNESS_API_TOKEN in .env}
       RUST_LOG: ${RUST_LOG:-info}
     volumes:
       - ${HARNESS_HOME:-~/.harness}:/data
@@ -26,6 +27,7 @@ services:
       - "${FRONTEND_PORT:-8080}:8080"
     environment:
       PUBLIC_API_BASE: http://backend:7777/api
+      PUBLIC_HARNESS_API_TOKEN: ${HARNESS_API_TOKEN:?Set HARNESS_API_TOKEN in .env}
       NODE_ENV: production
       PORT: "8080"
     depends_on:

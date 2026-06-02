@@ -1,4 +1,5 @@
-use std::path::PathBuf;
+use std::io::Write;
+use std::path::{Path as FsPath, PathBuf};
 use std::sync::Arc;
 
 use axum::body::Bytes;
@@ -19,6 +20,21 @@ const MAX_INPUT_BYTES: usize = 64 * 1024;
 /// Per-attachment hard cap. The MCP `attach.read` tool (F3) will base64-encode
 /// the bytes back, so anything north of ~100 MiB hurts more than it helps.
 const MAX_ATTACHMENT_BYTES: usize = 100 * 1024 * 1024;
+
+pub(crate) fn write_private_json(path: &FsPath, value: &Value) -> std::io::Result<()> {
+    let bytes = serde_json::to_vec_pretty(value)?;
+    let mut options = std::fs::OpenOptions::new();
+    options.create(true).write(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(path)?;
+    file.write_all(&bytes)?;
+    file.sync_all()?;
+    Ok(())
+}
 
 #[derive(Debug, Deserialize)]
 pub struct CreateSessionRequest {
@@ -425,6 +441,11 @@ fn build_spawn_opts(
         "--cwd".to_string(),
         cwd.display().to_string(),
     ];
+    let mut mcp_args = mcp_args;
+    if let Some(token) = state.api_token.as_ref() {
+        mcp_args.push("--api-token".to_string());
+        mcp_args.push(token.clone());
+    }
 
     let mut mcp_servers = Map::new();
     mcp_servers.insert(
@@ -453,7 +474,7 @@ fn build_spawn_opts(
     // harness HTTP server so the in-process broadcast bus emits the SSE
     // `task.created` event the right-panel relies on.
     let config = json!({ "mcpServers": Value::Object(mcp_servers) });
-    std::fs::write(&config_path, serde_json::to_vec_pretty(&config).unwrap())
+    write_private_json(&config_path, &config)
         .map_err(|e| ApiError::Internal(format!("write mcp config: {e}")))?;
     tracing::info!(
         path = %config_path.display(),

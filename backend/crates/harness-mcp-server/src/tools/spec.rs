@@ -31,7 +31,12 @@ pub fn read(home: &Path, default_thread: &str, args: &Value) -> Result<Value, St
     Ok(json!({ "content": content }))
 }
 
-pub fn write(home: &Path, server_url: Option<&str>, args: &Value) -> Result<Value, String> {
+pub fn write(
+    home: &Path,
+    server_url: Option<&str>,
+    api_token: Option<&str>,
+    args: &Value,
+) -> Result<Value, String> {
     let thread_id = str_arg(args, "thread_id")?;
     validate_thread_id(thread_id).map_err(|e| format!("spec_write: {e}"))?;
     let content = str_arg(args, "content")?;
@@ -48,10 +53,11 @@ pub fn write(home: &Path, server_url: Option<&str>, args: &Value) -> Result<Valu
         if let Some(etag) = etag {
             body["etag"] = json!(etag);
         }
-        return match ureq::put(&url)
-            .timeout(Duration::from_secs(5))
-            .send_json(&body)
-        {
+        let mut req = ureq::put(&url).timeout(Duration::from_secs(5));
+        if let Some(token) = api_token {
+            req = req.set("Authorization", &format!("Bearer {token}"));
+        }
+        return match req.send_json(&body) {
             Ok(resp) => resp.into_json().map_err(|e| e.to_string()),
             Err(ureq::Error::Status(code, resp)) => {
                 let body = resp.into_string().unwrap_or_default();
@@ -158,6 +164,7 @@ mod tests {
         let first = write(
             dir.path(),
             None,
+            None,
             &json!({ "thread_id": "t1", "content": "# Spec\n" }),
         )
         .unwrap();
@@ -173,6 +180,7 @@ mod tests {
         let second = write(
             dir.path(),
             None,
+            None,
             &json!({ "thread_id": "t1", "content": "updated", "etag": etag }),
         )
         .unwrap();
@@ -186,12 +194,14 @@ mod tests {
         write(
             dir.path(),
             None,
+            None,
             &json!({ "thread_id": "t1", "content": "current" }),
         )
         .unwrap();
 
         let err = write(
             dir.path(),
+            None,
             None,
             &json!({ "thread_id": "t1", "content": "new", "etag": "stale" }),
         )
@@ -200,6 +210,7 @@ mod tests {
 
         let err = write(
             dir.path(),
+            None,
             None,
             &json!({ "thread_id": "missing", "content": "new", "etag": "anything" }),
         )
@@ -213,6 +224,7 @@ mod tests {
         for thread_id in ["", "..", "a/b"] {
             let err = write(
                 dir.path(),
+                None,
                 None,
                 &json!({ "thread_id": thread_id, "content": "x" }),
             )
@@ -229,6 +241,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let err = write(
             dir.path(),
+            None,
             None,
             &json!({ "thread_id": "t1", "content": "x".repeat(MAX_SPEC_BYTES + 1) }),
         )

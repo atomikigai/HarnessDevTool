@@ -246,6 +246,7 @@ pub fn create(
     default_thread: &str,
     agent_id: &str,
     server_url: Option<&str>,
+    api_token: Option<&str>,
     args: &Value,
 ) -> Result<Value, String> {
     let thread_id = valid_thread_or_default(args, default_thread)?.to_string();
@@ -274,10 +275,11 @@ pub fn create(
             })).collect::<Vec<_>>() },
             "created_by": agent_id,
         });
-        match ureq::post(&url)
-            .timeout(Duration::from_secs(5))
-            .send_json(&body)
-        {
+        let mut req = ureq::post(&url).timeout(Duration::from_secs(5));
+        if let Some(token) = api_token {
+            req = req.set("Authorization", &format!("Bearer {token}"));
+        }
+        match req.send_json(&body) {
             Ok(resp) => {
                 let value: Value = resp.into_json().map_err(|e| e.to_string())?;
                 return Ok(value);

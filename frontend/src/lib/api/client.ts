@@ -5,9 +5,29 @@
  * Exposes the `X-Protocol-Version` header to callers.
  */
 
+import { env } from '$env/dynamic/public';
+
 export const API_BASE: string = (import.meta.env.PUBLIC_API_BASE as string | undefined) ?? '/api';
 
 export const PROTOCOL_VERSION_HEADER = 'X-Protocol-Version';
+export const PROTOCOL_VERSION = '1.0';
+
+const API_TOKEN: string =
+  env.PUBLIC_HARNESS_API_TOKEN ??
+  (import.meta.env.PUBLIC_HARNESS_API_TOKEN as string | undefined) ??
+  '';
+
+export function apiHeaders(extra: Record<string, string> = {}): Record<string, string> {
+  const headers: Record<string, string> = {
+    Accept: 'application/json',
+    [PROTOCOL_VERSION_HEADER]: PROTOCOL_VERSION,
+    ...extra
+  };
+  if (API_TOKEN.trim().length > 0) {
+    headers.Authorization = `Bearer ${API_TOKEN.trim()}`;
+  }
+  return headers;
+}
 
 export class ApiError extends Error {
   status: number;
@@ -54,10 +74,7 @@ export async function apiRequest<T>(
   opts: RequestOptions = {}
 ): Promise<ApiResponse<T>> {
   const url = joinUrl(API_BASE, path);
-  const headers: Record<string, string> = {
-    Accept: 'application/json',
-    ...(opts.headers ?? {})
-  };
+  const headers = apiHeaders(opts.headers ?? {});
   let body: BodyInit | undefined;
   if (opts.body !== undefined) {
     headers['Content-Type'] = headers['Content-Type'] ?? 'application/json';
@@ -459,7 +476,7 @@ export const api = {
       const url = `${API_BASE.endsWith('/') ? API_BASE.slice(0, -1) : API_BASE}/sessions/${sessionId}/input`;
       const res = await fetch(url, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/octet-stream' },
+        headers: apiHeaders({ 'Content-Type': 'application/octet-stream' }),
         body: bytes as BodyInit,
         signal
       });
@@ -482,7 +499,7 @@ export const api = {
       const url = `${API_BASE.endsWith('/') ? API_BASE.slice(0, -1) : API_BASE}/sessions/${sessionId}/attach`;
       const form = new FormData();
       for (const f of files) form.append('file', f, f.name);
-      const res = await fetch(url, { method: 'POST', body: form, signal });
+      const res = await fetch(url, { method: 'POST', headers: apiHeaders(), body: form, signal });
       if (!res.ok) {
         const text = await res.text().catch(() => '');
         throw new ApiError(res.status, `attach failed: ${res.status}`, text);

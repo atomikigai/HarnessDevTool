@@ -7,7 +7,7 @@
  * callers should `try { await ... } catch (e) { ... }`.
  */
 
-import { apiRequest, API_BASE, ApiError } from './client';
+import { apiRequest, API_BASE, ApiError, apiHeaders } from './client';
 import type { SessionKind } from './client';
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -225,7 +225,7 @@ export const dbApi = {
     const url = `${base}/db/connections/${id}/export`;
     const res = await fetch(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Accept: '*/*' },
+      headers: apiHeaders({ 'Content-Type': 'application/json', Accept: '*/*' }),
       body: JSON.stringify(body),
       signal
     });

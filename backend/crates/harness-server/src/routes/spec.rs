@@ -182,6 +182,7 @@ mod tests {
                 cors_origin: "http://localhost:8080".to_string(),
                 profile: "default".to_string(),
                 autonomy_profile: harness_core::AutonomyProfile::Assisted,
+                api_token: None,
             })
             .unwrap(),
         )

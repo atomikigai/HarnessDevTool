@@ -33,6 +33,7 @@ pub struct Dispatcher {
     /// broadcast bus emits `task.created` and the SSE stream pushes the new
     /// task into the right panel without the user having to refresh.
     server_url: Option<String>,
+    api_token: Option<String>,
     cwd: PathBuf,
 }
 
@@ -47,9 +48,11 @@ impl Dispatcher {
             "default".into(),
             None,
             std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            None,
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn new_with_server(
         harness_home: PathBuf,
         thread_id: String,
@@ -58,6 +61,7 @@ impl Dispatcher {
         profile: String,
         server_url: Option<String>,
         cwd: PathBuf,
+        api_token: Option<String>,
     ) -> Result<Self, String> {
         let store = TaskStore::with_profile(&harness_home, &profile).map_err(|e| e.to_string())?;
         let db = DbManager::new(&harness_home, &profile).map_err(|e| e.to_string())?;
@@ -70,6 +74,7 @@ impl Dispatcher {
             agent_id,
             session_id,
             server_url,
+            api_token,
             cwd,
         })
     }
@@ -137,6 +142,7 @@ impl Dispatcher {
                 &self.thread_id,
                 &self.agent_id,
                 self.server_url.as_deref(),
+                self.api_token.as_deref(),
                 &args,
             ),
             "task_list" => tasks::list(&self.store, &self.thread_id, &args),
@@ -147,7 +153,12 @@ impl Dispatcher {
             "task_release" => tasks::release(&self.store, &self.thread_id, &args),
             "task_submit" => tasks::submit(&self.store, &self.thread_id, &self.agent_id, &args),
             "spec_read" => spec::read(&self.harness_home, &self.thread_id, &args),
-            "spec_write" => spec::write(&self.harness_home, self.server_url.as_deref(), &args),
+            "spec_write" => spec::write(
+                &self.harness_home,
+                self.server_url.as_deref(),
+                self.api_token.as_deref(),
+                &args,
+            ),
             "knowledge_pdftotext_check" => Ok(knowledge_tools::pdftotext_check()),
             "knowledge_pdf_ingest" => {
                 knowledge_tools::pdf_ingest(&self.harness_home, &self.profile, &args)
@@ -170,24 +181,30 @@ impl Dispatcher {
             "session_spawn_child" => session_tools::spawn_child(
                 self.session_id.as_deref(),
                 self.server_url.as_deref(),
+                self.api_token.as_deref(),
                 &args,
             ),
-            "session_list_children" => {
-                session_tools::list_children(self.session_id.as_deref(), self.server_url.as_deref())
-            }
+            "session_list_children" => session_tools::list_children(
+                self.session_id.as_deref(),
+                self.server_url.as_deref(),
+                self.api_token.as_deref(),
+            ),
             "session_read_child_summary" => session_tools::read_child_summary(
                 self.session_id.as_deref(),
                 self.server_url.as_deref(),
+                self.api_token.as_deref(),
                 &args,
             ),
             "session_send_input" => session_tools::send_input(
                 self.session_id.as_deref(),
                 self.server_url.as_deref(),
+                self.api_token.as_deref(),
                 &args,
             ),
             "session_cancel_child" => session_tools::cancel_child(
                 self.session_id.as_deref(),
                 self.server_url.as_deref(),
+                self.api_token.as_deref(),
                 &args,
             ),
             other => {
@@ -220,10 +237,11 @@ impl Dispatcher {
             "agent_id": self.agent_id,
         });
         let url = format!("{}/api/approvals/check", server_url.trim_end_matches('/'));
-        match ureq::post(&url)
-            .timeout(Duration::from_secs(120))
-            .send_json(payload)
-        {
+        let mut req = ureq::post(&url).timeout(Duration::from_secs(120));
+        if let Some(token) = self.api_token.as_deref() {
+            req = req.set("Authorization", &format!("Bearer {token}"));
+        }
+        match req.send_json(payload) {
             Ok(resp) => match resp.into_json::<Value>() {
                 Ok(value) => match value.get("decision").and_then(|v| v.as_str()) {
                     Some("allow") => None,
@@ -294,6 +312,7 @@ mod tests {
             "default".into(),
             None,
             cwd,
+            None,
         )
         .unwrap();
         (d, home)

@@ -2,7 +2,7 @@ use std::env;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use harness_core::{validate_profile_id, AutonomyProfile};
 
 #[derive(Debug, Clone)]
@@ -21,6 +21,9 @@ pub struct Config {
     /// Default autonomy profile for new threads. Project/thread overrides land
     /// in the A2 follow-up; env keeps this slice simple and explicit.
     pub autonomy_profile: AutonomyProfile,
+    /// Shared bearer token for mutating HTTP routes. Optional for loopback
+    /// development, required when the backend listens on a non-loopback IP.
+    pub api_token: Option<String>,
 }
 
 impl Config {
@@ -42,6 +45,7 @@ impl Config {
 
         let profile = resolve_profile(&home);
         let autonomy_profile = resolve_autonomy_profile();
+        let api_token = resolve_api_token(bind)?;
 
         Ok(Self {
             bind,
@@ -49,6 +53,7 @@ impl Config {
             cors_origin,
             profile,
             autonomy_profile,
+            api_token,
         })
     }
 }
@@ -92,5 +97,40 @@ fn resolve_autonomy_profile() -> AutonomyProfile {
         "autonomous" => AutonomyProfile::Autonomous,
         "ci" => AutonomyProfile::Ci,
         _ => AutonomyProfile::Assisted,
+    }
+}
+
+fn resolve_api_token(bind: SocketAddr) -> Result<Option<String>> {
+    validate_api_token(bind, env::var("HARNESS_API_TOKEN").ok())
+}
+
+fn validate_api_token(bind: SocketAddr, raw: Option<String>) -> Result<Option<String>> {
+    let token = raw
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    if !bind.ip().is_loopback() && token.is_none() {
+        bail!("HARNESS_API_TOKEN is required when HARNESS_BIND is not loopback");
+    }
+    Ok(token)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+    use super::*;
+
+    #[test]
+    fn api_token_optional_for_loopback_bind() {
+        let bind = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 7777);
+
+        assert!(validate_api_token(bind, None).unwrap().is_none());
+    }
+
+    #[test]
+    fn api_token_required_for_non_loopback_bind() {
+        let bind = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 7777);
+
+        assert!(validate_api_token(bind, None).is_err());
     }
 }

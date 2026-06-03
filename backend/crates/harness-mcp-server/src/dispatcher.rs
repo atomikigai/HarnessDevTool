@@ -154,6 +154,7 @@ impl Dispatcher {
                 &self.store,
                 &self.thread_id,
                 &self.agent_id,
+                &self.role,
                 self.server_url.as_deref(),
                 self.api_token.as_deref(),
                 &args,
@@ -257,12 +258,17 @@ impl Dispatcher {
             "args": tool_args,
             "thread_id": self.thread_id,
             "agent_id": self.agent_id,
+            "session_id": self.session_id,
+            "role": self.role,
         });
         let url = format!("{}/api/approvals/check", server_url.trim_end_matches('/'));
         let mut req = ureq::post(&url).timeout(Duration::from_secs(120));
         if let Some(token) = self.api_token.as_deref() {
             req = req.set("Authorization", &format!("Bearer {token}"));
         }
+        req = req
+            .set("X-Harness-Caller-Id", &self.agent_id)
+            .set("X-Harness-Caller-Role", &self.role);
         match req.send_json(payload) {
             Ok(resp) => match resp.into_json::<Value>() {
                 Ok(value) => match value.get("decision").and_then(|v| v.as_str()) {

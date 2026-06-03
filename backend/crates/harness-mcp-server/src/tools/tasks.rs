@@ -218,6 +218,7 @@ pub fn create(
     store: &TaskStore,
     default_thread: &str,
     agent_id: &str,
+    role: &str,
     server_url: Option<&str>,
     api_token: Option<&str>,
     args: &Value,
@@ -250,7 +251,11 @@ pub fn create(
             })).collect::<Vec<_>>() },
             "created_by": agent_id,
         });
-        let mut req = ureq::post(&url).timeout(Duration::from_secs(5));
+        let mut req = with_caller_headers(
+            ureq::post(&url).timeout(Duration::from_secs(5)),
+            agent_id,
+            role,
+        );
         if let Some(token) = api_token {
             req = req.set("Authorization", &format!("Bearer {token}"));
         }
@@ -313,7 +318,11 @@ pub fn propose(
             "suggested_title": draft.suggested_title,
             "suggested_acceptance_criteria": draft.suggested_acceptance_criteria,
         });
-        let mut req = ureq::post(&url).timeout(Duration::from_secs(5));
+        let mut req = with_caller_headers(
+            ureq::post(&url).timeout(Duration::from_secs(5)),
+            agent_id,
+            role,
+        );
         if let Some(token) = api_token {
             req = req.set("Authorization", &format!("Bearer {token}"));
         }
@@ -330,6 +339,11 @@ pub fn propose(
 
     let proposal = store.propose(&thread_id, draft).map_err(map_err)?;
     Ok(json!(proposal))
+}
+
+fn with_caller_headers(req: ureq::Request, agent_id: &str, role: &str) -> ureq::Request {
+    req.set("X-Harness-Caller-Id", agent_id)
+        .set("X-Harness-Caller-Role", role)
 }
 
 pub fn list(store: &TaskStore, default_thread: &str, args: &Value) -> Result<Value, String> {

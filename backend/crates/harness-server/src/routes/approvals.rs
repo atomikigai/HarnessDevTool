@@ -2,14 +2,18 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::extract::{Path, State};
+use axum::extract::{Extension, Path, State};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use harness_core::AutonomyProfile;
-use harness_policy::{Decision, RememberScope, Rule};
+use harness_policy::{
+    capability::infer_resource, Actor, CapabilityCheck, CapabilityDecision, Decision,
+    RememberScope, Rule,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::approvals::ApprovalSummary;
+use crate::auth::CallerIdentity;
 use crate::error::{ApiError, ApiResult};
 use crate::state::AppState;
 
@@ -31,6 +35,8 @@ struct CheckBody {
     session_id: Option<String>,
     #[serde(default)]
     agent_id: Option<String>,
+    #[serde(default)]
+    role: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -40,8 +46,30 @@ struct CheckResponse {
 
 async fn check(
     State(state): State<Arc<AppState>>,
+    caller: Option<Extension<CallerIdentity>>,
     Json(body): Json<CheckBody>,
 ) -> Json<CheckResponse> {
+    let actor = actor_for_check(caller.map(|Extension(caller)| caller), &body);
+    let resource = infer_resource(&body.tool, &body.args, body.thread_id.clone());
+    let capability = state.policy.authorize(CapabilityCheck {
+        actor: &actor,
+        tool: &body.tool,
+        resource,
+        args: &body.args,
+    });
+    if let CapabilityDecision::Deny { reason } = capability {
+        tracing::warn!(
+            tool = %body.tool,
+            role = %actor.role,
+            agent_id = %actor.agent_id,
+            ?reason,
+            "capability policy denied approval check"
+        );
+        return Json(CheckResponse {
+            decision: Decision::Deny,
+        });
+    }
+
     let decision = state.policy.evaluate(&body.tool, &body.args);
     let decision = match decision {
         Decision::Allow => Decision::Allow,
@@ -66,6 +94,27 @@ async fn check(
         }
     };
     Json(CheckResponse { decision })
+}
+
+fn actor_for_check(caller: Option<CallerIdentity>, body: &CheckBody) -> Actor {
+    let role = body
+        .role
+        .as_deref()
+        .or_else(|| caller.as_ref().map(|caller| caller.role.as_str()))
+        .unwrap_or("human")
+        .to_string();
+    let agent_id = body
+        .agent_id
+        .as_deref()
+        .or_else(|| caller.as_ref().map(|caller| caller.id.as_str()))
+        .unwrap_or("human")
+        .to_string();
+
+    Actor {
+        agent_id,
+        role,
+        session_id: body.session_id.clone(),
+    }
 }
 
 fn should_auto_allow_for_thread(state: &AppState, thread_id: Option<&str>) -> bool {

@@ -1,4 +1,4 @@
-use axum::extract::{Path, Query, State};
+use axum::extract::{Extension, Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::get;
 use axum::{Json, Router};
@@ -12,6 +12,7 @@ use serde_json::json;
 use std::str::FromStr;
 use std::sync::Arc;
 
+use crate::auth::CallerIdentity;
 use crate::error::{ApiError, ApiResult};
 use crate::state::AppState;
 
@@ -144,7 +145,8 @@ pub struct ProposalBody {
 #[derive(Debug, Deserialize)]
 pub struct PromoteProposalBody {
     pub promoted_by: String,
-    pub promoted_by_role: String,
+    #[serde(default)]
+    pub promoted_by_role: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -204,17 +206,31 @@ async fn create_proposal(
 
 async fn promote_proposal(
     State(s): State<Arc<AppState>>,
+    caller: Option<Extension<CallerIdentity>>,
     Path((tid, proposal_id)): Path<(String, String)>,
     Json(body): Json<PromoteProposalBody>,
 ) -> ApiResult<Json<PromoteProposalResponse>> {
+    let caller = caller
+        .map(|Extension(caller)| caller)
+        .unwrap_or_else(CallerIdentity::human);
     if body.promoted_by.trim().is_empty() {
         return Err(ApiError::BadRequest("promoted_by is required".to_string()));
     }
-    if !can_promote_task_proposals(&body.promoted_by_role) {
+    if !can_promote_task_proposals(&caller.role) {
         return Err(ApiError::Forbidden(format!(
             "role `{}` cannot promote task proposals",
-            body.promoted_by_role
+            caller.role
         )));
+    }
+    if let Some(body_role) = body.promoted_by_role.as_deref() {
+        if body_role != caller.role {
+            tracing::warn!(
+                caller_id = %caller.id,
+                caller_role = %caller.role,
+                body_role,
+                "ignoring mismatched promoted_by_role from request body"
+            );
+        }
     }
     let (proposal, task) = s
         .tasks
@@ -230,7 +246,8 @@ async fn promote_proposal(
             "discovered_by_role": proposal.discovered_by_role,
             "rationale": proposal.rationale,
             "promoted_by": body.promoted_by,
-            "promoted_by_role": body.promoted_by_role,
+            "promoted_by_role": caller.role,
+            "promoted_by_caller_id": caller.id,
             "promoted_task_id": task.id,
         }),
     )?;

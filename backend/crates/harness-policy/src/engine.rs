@@ -5,7 +5,7 @@ use std::sync::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
 use toml_edit::{value, ArrayOfTables, DocumentMut, Item, Table};
 
-use crate::{PolicyResult, Rule};
+use crate::{CapabilityCheck, CapabilityDecision, PolicyResult, Rule};
 
 #[cfg(feature = "ts-export")]
 use ts_rs::TS;
@@ -91,6 +91,10 @@ impl PolicyEngine {
             .find(|rule| rule.matches(tool, args))
             .map(|rule| rule.decision.clone())
             .unwrap_or_else(|| fallback_decision(tool, &state.default))
+    }
+
+    pub fn authorize(&self, check: CapabilityCheck<'_>) -> CapabilityDecision {
+        crate::capability::authorize(check)
     }
 
     pub fn timeout_secs(&self) -> u64 {

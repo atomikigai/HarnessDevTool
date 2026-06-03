@@ -11,6 +11,7 @@ export const API_BASE: string = (import.meta.env.PUBLIC_API_BASE as string | und
 
 export const PROTOCOL_VERSION_HEADER = 'X-Protocol-Version';
 export const PROTOCOL_VERSION = '1.0';
+export const DEFAULT_API_TIMEOUT_MS = 60_000;
 
 const API_TOKEN: string =
   env.PUBLIC_HARNESS_API_TOKEN ??
@@ -60,6 +61,7 @@ export interface RequestOptions {
   body?: unknown;
   headers?: Record<string, string>;
   signal?: AbortSignal;
+  timeoutMs?: number | null;
 }
 
 function joinUrl(base: string, path: string): string {
@@ -67,6 +69,34 @@ function joinUrl(base: string, path: string): string {
   const b = base.endsWith('/') ? base.slice(0, -1) : base;
   const p = path.startsWith('/') ? path : `/${path}`;
   return `${b}${p}`;
+}
+
+function signalWithTimeout(
+  signal: AbortSignal | undefined,
+  timeoutMs: number | null | undefined
+): { signal?: AbortSignal; cleanup: () => void } {
+  const ms = timeoutMs === undefined ? DEFAULT_API_TIMEOUT_MS : timeoutMs;
+  if (ms === null || ms <= 0) return { signal, cleanup: () => {} };
+
+  const controller = new AbortController();
+  const abort = () => controller.abort(signal?.reason);
+  if (signal?.aborted) {
+    abort();
+    return { signal: controller.signal, cleanup: () => {} };
+  }
+
+  signal?.addEventListener('abort', abort, { once: true });
+  const timer = globalThis.setTimeout(() => {
+    controller.abort(new DOMException('Request timed out', 'TimeoutError'));
+  }, ms);
+
+  return {
+    signal: controller.signal,
+    cleanup: () => {
+      globalThis.clearTimeout(timer);
+      signal?.removeEventListener('abort', abort);
+    }
+  };
 }
 
 export async function apiRequest<T>(
@@ -81,12 +111,18 @@ export async function apiRequest<T>(
     body = typeof opts.body === 'string' ? opts.body : JSON.stringify(opts.body);
   }
 
-  const res = await fetch(url, {
-    method: opts.method ?? 'GET',
-    headers,
-    body,
-    signal: opts.signal
-  });
+  const { signal, cleanup } = signalWithTimeout(opts.signal, opts.timeoutMs);
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: opts.method ?? 'GET',
+      headers,
+      body,
+      signal
+    });
+  } finally {
+    cleanup();
+  }
 
   const protocolVersion = res.headers.get(PROTOCOL_VERSION_HEADER);
 

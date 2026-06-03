@@ -51,28 +51,29 @@
   }
 
   let selectedSessionId = $state<string | null>(null);
+  // Blocks auto-select and persistence until the active profile key is known,
+  // so we never write/read selection under the wrong localStorage scope.
+  let profileResolved = $state(false);
 
-  // Resolve active profile on mount (without blocking) then load its scoped
-  // selection. Falls back to the legacy global key while the request races.
+  // Resolve active profile on mount, then restore scoped selection.
   onMount(async () => {
-    selectedSessionId = readPersistedSession('default');
     try {
       const res = await api.profiles.active();
       activeProfile = res.data.active;
-      const scoped = readPersistedSession(activeProfile);
-      if (scoped) selectedSessionId = scoped;
     } catch {
-      // backend not up; keep legacy fallback.
+      // backend not up; activeProfile stays 'default'
     }
+    selectedSessionId = readPersistedSession(activeProfile);
+    profileResolved = true;
   });
   let collapsed = $state(false);
   let newDialogOpen = $state(false);
-  let lastActiveIds = new Set<string>();
 
   // Mirror selection into localStorage so reloads land back on the same
   // session card. Scoped by active profile so each workspace remembers its
   // own last session. Cleared when the session disappears (e.g. user killed).
   $effect(() => {
+    if (!profileResolved) return;
     writePersistedSession(activeProfile, selectedSessionId);
   });
 
@@ -116,33 +117,20 @@
   });
 
   // ── Effects ───────────────────────────────────────────────────────────────
-  // Auto-select the first session once data lands. Also auto-select any
-  // newly-created session (so the New-session modal "feels" connected even
-  // though it navigates away today).
+  // Auto-select the first session once profile + session list are ready.
+  // New sessions are selected only via onCreated (not here).
   $effect(() => {
+    if (!profileResolved) return;
     if (!sessionsState.loaded) return;
     if (allSessions.length === 0) {
       selectedSessionId = null;
       return;
     }
-    // Preserve the persisted/current selection if it still exists in the
-    // session list — only auto-pick the newest when the previous selection
-    // is gone (killed) or nothing was selected yet.
+    // Preserve restored/user selection when it still exists — only auto-pick
+    // the newest when the previous selection is gone or nothing was selected.
     if (!selectedSessionId || !allSessions.some((s) => s.id === selectedSessionId)) {
       selectedSessionId = allSessions[0].id;
     }
-  });
-
-  // Detect freshly-spawned sessions and auto-select them.
-  $effect(() => {
-    const ids = new Set(allSessions.map((s) => s.id));
-    for (const id of ids) {
-      if (!lastActiveIds.has(id) && lastActiveIds.size > 0) {
-        selectedSessionId = id;
-        break;
-      }
-    }
-    lastActiveIds = ids;
   });
 
   // Drive the tasks store from the selected session's thread.

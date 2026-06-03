@@ -202,6 +202,24 @@ fn brief_from_args(args: &Value) -> Result<Option<TaskBrief>, String> {
     }
 }
 
+fn draft_from_args(args: &Value, agent_id: &str) -> Result<TaskDraft, String> {
+    let title = str_arg(args, "title")?.to_string();
+    let parent = opt_str(args, "parent").map(String::from);
+    let depends_on = string_array_arg(args, "depends_on");
+    let labels = string_array_arg(args, "labels");
+    let brief = brief_from_args(args)?;
+    let acceptance = acceptance_from_args(args)?;
+    Ok(TaskDraft {
+        title,
+        parent,
+        depends_on,
+        brief,
+        acceptance,
+        labels,
+        created_by: agent_id.to_string(),
+    })
+}
+
 /// `task_create` — primary path: delegate to the harness-server REST endpoint
 /// so the in-process `TaskStore` (the one the SSE stream subscribes to) does
 /// the write. That guarantees the right panel updates without a refresh.
@@ -219,12 +237,7 @@ pub fn create(
     args: &Value,
 ) -> Result<Value, String> {
     let thread_id = valid_thread_or_default(args, default_thread)?.to_string();
-    let title = str_arg(args, "title")?.to_string();
-    let parent = opt_str(args, "parent").map(String::from);
-    let depends_on = string_array_arg(args, "depends_on");
-    let labels = string_array_arg(args, "labels");
-    let brief = brief_from_args(args)?;
-    let acceptance = acceptance_from_args(args)?;
+    let draft = draft_from_args(args, agent_id)?;
 
     if let Some(base) = server_url {
         // Delegate to harness-server so the in-process broadcast bus emits
@@ -235,12 +248,12 @@ pub fn create(
             thread_id
         );
         let body = json!({
-            "title": title,
-            "parent": parent,
-            "depends_on": depends_on,
-            "labels": labels,
-            "brief": brief,
-            "acceptance": { "checks": acceptance.iter().map(|c| json!({
+            "title": &draft.title,
+            "parent": &draft.parent,
+            "depends_on": &draft.depends_on,
+            "labels": &draft.labels,
+            "brief": &draft.brief,
+            "acceptance": { "checks": draft.acceptance.iter().map(|c| json!({
                 "id": c.id,
                 "text": c.text,
             })).collect::<Vec<_>>() },
@@ -262,16 +275,19 @@ pub fn create(
         }
     }
 
-    let draft = TaskDraft {
-        title,
-        parent,
-        depends_on,
-        brief,
-        acceptance,
-        labels,
-        created_by: agent_id.to_string(),
-    };
     let task = store.create(&thread_id, draft).map_err(map_err)?;
+    Ok(json!(task))
+}
+
+pub fn propose(
+    store: &TaskStore,
+    default_thread: &str,
+    agent_id: &str,
+    args: &Value,
+) -> Result<Value, String> {
+    let thread_id = valid_thread_or_default(args, default_thread)?.to_string();
+    let draft = draft_from_args(args, agent_id)?;
+    let task = store.propose(&thread_id, draft).map_err(map_err)?;
     Ok(json!(task))
 }
 

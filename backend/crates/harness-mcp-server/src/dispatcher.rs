@@ -24,6 +24,7 @@ pub struct Dispatcher {
     profile: String,
     thread_id: String,
     agent_id: String,
+    role: Option<String>,
     /// Stable session id owning this MCP instance. Used to attribute
     /// `session.spawn_child` calls to the right parent session in the tree.
     /// `None` for legacy callers that pre-date the `--session-id` flag.
@@ -49,6 +50,7 @@ impl Dispatcher {
             None,
             std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             None,
+            None,
         )
     }
 
@@ -62,6 +64,7 @@ impl Dispatcher {
         server_url: Option<String>,
         cwd: PathBuf,
         api_token: Option<String>,
+        role: Option<String>,
     ) -> Result<Self, String> {
         let store = TaskStore::with_profile(&harness_home, &profile).map_err(|e| e.to_string())?;
         let db = DbManager::new(&harness_home, &profile).map_err(|e| e.to_string())?;
@@ -72,6 +75,7 @@ impl Dispatcher {
             profile,
             thread_id,
             agent_id,
+            role,
             session_id,
             server_url,
             api_token,
@@ -132,6 +136,19 @@ impl Dispatcher {
         };
         let args = params.get("arguments").cloned().unwrap_or(json!({}));
 
+        if name == "task_create" && self.task_create_restricted() {
+            return result_response(
+                id,
+                json!({
+                    "content": [{
+                        "type": "text",
+                        "text": "task_create restringido al planner; usa task_propose"
+                    }],
+                    "isError": true
+                }),
+            );
+        }
+
         if let Some(msg) = self.check_tool_policy(&name, &args) {
             return result_response(id, wrap_error(&msg));
         }
@@ -145,6 +162,7 @@ impl Dispatcher {
                 self.api_token.as_deref(),
                 &args,
             ),
+            "task_propose" => tasks::propose(&self.store, &self.thread_id, &self.agent_id, &args),
             "task_list" => tasks::list(&self.store, &self.thread_id, &args),
             "task_get" => tasks::get(&self.store, &self.thread_id, &args),
             "task_claim" => tasks::claim(&self.store, &self.thread_id, &args),
@@ -226,6 +244,16 @@ impl Dispatcher {
                 result_response(id, wrap_error(&msg))
             }
         }
+    }
+
+    fn task_create_restricted(&self) -> bool {
+        let Some(role) = self.role.as_deref() else {
+            return false;
+        };
+        let role = role.to_ascii_lowercase();
+        // Exact match — fail closed. A substring check (`contains`) would let a
+        // role like "super-planner-worker" bypass the gate via role-stuffing.
+        !(role == "planner" || role == "orchestrator")
     }
 
     fn check_tool_policy(&self, tool_name: &str, tool_args: &Value) -> Option<String> {
@@ -313,6 +341,24 @@ mod tests {
             None,
             cwd,
             None,
+            None,
+        )
+        .unwrap();
+        (d, home)
+    }
+
+    fn mk_with_role(thread: &str, agent: &str, role: Option<&str>) -> (Dispatcher, PathBuf) {
+        let home = tmp_home();
+        let d = Dispatcher::new_with_server(
+            home.clone(),
+            thread.to_string(),
+            agent.to_string(),
+            None,
+            "default".into(),
+            None,
+            std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            None,
+            role.map(String::from),
         )
         .unwrap();
         (d, home)
@@ -338,6 +384,7 @@ mod tests {
         let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
         for expected in [
             "task_create",
+            "task_propose",
             "task_list",
             "task_get",
             "task_claim",
@@ -477,6 +524,91 @@ mod tests {
             "Plain text brief from an older caller."
         );
         assert_eq!(created["acceptance"]["checks"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn task_propose_creates_proposed_task() {
+        let (d, _home) = mk_with_role("t-propose", "agent:worker", Some("worker"));
+        let line = r#"{
+            "jsonrpc":"2.0",
+            "id":35,
+            "method":"tools/call",
+            "params":{
+                "name":"task_propose",
+                "arguments":{
+                    "title":"Suggested follow-up",
+                    "brief":"Worker found more work."
+                }
+            }
+        }"#;
+        let resp = d.handle(parse_request(line).unwrap()).unwrap();
+        assert_ne!(resp["result"]["isError"], true);
+        let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+        let created: serde_json::Value = serde_json::from_str(text).unwrap();
+        assert_eq!(created["status"], "proposed");
+    }
+
+    #[test]
+    fn task_create_rejects_worker_role_with_hint() {
+        let (d, _home) = mk_with_role("t-worker-create", "agent:worker", Some("worker"));
+        let line = r#"{
+            "jsonrpc":"2.0",
+            "id":36,
+            "method":"tools/call",
+            "params":{
+                "name":"task_create",
+                "arguments":{"title":"Should be proposed"}
+            }
+        }"#;
+        let resp = d.handle(parse_request(line).unwrap()).unwrap();
+        assert_eq!(resp["result"]["isError"], true);
+        let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+        assert_eq!(text, "task_create restringido al planner; usa task_propose");
+    }
+
+    #[test]
+    fn task_create_rejects_role_stuffing() {
+        // A role that merely *contains* "planner" must NOT pass the gate.
+        for role in ["super-planner-worker", "planner-worker", "not-orchestrator"] {
+            let (d, _home) = mk_with_role("t-stuffed", "agent:worker", Some(role));
+            let line = r#"{
+                "jsonrpc":"2.0",
+                "id":38,
+                "method":"tools/call",
+                "params":{
+                    "name":"task_create",
+                    "arguments":{"title":"Sneaky create"}
+                }
+            }"#;
+            let resp = d.handle(parse_request(line).unwrap()).unwrap();
+            assert_eq!(resp["result"]["isError"], true, "role `{role}` should be restricted");
+            let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+            assert!(text.contains("task_propose"), "role `{role}` should get the hint");
+        }
+    }
+
+    #[test]
+    fn task_create_allows_planner_and_legacy_none_role() {
+        for (role, thread) in [
+            (Some("planner"), "t-planner-create"),
+            (None, "t-none-create"),
+        ] {
+            let (d, _home) = mk_with_role(thread, "agent:planner", role);
+            let line = r#"{
+                "jsonrpc":"2.0",
+                "id":37,
+                "method":"tools/call",
+                "params":{
+                    "name":"task_create",
+                    "arguments":{"title":"Allowed create"}
+                }
+            }"#;
+            let resp = d.handle(parse_request(line).unwrap()).unwrap();
+            assert_ne!(resp["result"]["isError"], true);
+            let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+            let created: serde_json::Value = serde_json::from_str(text).unwrap();
+            assert_eq!(created["status"], "queued");
+        }
     }
 
     #[test]

@@ -26,7 +26,8 @@ pub fn validate_transition(task: &Task, to: TaskStatus, by: &str) -> Result<(), 
 
     let ok = matches!(
         (from, to),
-        (Queued, InProgress)
+        (Proposed, Queued)
+            | (Queued, InProgress)
             | (Queued, Blocked)
             | (Queued, Paused)
             | (InProgress, PendingVerify)
@@ -162,6 +163,16 @@ mod tests {
         let t = base(TaskStatus::Queued);
         assert!(matches!(
             validate_transition(&t, TaskStatus::Done, "human"),
+            Err(Error::InvalidTransition { .. })
+        ));
+    }
+
+    #[test]
+    fn proposed_can_only_promote_to_queued() {
+        let t = base(TaskStatus::Proposed);
+        assert!(validate_transition(&t, TaskStatus::Queued, "agent:planner").is_ok());
+        assert!(matches!(
+            validate_transition(&t, TaskStatus::InProgress, "agent:planner"),
             Err(Error::InvalidTransition { .. })
         ));
     }

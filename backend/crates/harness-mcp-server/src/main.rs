@@ -110,6 +110,9 @@ struct CliArgs {
     cwd: PathBuf,
     /// Shared backend API token passed by the trusted harness-server parent.
     api_token: Option<String>,
+    /// Role label for minimal task_create gating. Omitted means legacy
+    /// permissive behavior.
+    role: Option<String>,
 }
 
 fn parse_args() -> Result<CliArgs, String> {
@@ -126,6 +129,7 @@ fn parse_args_from(args: Vec<String>) -> Result<CliArgs, String> {
     let mut server_url: Option<String> = None;
     let mut cwd: Option<PathBuf> = None;
     let mut api_token: Option<String> = None;
+    let mut role: Option<String> = None;
 
     let mut i = 0;
     while i < args.len() {
@@ -167,9 +171,13 @@ fn parse_args_from(args: Vec<String>) -> Result<CliArgs, String> {
                 api_token = Some(next(i)?.clone());
                 i += 2;
             }
+            "--role" => {
+                role = Some(next(i)?.clone());
+                i += 2;
+            }
             "-h" | "--help" => {
                 eprintln!(
-                    "usage: harness-mcp-server --thread <tid> --agent-id <aid> [--session-id <sid>] --harness-home <path> [--profile <profile>] [--server-url <url>] [--cwd <path>] [--api-token <token>]"
+                    "usage: harness-mcp-server --thread <tid> --agent-id <aid> [--session-id <sid>] --harness-home <path> [--profile <profile>] [--server-url <url>] [--cwd <path>] [--api-token <token>] [--role <role>]"
                 );
                 std::process::exit(0);
             }
@@ -185,6 +193,7 @@ fn parse_args_from(args: Vec<String>) -> Result<CliArgs, String> {
         server_url,
         cwd: cwd.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))),
         api_token,
+        role,
     })
 }
 
@@ -222,6 +231,7 @@ fn main() -> ExitCode {
         args.server_url.clone(),
         args.cwd.clone(),
         args.api_token.clone(),
+        args.role.clone(),
     ) {
         Ok(d) => d,
         Err(e) => {

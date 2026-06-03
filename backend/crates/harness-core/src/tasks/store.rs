@@ -34,7 +34,10 @@ pub const THREAD_ACTIVE_TASK_CAP: usize = 3;
 /// Whether a status counts toward [`THREAD_ACTIVE_TASK_CAP`] and toward the
 /// "what should we resume?" auto-pick at session spawn.
 fn is_active(status: TaskStatus) -> bool {
-    !matches!(status, TaskStatus::Done | TaskStatus::Abandoned)
+    !matches!(
+        status,
+        TaskStatus::Proposed | TaskStatus::Done | TaskStatus::Abandoned
+    )
 }
 
 /// Filesystem-backed [`Task`] store rooted at `$HARNESS_HOME/profiles/default`.
@@ -196,6 +199,26 @@ impl TaskStore {
     /// Rejects with [`Error::LimitExceeded`] if the thread already has
     /// [`THREAD_ACTIVE_TASK_CAP`] active tasks.
     pub fn create(&self, tid: &str, draft: TaskDraft) -> Result<Task, Error> {
+        let status = if draft.depends_on.is_empty() {
+            TaskStatus::Queued
+        } else {
+            TaskStatus::Blocked
+        };
+        self.create_with_status(tid, draft, status)
+    }
+
+    /// Propose a new task. Proposed tasks are visible but not claimable or
+    /// scheduled until a planner promotes them to `queued`.
+    pub fn propose(&self, tid: &str, draft: TaskDraft) -> Result<Task, Error> {
+        self.create_with_status(tid, draft, TaskStatus::Proposed)
+    }
+
+    fn create_with_status(
+        &self,
+        tid: &str,
+        draft: TaskDraft,
+        status: TaskStatus,
+    ) -> Result<Task, Error> {
         let active = self.count_active(tid)?;
         if active >= THREAD_ACTIVE_TASK_CAP {
             return Err(Error::LimitExceeded(format!(
@@ -207,11 +230,6 @@ impl TaskStore {
         let dir = self.thread_dir(tid)?;
         let id = next_id(&dir)?;
         let now = Utc::now();
-        let status = if draft.depends_on.is_empty() {
-            TaskStatus::Queued
-        } else {
-            TaskStatus::Blocked
-        };
         let checks = draft
             .acceptance
             .into_iter()
@@ -317,6 +335,12 @@ impl TaskStore {
         let path = self.task_path(tid, task_id)?;
         let now = Utc::now();
         let (_task, outcome) = with_locked_task(&path, |task| {
+            if task.status != TaskStatus::Queued {
+                return Err(Error::Validation(format!(
+                    "only queued tasks can be claimed (current status: {})",
+                    task.status.as_str()
+                )));
+            }
             if let Some(l) = &task.claim_lease {
                 if l.until > now && l.holder != agent_id {
                     return Ok::<_, Error>(ClaimResult::Busy {
@@ -691,6 +715,18 @@ mod tests {
         assert_eq!(got.title, "first");
         let all = s.list("thr-1", ListFilters::default()).unwrap();
         assert_eq!(all.len(), 1);
+    }
+
+    #[test]
+    fn propose_creates_proposed_task() {
+        let (_dir, s) = store();
+        let t = s.propose("thr-1", mk_draft("proposal")).unwrap();
+        assert_eq!(t.status, TaskStatus::Proposed);
+
+        let err = s
+            .claim("thr-1", &t.id, "agent:a", Duration::from_secs(60))
+            .expect_err("proposed tasks are not claimable");
+        assert!(matches!(err, Error::Validation(_)), "got {err:?}");
     }
 
     #[test]

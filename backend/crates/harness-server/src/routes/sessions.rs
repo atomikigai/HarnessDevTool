@@ -231,6 +231,7 @@ pub async fn spawn_session_internal(
         &session_id,
         &args.cwd,
         load_crawl4ai,
+        args.role.as_deref(),
     )?;
     opts.session_id_override = Some(session_id.clone());
     opts.initial_size = args.initial_size;
@@ -397,6 +398,7 @@ fn build_spawn_opts(
     session_id: &str,
     cwd: &std::path::Path,
     load_crawl4ai: bool,
+    role: Option<&str>,
 ) -> Result<(SpawnOpts, Option<PathBuf>), ApiError> {
     // `kind` here is the **underlying** CLI (Zeus → Claude), so the Claude
     // arm covers Zeus too. Codex does not support `--mcp-config`, but it does
@@ -442,6 +444,10 @@ fn build_spawn_opts(
         cwd.display().to_string(),
     ];
     let mut mcp_args = mcp_args;
+    if let Some(role) = role {
+        mcp_args.push("--role".to_string());
+        mcp_args.push(role.to_string());
+    }
     if let Some(token) = state.api_token.as_ref() {
         mcp_args.push("--api-token".to_string());
         mcp_args.push(token.clone());
@@ -509,7 +515,7 @@ fn build_spawn_opts(
 pub(crate) fn harness_mcp_intro() -> &'static str {
     "[harness] This session runs under the Harness supervisor. Tasks for this \
      thread live in Harness, not in your local todo list. Treat the MCP tools \
-     `task_create`, `task_list`, `task_get`, `task_claim`, `task_renew`, \
+     `task_create`, `task_propose`, `task_list`, `task_get`, `task_claim`, `task_renew`, \
      `task_update`, `task_release`, `task_submit` as NATIVE operations — call \
      them immediately when the user asks to create, list, or track work, \
      without asking for confirmation. \

@@ -97,6 +97,61 @@ pub fn list_descriptors() -> Vec<ToolDescriptor> {
             }),
         },
         ToolDescriptor {
+            name: "task_propose".into(),
+            description: "Propose a new task in the current (or named) thread. Uses the same \
+                          arguments as task_create, but stores the task as proposed so it is not \
+                          claimable or scheduled until a planner promotes it to queued."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["title"],
+                "properties": {
+                    "thread_id":  { "type": "string" },
+                    "title":      { "type": "string" },
+                    "brief": {
+                        "oneOf": [
+                            { "type": "string" },
+                            {
+                                "type": "object",
+                                "properties": {
+                                    "objetivo": { "type": "string" },
+                                    "contexto": { "type": "string" },
+                                    "tarea": {
+                                        "type": "array",
+                                        "items": { "type": "string" }
+                                    },
+                                    "reglas": {
+                                        "type": "array",
+                                        "items": { "type": "string" }
+                                    },
+                                    "resultado_esperado": { "type": "string" }
+                                }
+                            }
+                        ]
+                    },
+                    "parent":     { "type": "string" },
+                    "depends_on": { "type": "array", "items": { "type": "string" } },
+                    "labels":     { "type": "array", "items": { "type": "string" } },
+                    "acceptance": {
+                        "type": "object",
+                        "properties": {
+                            "checks": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "required": ["text"],
+                                    "properties": {
+                                        "id":   { "type": "string" },
+                                        "text": { "type": "string" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }),
+        },
+        ToolDescriptor {
             name: "task_list".into(),
             description: "List tasks for a thread, with optional status/label/assignee filters."
                 .into(),

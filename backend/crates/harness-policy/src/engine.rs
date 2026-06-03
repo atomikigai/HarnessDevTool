@@ -155,6 +155,7 @@ fn is_sensitive_tool(tool: &str) -> bool {
     matches!(
         tool,
         "task_create"
+            | "task_propose"
             | "task_claim"
             | "task_renew"
             | "task_update"
@@ -212,6 +213,7 @@ mod tests {
 
         for tool in [
             "task_create",
+            "task_propose",
             "task_update",
             "spec_write",
             "db_query",

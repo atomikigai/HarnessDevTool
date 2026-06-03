@@ -38,6 +38,28 @@ La sección final ("Roadmap por fases") agrupa el trabajo en tandas ejecutables.
 
 ## P0 — Seguridad y corrupción de datos
 
+> **ESTADO (actualizado 2026-06-03): los 10 P0 están CERRADOS.** Verificado contra `main` (código +
+> git log). El detalle de cada sección queda como referencia histórica; el estado real es:
+>
+> | P0 | Estado | Commit(s) |
+> |---|---|---|
+> | S1 Path traversal | ✅ cerrado | `eca4658` (validate filesystem ids before path joins) |
+> | S2 SQL injection + read-only | ✅ cerrado | `a698213` (escape db identifiers) + `9565b68` (tighten read-only gate) |
+> | S3 API sin auth | ✅ cerrado | `8421623` (token middleware en rutas mutadoras: `auth::require_api_token`) |
+> | S4 Política default-open | ✅ cerrado | `8e1234c` (ask-by-default para tools sensibles; `PolicyEngine` cableado en `/api/approvals/check`) |
+> | S5 Panic UTF-8 | ✅ cerrado | `f38513a` (utf8-safe truncation + test) |
+> | S6 `next_id` no crash-safe | ✅ cerrado | `f8826d5` (temp+rename) |
+> | S7 `events.jsonl` corrupto | ✅ cerrado | `28aab93` (skip-and-warn por línea) |
+> | S8 Paste-end injection | ✅ cerrado | `4309c58` (sanitize pty prompt + test) |
+> | S9 `server_url` por env | ✅ cerrado | `ffa496f` (trusted mcp url flag) |
+> | S10 sqlite ro + log 0600 | ✅ cerrado | `dd7caba` (read-only pools) + `6814e30` (output.log 0600) |
+>
+> **Residuales de S10 (MEDIA, NO bloqueantes, pendientes):** `DefaultBodyLimit` global y `TimeoutLayer`
+> de request en `harness-server/app.rs`; rutas absolutas filtradas al cliente. Tracked aparte (no P0).
+>
+> **Gate de dogfooding (CLAUDE.md §6):** 10 P0 ✅ + rehidratación de sesiones (T4) ❌ → **T4 es el
+> único bloqueador restante.** T7 (`seq` racy) también cerrado por Task 15.
+
 ### S1. Path traversal por IDs sin validar (T1) — **ALTA / M**
 `thread_id`, `task_id` y `profile id` fluyen del agente/API directamente a `join(...)`.
 - `harness-mcp-server/src/tools/spec.rs:12-29` — `spec_read` NO valida (a diferencia de `spec_write`).

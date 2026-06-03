@@ -19,7 +19,8 @@ Antes de escribir código, todo agente lee también `AGENTS.md` y `docs/ARCHITEC
 |---|---|---|---|
 | **Planner / Orquestador** (`planner`) | Claude Opus (loop principal) | nativo | ❌ no edita código; orquesta y verifica |
 | **Backend Rust** (`generator`) | **Codex CLI** | `codex exec` vía Bash (§3) | `backend/crates/**` |
-| **Frontend** (`generator`) | **Cursor Agent** | `cursor-agent` vía Bash (§3) | `frontend/**` |
+| **Frontend** (`generator`) | **Claude Sonnet 4.6** (subagente `frontend`) | **Agent tool** nativa (§3) | `frontend/**` |
+| **Doc-agent** (`generator`) | **Claude Haiku 4.5** (subagente `doc-agent`) | **Agent tool** nativa (§3) | `docs/**` |
 | **Revisor de bugs** (`evaluator`) | Claude Sonnet (subagente) | **Agent tool** nativa | ❌ solo reporta |
 | **QA** (`evaluator`) | Claude Sonnet (subagente) | **Agent tool** nativa | ❌ solo reporta |
 
@@ -32,10 +33,13 @@ Reglas de rol:
 - **Crates de alto riesgo** — `harness-session` (PTY), `harness-policy`, `harness-mcp-server`: el
   Planner los revisa de cerca o los hace con par-revisión de Sonnet. **No** se delegan a Codex a
   ciegas. `cargo check` verde ≠ correcto en código de sistemas.
-- **Frontend (Cursor)** cubre `frontend/**` (SvelteKit/Tailwind/shadcn). Un solo rol frontend.
-- **Revisor y QA son subagentes Claude nativos** (Agent tool). Reportan al Planner; **no arreglan**.
-- **Codex y Cursor son CLIs externos**: el Planner los lanza por `Bash`. La Agent tool nativa solo
-  spawnea Claude — no Codex ni Cursor. No confundir los dos mecanismos.
+- **Frontend (Claude Sonnet 4.6)** cubre `frontend/**` (SvelteKit/Tailwind/shadcn). Subagente nativo
+  `frontend` (`.claude/agents/frontend.md`) que **sí edita** su dominio. Un solo rol frontend.
+- **Frontend, Doc-agent, Revisor y QA son subagentes Claude nativos** (Agent tool). Frontend edita
+  `frontend/**` y Doc-agent edita `docs/**`; Revisor y QA solo reportan. Todos devuelven su resultado
+  como tool result al Planner.
+- **Codex (backend) es el único CLI externo**: el Planner lo lanza por `Bash`. La Agent tool nativa
+  spawnea Claude (frontend/doc-agent/revisor/qa), no Codex. No confundir los dos mecanismos.
 - Cualquier ejecutor con una duda la escribe en el board (§4) y espera al Planner; no asume.
 
 ---
@@ -77,26 +81,31 @@ Alcance: backend/crates/<crate>. Criterio: <aceptación>. Si tocas un tipo #[der
 just gen-types. No toques frontend/."
 ```
 
-### Frontend (Cursor)
-```bash
-cursor-agent -p --force --trust --model auto \
-  "BRIEF Frontend: <objetivo>. Sigue AGENTS.md y docs/. Alcance: frontend/src/... y rutas Svelte. \
-   Criterio: <aceptación>. Nunca edites a mano frontend/src/lib/api/types/ (son generados). \
-   No toques backend/."
-```
+### Frontend (Claude Sonnet 4.6 — subagente nativo)
+Se spawnea con la **Agent tool** nativa (`subagent_type: frontend`, def. en `.claude/agents/frontend.md`,
+modelo Sonnet 4.6), **no** por CLI. El brief va en el prompt; el contrato vive en el board. El subagente
+edita `frontend/**`, corre `pnpm check`, y devuelve su handoff como tool result (no escribe el board;
+el Planner registra el handoff y dispara Revisor/QA).
+
+### Doc-agent (Claude Haiku 4.5 — subagente nativo, rápido)
+Se spawnea con la **Agent tool** nativa (`subagent_type: doc-agent`, def. en `.claude/agents/doc-agent.md`,
+modelo Haiku 4.5 por velocidad/costo). Edita **`docs/**`** (y, si se le pide, `README`/comentarios de
+doc): actualizar docs, changelogs, notas de tareas, sincronizar el estado del backlog. No toca código
+de `backend/**` ni `frontend/**`. Devuelve handoff como tool result.
 
 ### Revisor de bugs y QA (Claude Sonnet)
 Se spawnean con la **Agent tool** nativa (subagentes `reviewer` y `qa` en `.claude/agents/`), no por
 CLI. El resultado del subagente vuelve como tool result, estructurado — no se pisa el board.
 
-Notas: Codex usa sandbox `workspace-write` (escribe solo en el repo). `cursor-agent --model auto`
-porque esta cuenta no tiene cuota de `sonnet-4` en Cursor (`cursor-agent models` lista lo disponible).
+Notas: Codex usa sandbox `workspace-write` (escribe solo en el repo). El Frontend ya **no** usa Cursor:
+es un subagente Claude nativo (Sonnet 4.6) vía Agent tool. **Codex (backend) es el único CLI externo**
+del equipo; Frontend, Doc-agent, Revisor y QA son subagentes Claude nativos.
 
 ---
 
 ## 4. Comunicación y coherencia
 
-- **Board compartido:** `docs/teamwork/BOARD.md`. Canal común con Codex/Cursor (procesos stateless).
+- **Board compartido:** `docs/teamwork/BOARD.md`. Canal común con Codex (CLI externo stateless).
   El Planner abre/cierra; cada ejecutor anota archivos tocados, cómo probar y preguntas. Plantilla
   estricta por campos (no prosa libre). **Límite conocido**: una tarea "en curso" a la vez, sin
   locking real — mitigado porque Revisor/QA son subagentes nativos, no escritores del board.

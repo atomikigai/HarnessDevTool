@@ -30,7 +30,7 @@ revisar, aprobar y ejecutar sin mezclar scopes.
 13. **Task 12: TaskBrief first-class** — ejecutada; brief estructurado (objective/context/tasks/rules/expected_result) como campo propio del Task, fuera de acceptance checks, con compat de brief string legacy. Rebaseada sobre el batch de hardening de seguridad y pusheada a main.
 14. **Task 13: Separar `task.create` y `task.propose`** — ejecutada; `TaskStatus::Proposed`, `task_propose` (cualquier rol) crea en `proposed`, `task_create` con gate mínimo de rol en el dispatcher (deny FUERA de `harness-policy`, confirmado por audit: el `PolicyEngine` es ciego al rol → el middleware completo es Task 14). `role: Option<String>` hilado por dispatcher/server (default `None` permisivo; match exacto fail-closed). Transición `Proposed→Queued`; `Proposed` no reclamable ni agendable. Tipos `ts-rs` regenerados. **Follow-up (siguiente):** `task_propose` aún no delega al REST → sin broadcast SSE en vivo; falta endpoint `status=proposed` + UI de propuestas/promoción (ver `docs/teamwork/BOARD.md`).
 15. **Task 14: Capability policy middleware mínimo** — enforcement real de roles/tools/resources.
-16. **Task 15: Eventos append-only unificados** — task/agent/spec/artifact/audit con semántica común.
+16. **Task 15: Eventos append-only unificados** — ejecutada (slice incremental backend-only): `Event` con envelope aditivo (`thread_id`/`actor`/`payload`), `seq` atómico en `append_event` (cierra Task 28), TaskEvents persistidos como envelopes vía sink server-side (MCP sink-free), `emit` best-effort, SSE intacto (cero frontend). Diferido a follow-up: broadcast en vivo de capability/handoff/readiness por SSE; envelope en el cable (opción full); endpoint/UI de replay (Task 23).
 17. **Task 16: Metadata fuerte de subagentes** — ownership, rol, task, parent/root y scopes.
 18. **Task 17: `spec.md` append-only con versiones** — referencias estables desde tasks.
 19. **Task 18: Artifacts como entidad/evento real** — metadata recuperable para diff, logs, screenshots.
@@ -45,6 +45,10 @@ revisar, aprobar y ejecutar sin mezclar scopes.
 28. **Task 9: Agente DB para conexión activa** — agente especializado con acceso controlado a la BD, backups y puente con Agents.
 29. **Task 10: Esqueleto mínimo del módulo SSH** — slice grande; arrancar después de cerrar pendientes chicos.
 30. **Task 11: Botón `+ task` en tab Tasks** — mejora secundaria para control manual.
+31. **Task 27: Broadcast SSE + UI de propuestas** — follow-up de Task 13: `task_propose` no delega al REST → sin `task.created`/SSE en vivo; falta endpoint que acepte `status=proposed` y UI de propuestas/promoción (solapa con Task 11).
+32. **Task 28: `seq` atómico en `append_event`** — ejecutada (absorbida por Task 15): `append_event` asigna `seq` contando records bajo el `write_lock` y lo retorna; los 3 callers (approvals/tasks/threads) dejaron de pre-calcular con `read_events().len()`. Test de append concurrente verde.
+33. **Task 29: Hardening de capability policy** — follow-ups de Task 14: (a) validar `--role` contra el set de roles conocidos en el spawn para cerrar el role-stuffing residual (atado a Task 16 metadata fuerte); (b) `remembered_rule` persiste `role: None` → una aprobación humana de un tool denegado a un rol se vuelve regla global (escalada silenciosa) — propagar el rol del `ApprovalSummary`; (c) documentar/cerrar la asimetría online(`Ask`)/offline(`Allow`) para `role=None` + tool sensible.
+34. **Task 30: gitignore de `backend/crates/*/bindings/`** — gap preexistente de infra: `backend/bindings/` está gitignored pero el dir crate-local `backend/crates/harness-core/bindings/` (donde ts-rs emite `JsonValue` para `serde_json::Value`, consumido por `ReadinessReport.ts`) NO lo está → aparece como untracked tras cada `just gen-types`. Añadir patrón al `.gitignore` (propiedad infra/raíz).
 
 ## A1. Readiness check + execution mode
 

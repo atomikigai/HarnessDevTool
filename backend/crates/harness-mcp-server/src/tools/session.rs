@@ -41,6 +41,7 @@ pub fn spawn_child(
     let role = str_arg(args, "role")?;
     let initial_prompt = str_arg(args, "initial_prompt")?;
     let cwd = opt_str(args, "working_dir");
+    let model = opt_str(args, "model");
 
     let url = format!(
         "{}/api/sessions/{}/children",
@@ -52,6 +53,7 @@ pub fn spawn_child(
         "role": role,
         "initial_prompt": initial_prompt,
         "cwd": cwd,
+        "model": model,
     });
     let mut req = ureq::post(&url).timeout(Duration::from_secs(10));
     if let Some(token) = api_token {

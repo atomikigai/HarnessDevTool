@@ -452,6 +452,8 @@ impl SessionSpawner for ManagerSpawner {
                     self.server_url.clone(),
                     "--cwd".to_string(),
                     cwd.display().to_string(),
+                    "--role".to_string(),
+                    req.role.clone(),
                 ];
                 if let Some(token) = self.api_token.as_ref() {
                     mcp_args.push("--api-token".to_string());

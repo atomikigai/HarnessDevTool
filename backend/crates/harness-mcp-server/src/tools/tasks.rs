@@ -8,7 +8,7 @@ use std::str::FromStr;
 
 use harness_core::{
     validate_task_id, validate_thread_id, AcceptanceCheck, Artifacts, ClaimResult, ListFilters,
-    TaskBrief, TaskDraft, TaskPatch, TaskStatus, TaskStore,
+    TaskBrief, TaskDraft, TaskPatch, TaskProposalDraft, TaskStatus, TaskStore,
 };
 
 fn str_arg<'a>(args: &'a Value, key: &str) -> Result<&'a str, String> {
@@ -133,6 +133,10 @@ fn parse_task_brief(brief: &Value) -> Result<Option<TaskBrief>, String> {
             None => Err("brief must be an object or string".into()),
         };
     };
+
+    if brief.as_object().is_some_and(|object| object.is_empty()) {
+        return Ok(None);
+    }
 
     validate_task_brief_object(brief)?;
 
@@ -273,6 +277,59 @@ pub fn create(
     };
     let task = store.create(&thread_id, draft).map_err(map_err)?;
     Ok(json!(task))
+}
+
+pub fn propose(
+    store: &TaskStore,
+    default_thread: &str,
+    agent_id: &str,
+    role: &str,
+    server_url: Option<&str>,
+    api_token: Option<&str>,
+    args: &Value,
+) -> Result<Value, String> {
+    let thread_id = valid_thread_or_default(args, default_thread)?.to_string();
+    let draft = TaskProposalDraft {
+        parent_task_id: str_arg(args, "parent_task_id")?.to_string(),
+        discovered_by: agent_id.to_string(),
+        discovered_by_role: role.to_string(),
+        rationale: str_arg(args, "rationale")?.to_string(),
+        suggested_title: str_arg(args, "suggested_title")?.to_string(),
+        suggested_acceptance_criteria: string_array_arg(args, "suggested_acceptance_criteria"),
+    };
+    validate_task_id(&draft.parent_task_id)?;
+
+    if let Some(base) = server_url {
+        let url = format!(
+            "{}/api/threads/{}/task-proposals",
+            base.trim_end_matches('/'),
+            thread_id
+        );
+        let body = json!({
+            "parent_task_id": draft.parent_task_id,
+            "discovered_by": draft.discovered_by,
+            "discovered_by_role": draft.discovered_by_role,
+            "rationale": draft.rationale,
+            "suggested_title": draft.suggested_title,
+            "suggested_acceptance_criteria": draft.suggested_acceptance_criteria,
+        });
+        let mut req = ureq::post(&url).timeout(Duration::from_secs(5));
+        if let Some(token) = api_token {
+            req = req.set("Authorization", &format!("Bearer {token}"));
+        }
+        match req.send_json(&body) {
+            Ok(resp) => {
+                let value: Value = resp.into_json().map_err(|e| e.to_string())?;
+                return Ok(value);
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "task_propose: HTTP delegation failed, falling back to local store");
+            }
+        }
+    }
+
+    let proposal = store.propose(&thread_id, draft).map_err(map_err)?;
+    Ok(json!(proposal))
 }
 
 pub fn list(store: &TaskStore, default_thread: &str, args: &Value) -> Result<Value, String> {

@@ -245,6 +245,8 @@ export interface TranscriptEvent {
 export interface CreateSessionRequest {
   kind: SessionKind;
   cwd?: string;
+  /** Optional model id override for this session. When omitted, the backend uses the CLI default. */
+  model?: string;
   /**
    * Optional initial PTY size. When provided, the backend opens the PTY at
    * exactly this size instead of the 80x24 default, so the TUI's first frame

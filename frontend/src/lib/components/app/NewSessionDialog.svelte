@@ -35,6 +35,7 @@
   let kind = $state<SessionKind>('claude');
   let autonomy = $state<AutonomyProfile>('assisted');
   let cwd = $state<string>('');
+  let model = $state<string>('');
   let submitting = $state<boolean>(false);
   let error = $state<string | null>(null);
 
@@ -42,6 +43,7 @@
     kind = 'claude';
     autonomy = 'assisted';
     cwd = '';
+    model = '';
     error = null;
     submitting = false;
   }
@@ -86,6 +88,7 @@
     try {
       let tid = threadId;
       const requestedCwd = cwd.trim() ? cwd.trim() : undefined;
+      const requestedModel = model.trim() ? model.trim() : undefined;
       if (!tid) {
         const t = await api.threads.create(undefined, autonomy);
         tid = t.data.id;
@@ -102,6 +105,7 @@
       const res = await api.sessions.create(tid, {
         kind,
         cwd: requestedCwd,
+        model: requestedModel,
         cols,
         rows
       });
@@ -183,6 +187,18 @@
         <Input id="cwd" bind:value={cwd} placeholder="/path/to/project" autocomplete="off" />
         <p class="text-xs text-[var(--fg-muted)]">
           Defaults to the backend process cwd when empty.
+        </p>
+      </div>
+      <div class="flex flex-col gap-2">
+        <Label for="model">Model override (optional)</Label>
+        <Input
+          id="model"
+          bind:value={model}
+          placeholder={kind === 'codex' ? 'gpt-5.1-codex' : 'claude-sonnet-4-5'}
+          autocomplete="off"
+        />
+        <p class="text-xs text-[var(--fg-muted)]">
+          Leave empty to use the backend default for the selected CLI.
         </p>
       </div>
       <div class="flex flex-col gap-2">

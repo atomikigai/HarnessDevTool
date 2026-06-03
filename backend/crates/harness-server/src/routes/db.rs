@@ -18,7 +18,7 @@ use module_db::{
 use serde::{Deserialize, Serialize};
 
 use crate::error::{ApiError, ApiResult};
-use crate::routes::sessions::{spawn_session_internal, SpawnArgs};
+use crate::routes::sessions::{normalize_model_override, spawn_session_internal, SpawnArgs};
 use crate::state::AppState;
 
 pub fn router() -> Router<Arc<AppState>> {
@@ -62,6 +62,8 @@ struct StartDbAgentBody {
     #[serde(default)]
     kind: Option<AgentKind>,
     #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
     cwd: Option<String>,
 }
 
@@ -88,6 +90,7 @@ async fn start_db_agent(
     let memory_path = ensure_db_memory(&s, &conn, body.database.as_deref(), &schema)?;
     let prompt = db_agent_prompt(&conn, body.database.as_deref(), &schema, &memory_path);
     let kind = body.kind.unwrap_or(AgentKind::Claude);
+    let model = normalize_model_override(body.model)?;
     let supports_system_context = matches!(kind.underlying_cli(), AgentKind::Claude);
     let session_id = spawn_session_internal(
         &s,
@@ -98,6 +101,7 @@ async fn start_db_agent(
             role: None,
             auto_intro: supports_system_context.then(|| prompt.clone()),
             initial_prompt: (!supports_system_context).then_some(prompt),
+            model,
             parent_session_id: None,
             initial_size: None,
         },

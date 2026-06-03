@@ -35,7 +35,8 @@ pub use scheduler::{
 pub use store::{Store, StoreError};
 pub use tasks::{
     AcceptanceCheck, Artifacts, ClaimResult, HistoryEvent, Lease, ListFilters, Task, TaskBrief,
-    TaskDraft, TaskEvent, TaskPatch, TaskStatus, TaskStore,
+    TaskDraft, TaskEvent, TaskPatch, TaskProposal, TaskProposalDraft, TaskProposalEvent,
+    TaskProposalStatus, TaskStatus, TaskStore,
 };
 pub use threads::{
     AutonomyProfile, ExecutionMode, Handoff, ReadinessIssue, ReadinessReport, ReadinessStatus,

@@ -46,6 +46,10 @@ pub struct CreateSessionRequest {
     /// after spawn.
     #[serde(default)]
     pub role: Option<String>,
+    /// Optional per-session model override passed through to CLIs that expose
+    /// a model flag. Empty/whitespace-only strings are rejected.
+    #[serde(default)]
+    pub model: Option<String>,
     /// Optional initial PTY size. The frontend measures the container at
     /// mount and passes the real dimensions so the TUI's first frame is
     /// already correct — see `SpawnOpts::initial_size`.
@@ -105,6 +109,7 @@ async fn create_session(
         (Some(c), Some(r)) if c > 0 && r > 0 => Some((c, r)),
         _ => None,
     };
+    let model = normalize_model_override(req.model)?;
     let sid = spawn_session_internal(
         &state,
         SpawnArgs {
@@ -114,6 +119,7 @@ async fn create_session(
             role: req.role,
             auto_intro: None,
             initial_prompt: None,
+            model,
             parent_session_id: None,
             initial_size,
         },
@@ -142,6 +148,9 @@ pub struct SpawnArgs {
     /// Used by child spawns to seed worker context (Zeus passes the worker
     /// briefing through here).
     pub initial_prompt: Option<String>,
+    /// Optional per-session model override. `None` preserves the CLI default
+    /// configured in `harness-session`.
+    pub model: Option<String>,
     pub parent_session_id: Option<String>,
     /// Optional `(cols, rows)` to size the PTY with at spawn time. See
     /// `SpawnOpts::initial_size`.
@@ -163,6 +172,20 @@ fn resolve_cwd(raw: Option<&str>) -> Result<PathBuf, ApiError> {
         )));
     }
     Ok(cwd)
+}
+
+pub(crate) fn normalize_model_override(raw: Option<String>) -> Result<Option<String>, ApiError> {
+    raw.map(|model| {
+        let model = model.trim().to_string();
+        if model.is_empty() {
+            Err(ApiError::BadRequest(
+                "model override cannot be empty".to_string(),
+            ))
+        } else {
+            Ok(model)
+        }
+    })
+    .transpose()
 }
 
 /// Internal spawn — shared by `POST /api/threads/:tid/sessions` (root spawn)
@@ -230,10 +253,16 @@ pub async fn spawn_session_internal(
         &args.thread_id,
         &session_id,
         &args.cwd,
+        if matches!(args.kind, AgentKind::Zeus) {
+            "orchestrator"
+        } else {
+            args.role.as_deref().unwrap_or("human")
+        },
         load_crawl4ai,
     )?;
     opts.session_id_override = Some(session_id.clone());
     opts.initial_size = args.initial_size;
+    opts.model = args.model;
     if let Some(auto_intro) = args.auto_intro.as_deref() {
         opts.auto_intro = Some(match opts.auto_intro.take() {
             Some(existing) if !existing.is_empty() => format!("{existing}\n\n{auto_intro}"),
@@ -396,6 +425,7 @@ fn build_spawn_opts(
     thread_id: &str,
     session_id: &str,
     cwd: &std::path::Path,
+    role: &str,
     load_crawl4ai: bool,
 ) -> Result<(SpawnOpts, Option<PathBuf>), ApiError> {
     // `kind` here is the **underlying** CLI (Zeus → Claude), so the Claude
@@ -440,6 +470,8 @@ fn build_spawn_opts(
         state.server_url.clone(),
         "--cwd".to_string(),
         cwd.display().to_string(),
+        "--role".to_string(),
+        role.to_string(),
     ];
     let mut mcp_args = mcp_args;
     if let Some(token) = state.api_token.as_ref() {
@@ -509,9 +541,9 @@ fn build_spawn_opts(
 pub(crate) fn harness_mcp_intro() -> &'static str {
     "[harness] This session runs under the Harness supervisor. Tasks for this \
      thread live in Harness, not in your local todo list. Treat the MCP tools \
-     `task_create`, `task_list`, `task_get`, `task_claim`, `task_renew`, \
+     `task_create`, `task_propose`, `task_list`, `task_get`, `task_claim`, `task_renew`, \
      `task_update`, `task_release`, `task_submit` as NATIVE operations — call \
-     them immediately when the user asks to create, list, or track work, \
+     them immediately when the user asks to create, list, propose, or track work, \
      without asking for confirmation. \
      `TodoWrite`/`TodoRead` are disabled. Permission prompts are skipped by \
      the harness; supervision is provided by the scheduler, role prompts, and \
@@ -730,6 +762,8 @@ pub struct SpawnChildBody {
     pub role: String,
     pub initial_prompt: String,
     #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
     pub cwd: Option<String>,
 }
 
@@ -767,6 +801,7 @@ async fn spawn_child_route(
         Some(c) => resolve_cwd(Some(c))?,
         None => parent.cwd().to_path_buf(),
     };
+    let model = normalize_model_override(body.model)?;
 
     tracing::info!(
         parent_session_id = %parent_sid,
@@ -785,6 +820,7 @@ async fn spawn_child_route(
             role: Some(body.role.clone()),
             auto_intro: None,
             initial_prompt: Some(body.initial_prompt),
+            model,
             parent_session_id: Some(parent_sid.clone()),
             // Children spawned by Zeus inherit the default size; the UI will
             // resize them once they're attached.

@@ -34,6 +34,7 @@ pub struct Dispatcher {
     /// task into the right panel without the user having to refresh.
     server_url: Option<String>,
     api_token: Option<String>,
+    role: String,
     cwd: PathBuf,
 }
 
@@ -49,6 +50,7 @@ impl Dispatcher {
             None,
             std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             None,
+            "human".to_string(),
         )
     }
 
@@ -62,6 +64,7 @@ impl Dispatcher {
         server_url: Option<String>,
         cwd: PathBuf,
         api_token: Option<String>,
+        role: String,
     ) -> Result<Self, String> {
         let store = TaskStore::with_profile(&harness_home, &profile).map_err(|e| e.to_string())?;
         let db = DbManager::new(&harness_home, &profile).map_err(|e| e.to_string())?;
@@ -75,6 +78,7 @@ impl Dispatcher {
             session_id,
             server_url,
             api_token,
+            role,
             cwd,
         })
     }
@@ -132,6 +136,15 @@ impl Dispatcher {
         };
         let args = params.get("arguments").cloned().unwrap_or(json!({}));
 
+        if name == "task_create" && !can_create_tasks(&self.role) {
+            return result_response(
+                id,
+                wrap_error(&format!(
+                    "permission_denied: role `{}` cannot call task_create; use task_propose for discovered work",
+                    self.role
+                )),
+            );
+        }
         if let Some(msg) = self.check_tool_policy(&name, &args) {
             return result_response(id, wrap_error(&msg));
         }
@@ -141,6 +154,15 @@ impl Dispatcher {
                 &self.store,
                 &self.thread_id,
                 &self.agent_id,
+                self.server_url.as_deref(),
+                self.api_token.as_deref(),
+                &args,
+            ),
+            "task_propose" => tasks::propose(
+                &self.store,
+                &self.thread_id,
+                &self.agent_id,
+                &self.role,
                 self.server_url.as_deref(),
                 self.api_token.as_deref(),
                 &args,
@@ -272,6 +294,10 @@ impl Dispatcher {
     }
 }
 
+fn can_create_tasks(role: &str) -> bool {
+    matches!(role, "planner" | "orchestrator" | "human")
+}
+
 // Keep error_response symbol used so importers don't get warnings.
 #[allow(dead_code)]
 fn _unused() -> Value {
@@ -313,6 +339,7 @@ mod tests {
             None,
             cwd,
             None,
+            "human".to_string(),
         )
         .unwrap();
         (d, home)
@@ -338,6 +365,7 @@ mod tests {
         let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
         for expected in [
             "task_create",
+            "task_propose",
             "task_list",
             "task_get",
             "task_claim",
@@ -477,6 +505,103 @@ mod tests {
             "Plain text brief from an older caller."
         );
         assert_eq!(created["acceptance"]["checks"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn task_create_denied_for_worker_role() {
+        let home = tmp_home();
+        let d = Dispatcher::new_with_server(
+            home,
+            "t-worker".to_string(),
+            "agent:worker".to_string(),
+            None,
+            "default".into(),
+            None,
+            std::env::current_dir().unwrap(),
+            None,
+            "backend".to_string(),
+        )
+        .unwrap();
+        let create_line = r#"{
+            "jsonrpc":"2.0",
+            "id":35,
+            "method":"tools/call",
+            "params":{
+                "name":"task_create",
+                "arguments":{"title":"Worker-created scope"}
+            }
+        }"#;
+        let resp = d.handle(parse_request(create_line).unwrap()).unwrap();
+        assert_eq!(resp["result"]["isError"], true);
+        let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("permission_denied"));
+        assert!(text.contains("task_propose"));
+
+        let list_line = r#"{"jsonrpc":"2.0","id":36,"method":"tools/call","params":{"name":"task_list","arguments":{}}}"#;
+        let resp = d.handle(parse_request(list_line).unwrap()).unwrap();
+        let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+        let tasks: serde_json::Value = serde_json::from_str(text).unwrap();
+        assert_eq!(tasks.as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn task_propose_persists_for_worker_role() {
+        let home = tmp_home();
+        let planner = Dispatcher::new_with_server(
+            home.clone(),
+            "t-propose".to_string(),
+            "agent:planner".to_string(),
+            None,
+            "default".into(),
+            None,
+            std::env::current_dir().unwrap(),
+            None,
+            "planner".to_string(),
+        )
+        .unwrap();
+        let create_line = r#"{
+            "jsonrpc":"2.0",
+            "id":37,
+            "method":"tools/call",
+            "params":{"name":"task_create","arguments":{"title":"Parent"}}
+        }"#;
+        let resp = planner.handle(parse_request(create_line).unwrap()).unwrap();
+        assert_ne!(resp["result"]["isError"], true);
+
+        let worker = Dispatcher::new_with_server(
+            home,
+            "t-propose".to_string(),
+            "agent:worker".to_string(),
+            None,
+            "default".into(),
+            None,
+            std::env::current_dir().unwrap(),
+            None,
+            "backend".to_string(),
+        )
+        .unwrap();
+        let propose_line = r#"{
+            "jsonrpc":"2.0",
+            "id":38,
+            "method":"tools/call",
+            "params":{
+                "name":"task_propose",
+                "arguments":{
+                    "parent_task_id":"T-0001",
+                    "discovered_by_role":"planner",
+                    "rationale":"Need a focused regression follow-up.",
+                    "suggested_title":"Add regression coverage",
+                    "suggested_acceptance_criteria":["Regression test passes"]
+                }
+            }
+        }"#;
+        let resp = worker.handle(parse_request(propose_line).unwrap()).unwrap();
+        assert_ne!(resp["result"]["isError"], true);
+        let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+        let proposal: serde_json::Value = serde_json::from_str(text).unwrap();
+        assert_eq!(proposal["id"], "P-0001");
+        assert_eq!(proposal["discovered_by_role"], "backend");
+        assert_eq!(proposal["status"], "proposed");
     }
 
     #[test]

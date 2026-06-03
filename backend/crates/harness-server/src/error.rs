@@ -17,6 +17,8 @@ pub enum ApiError {
     BinaryNotFound { kind: AgentKind, hint: String },
     #[error("bad request: {0}")]
     BadRequest(String),
+    #[error("forbidden: {0}")]
+    Forbidden(String),
     #[error(transparent)]
     Core(#[from] harness_core::Error),
 }
@@ -68,6 +70,7 @@ impl IntoResponse for ApiError {
             ApiError::BadRequest(m) => {
                 (StatusCode::BAD_REQUEST, Json(json!({ "error": m.clone() })))
             }
+            ApiError::Forbidden(m) => (StatusCode::FORBIDDEN, Json(json!({ "error": m.clone() }))),
             ApiError::Core(e) => {
                 let (code, msg) = match e {
                     harness_core::Error::NotFound(_) => (StatusCode::NOT_FOUND, e.to_string()),

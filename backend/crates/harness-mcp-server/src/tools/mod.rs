@@ -97,6 +97,24 @@ pub fn list_descriptors() -> Vec<ToolDescriptor> {
             }),
         },
         ToolDescriptor {
+            name: "task_propose".into(),
+            description: "Propose discovered work instead of creating a real task. Workers should use this when they find follow-up scope; planners/humans can later promote the proposal.".into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["parent_task_id", "rationale", "suggested_title"],
+                "properties": {
+                    "thread_id": { "type": "string" },
+                    "parent_task_id": { "type": "string" },
+                    "rationale": { "type": "string" },
+                    "suggested_title": { "type": "string" },
+                    "suggested_acceptance_criteria": {
+                        "type": "array",
+                        "items": { "type": "string" }
+                    }
+                }
+            }),
+        },
+        ToolDescriptor {
             name: "task_list".into(),
             description: "List tasks for a thread, with optional status/label/assignee filters."
                 .into(),
@@ -456,6 +474,10 @@ pub fn list_descriptors() -> Vec<ToolDescriptor> {
                         "type": "string",
                         "description": "First user turn typed into the child PTY. Include scope, \
                                         forbidden areas, expected output, test requirements."
+                    },
+                    "model": {
+                        "type": "string",
+                        "description": "Optional model id override for this child session."
                     },
                     "working_dir": {
                         "type": "string",

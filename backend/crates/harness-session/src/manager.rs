@@ -298,6 +298,9 @@ impl Manager {
 /// Per-spawn options.
 #[derive(Debug, Clone, Default)]
 pub struct SpawnOpts {
+    /// Optional per-session model override. When unset, the kind-specific
+    /// default model is used.
+    pub model: Option<String>,
     /// Absolute path to a JSON file consumed by the agent's `--mcp-config`
     /// flag (or its kind-specific equivalent). `None` disables MCP injection.
     pub mcp_config_path: Option<PathBuf>,
@@ -363,7 +366,11 @@ fn build_extra_args(kind: AgentKind, opts: &SpawnOpts, session_id: &str) -> Vec<
         out.push("--session-id".to_string());
         out.push(session_id.to_string());
         out.push("--model".to_string());
-        out.push(DEFAULT_CLAUDE_MODEL.to_string());
+        out.push(
+            opts.model
+                .clone()
+                .unwrap_or_else(|| DEFAULT_CLAUDE_MODEL.to_string()),
+        );
         out.push("--effort".to_string());
         out.push(DEFAULT_CLAUDE_EFFORT.to_string());
     }
@@ -375,18 +382,27 @@ fn build_extra_args(kind: AgentKind, opts: &SpawnOpts, session_id: &str) -> Vec<
     // have a documented flag for this skip silently.
     match kind {
         AgentKind::Codex => {
-            // Codex autonomous mode: never ask for approval, sandbox writes
-            // to the workspace dir. `--ask-for-approval never` + `-s
-            // workspace-write` is the documented combo (the older
-            // `--full-auto` flag was renamed). For Zeus workers this is
-            // what we want — the orchestrator is the one approving /
-            // validating, not a per-tool prompt.
+            // Codex autonomous mode: never ask for approval. We use
+            // `--sandbox danger-full-access` (not `workspace-write`) because
+            // Codex sandboxes the MCP-server subprocess and blocks its
+            // network access under `workspace-write`. The harness MCP server
+            // performs an HTTP approval check (`POST {server_url}/api/
+            // approvals/check`) on every tool call, so a network-blocked
+            // sandbox makes *all* harness MCP tools fail closed — the agent
+            // then receives none of the `task_*`/`repo_*` tools. Supervision
+            // still comes from the scheduler, role prompts, budget caps and
+            // the audit log. (See follow-up: let read-only MCP tools evaluate
+            // policy locally so a stricter sandbox can be restored.)
             out.push("--ask-for-approval".to_string());
             out.push("never".to_string());
             out.push("--sandbox".to_string());
-            out.push("workspace-write".to_string());
+            out.push("danger-full-access".to_string());
             out.push("--model".to_string());
-            out.push(DEFAULT_CODEX_MODEL.to_string());
+            out.push(
+                opts.model
+                    .clone()
+                    .unwrap_or_else(|| DEFAULT_CODEX_MODEL.to_string()),
+            );
             out.push("-c".to_string());
             out.push(format!(
                 "model_reasoning_effort={}",
@@ -600,6 +616,21 @@ mod tests {
     }
 
     #[test]
+    fn claude_model_override_replaces_default_model() {
+        let opts = SpawnOpts {
+            model: Some("claude-sonnet-4-5".to_string()),
+            ..SpawnOpts::default()
+        };
+        let args = build_extra_args(AgentKind::Claude, &opts, "sid-m");
+        assert!(args
+            .windows(2)
+            .any(|w| w[0] == "--model" && w[1] == "claude-sonnet-4-5"));
+        assert!(!args
+            .windows(2)
+            .any(|w| w[0] == "--model" && w[1] == DEFAULT_CLAUDE_MODEL));
+    }
+
+    #[test]
     fn claude_intro_without_mcp_is_not_appended() {
         // auto_intro is only meaningful when the harness MCP is wired; if
         // mcp_config_path is None, the intro would describe tools the agent
@@ -651,6 +682,9 @@ mod tests {
             .any(|w| w[0] == "--ask-for-approval" && w[1] == "never"));
         assert!(args
             .windows(2)
+            .any(|w| w[0] == "--sandbox" && w[1] == "danger-full-access"));
+        assert!(!args
+            .windows(2)
             .any(|w| w[0] == "--sandbox" && w[1] == "workspace-write"));
         assert!(args
             .windows(2)
@@ -683,6 +717,21 @@ mod tests {
             !args.iter().any(|a| a == "--disallowed-tools"),
             "Todo tool disabling is Claude-only"
         );
+    }
+
+    #[test]
+    fn codex_model_override_replaces_default_model() {
+        let opts = SpawnOpts {
+            model: Some("gpt-5.1-codex".to_string()),
+            ..SpawnOpts::default()
+        };
+        let args = build_extra_args(AgentKind::Codex, &opts, "sid-cm");
+        assert!(args
+            .windows(2)
+            .any(|w| w[0] == "--model" && w[1] == "gpt-5.1-codex"));
+        assert!(!args
+            .windows(2)
+            .any(|w| w[0] == "--model" && w[1] == DEFAULT_CODEX_MODEL));
     }
 
     #[cfg(unix)]

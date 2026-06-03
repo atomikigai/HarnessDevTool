@@ -16,8 +16,9 @@ use super::events::TaskEvent;
 use super::ids::next_id;
 use super::index::Index;
 use super::model::{
-    AcceptanceBlock, Artifacts, ClaimResult, HistoryBlock, HistoryEvent, Lease, ListFilters, Notes,
-    Task, TaskDraft, TaskPatch, TaskStatus,
+    AcceptanceBlock, AcceptanceCheck, Artifacts, ClaimResult, HistoryBlock, HistoryEvent, Lease,
+    ListFilters, Notes, Task, TaskBrief, TaskDraft, TaskPatch, TaskProposal, TaskProposalDraft,
+    TaskProposalEvent, TaskProposalStatus, TaskStatus,
 };
 use super::state_machine::validate_transition;
 use crate::{validate_profile_id, validate_task_id, validate_thread_id, Error};
@@ -90,6 +91,10 @@ impl TaskStore {
     fn task_path(&self, tid: &str, task_id: &str) -> Result<PathBuf, Error> {
         validate_task_id(task_id).map_err(Error::Validation)?;
         Ok(self.thread_dir(tid)?.join(format!("{task_id}.toml")))
+    }
+
+    fn proposals_path(&self, tid: &str) -> Result<PathBuf, Error> {
+        Ok(self.thread_dir(tid)?.join("proposals.jsonl"))
     }
 
     fn ensure_thread(
@@ -265,6 +270,142 @@ impl TaskStore {
             at: now,
         });
         Ok(task)
+    }
+
+    pub fn propose(&self, tid: &str, draft: TaskProposalDraft) -> Result<TaskProposal, Error> {
+        validate_task_id(&draft.parent_task_id).map_err(Error::Validation)?;
+        let _ = self.get(tid, &draft.parent_task_id)?;
+        let dir = self.thread_dir(tid)?;
+        fs::create_dir_all(&dir)?;
+        let id = format!("P-{:04}", self.list_proposals(tid)?.len() + 1);
+        let proposal = TaskProposal {
+            id,
+            parent_task_id: draft.parent_task_id,
+            discovered_by: draft.discovered_by,
+            discovered_by_role: draft.discovered_by_role,
+            rationale: draft.rationale,
+            suggested_title: draft.suggested_title,
+            suggested_acceptance_criteria: draft.suggested_acceptance_criteria,
+            status: TaskProposalStatus::Proposed,
+            created_at: Utc::now(),
+            decided_at: None,
+            decided_by: None,
+            promoted_task_id: None,
+        };
+        self.append_proposal_event(
+            tid,
+            &TaskProposalEvent::Proposed {
+                proposal: proposal.clone(),
+            },
+        )?;
+        Ok(proposal)
+    }
+
+    pub fn list_proposals(&self, tid: &str) -> Result<Vec<TaskProposal>, Error> {
+        let path = self.proposals_path(tid)?;
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+        let text = fs::read_to_string(path)?;
+        let mut proposals: Vec<TaskProposal> = Vec::new();
+        for line in text.lines().filter(|line| !line.trim().is_empty()) {
+            let event: TaskProposalEvent =
+                serde_json::from_str(line).map_err(|e| Error::Toml(e.to_string()))?;
+            match event {
+                TaskProposalEvent::Proposed { proposal } => proposals.push(proposal),
+                TaskProposalEvent::Promoted {
+                    proposal_id,
+                    promoted_task_id,
+                    promoted_by,
+                    at,
+                } => {
+                    if let Some(proposal) = proposals.iter_mut().find(|p| p.id == proposal_id) {
+                        proposal.status = TaskProposalStatus::Promoted;
+                        proposal.promoted_task_id = Some(promoted_task_id);
+                        proposal.decided_by = Some(promoted_by);
+                        proposal.decided_at = Some(at);
+                    }
+                }
+                TaskProposalEvent::Rejected {
+                    proposal_id,
+                    rejected_by,
+                    at,
+                } => {
+                    if let Some(proposal) = proposals.iter_mut().find(|p| p.id == proposal_id) {
+                        proposal.status = TaskProposalStatus::Rejected;
+                        proposal.decided_by = Some(rejected_by);
+                        proposal.decided_at = Some(at);
+                    }
+                }
+            }
+        }
+        Ok(proposals)
+    }
+
+    pub fn promote_proposal(
+        &self,
+        tid: &str,
+        proposal_id: &str,
+        promoted_by: &str,
+    ) -> Result<(TaskProposal, Task), Error> {
+        let proposal = self
+            .list_proposals(tid)?
+            .into_iter()
+            .find(|p| p.id == proposal_id)
+            .ok_or_else(|| Error::NotFound(proposal_id.to_string()))?;
+        if proposal.status != TaskProposalStatus::Proposed {
+            return Err(Error::Validation(format!(
+                "proposal {proposal_id} is already {}",
+                proposal.status.as_str()
+            )));
+        }
+        let acceptance = proposal
+            .suggested_acceptance_criteria
+            .iter()
+            .map(|text| AcceptanceCheck {
+                id: String::new(),
+                text: text.clone(),
+                verified: false,
+                verified_by: None,
+            })
+            .collect();
+        let task = self.create(
+            tid,
+            TaskDraft {
+                title: proposal.suggested_title.clone(),
+                parent: Some(proposal.parent_task_id.clone()),
+                depends_on: Vec::new(),
+                brief: Some(TaskBrief {
+                    objective: proposal.suggested_title.clone(),
+                    context: format!(
+                        "Promoted from proposal {} discovered by role {}. Rationale: {}",
+                        proposal.id, proposal.discovered_by_role, proposal.rationale
+                    ),
+                    tasks: Vec::new(),
+                    rules: Vec::new(),
+                    expected_result: "Promoted proposal is handled as a real task.".to_string(),
+                }),
+                acceptance,
+                labels: vec!["promoted-proposal".to_string()],
+                created_by: promoted_by.to_string(),
+            },
+        )?;
+        let at = Utc::now();
+        self.append_proposal_event(
+            tid,
+            &TaskProposalEvent::Promoted {
+                proposal_id: proposal_id.to_string(),
+                promoted_task_id: task.id.clone(),
+                promoted_by: promoted_by.to_string(),
+                at,
+            },
+        )?;
+        let mut promoted = proposal;
+        promoted.status = TaskProposalStatus::Promoted;
+        promoted.promoted_task_id = Some(task.id.clone());
+        promoted.decided_by = Some(promoted_by.to_string());
+        promoted.decided_at = Some(at);
+        Ok((promoted, task))
     }
 
     /// Apply a sparse patch to a task. Performs state-machine validation when
@@ -528,6 +669,22 @@ impl TaskStore {
 
 // ---------- helpers ----------
 
+impl TaskStore {
+    fn append_proposal_event(&self, tid: &str, event: &TaskProposalEvent) -> Result<(), Error> {
+        let _guard = self.threads.lock().expect("threads mutex poisoned");
+        let path = self.proposals_path(tid)?;
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let mut f = OpenOptions::new().create(true).append(true).open(&path)?;
+        let line = serde_json::to_string(event).map_err(|e| Error::Toml(e.to_string()))?;
+        f.write_all(line.as_bytes())?;
+        f.write_all(b"\n")?;
+        f.sync_data()?;
+        Ok(())
+    }
+}
+
 fn apply_patch(
     task: &mut Task,
     patch: &TaskPatch,
@@ -772,6 +929,42 @@ mod tests {
         };
         s.patch("thr-1", "T-0001", patch, "human").unwrap();
         s.create("thr-1", mk_draft("after-free")).unwrap();
+    }
+
+    #[test]
+    fn proposals_are_append_only_and_can_be_promoted() {
+        let (_dir, s) = store();
+        s.create("thr-1", mk_draft("parent")).unwrap();
+        let proposal = s
+            .propose(
+                "thr-1",
+                TaskProposalDraft {
+                    parent_task_id: "T-0001".into(),
+                    discovered_by: "agent:codex-1".into(),
+                    discovered_by_role: "backend".into(),
+                    rationale: "Follow-up scope discovered while implementing parent.".into(),
+                    suggested_title: "Add regression test".into(),
+                    suggested_acceptance_criteria: vec!["Regression test passes".into()],
+                },
+            )
+            .unwrap();
+        assert_eq!(proposal.id, "P-0001");
+        assert_eq!(proposal.status, TaskProposalStatus::Proposed);
+
+        let listed = s.list_proposals("thr-1").unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].discovered_by_role, "backend");
+
+        let (promoted, task) = s.promote_proposal("thr-1", "P-0001", "planner").unwrap();
+        assert_eq!(promoted.status, TaskProposalStatus::Promoted);
+        assert_eq!(promoted.promoted_task_id.as_deref(), Some("T-0002"));
+        assert_eq!(task.title, "Add regression test");
+        assert_eq!(task.parent.as_deref(), Some("T-0001"));
+        assert_eq!(task.acceptance.checks[0].text, "Regression test passes");
+
+        let listed = s.list_proposals("thr-1").unwrap();
+        assert_eq!(listed[0].status, TaskProposalStatus::Promoted);
+        assert_eq!(listed[0].decided_by.as_deref(), Some("planner"));
     }
 
     #[test]

@@ -118,24 +118,27 @@ async fn write(
     let etag = sha256_hex(body.content.as_bytes());
     let bytes = body.content.len() as u64;
     let created = current.is_none();
-    let tx = s
-        .tasks
-        .sender(&tid)
-        .map_err(ApiError::from)
-        .map_err(IntoResponse::into_response)?;
-    let _ = tx.send(TaskEvent::SpecChanged {
-        thread_id: tid.clone(),
-        etag: etag.clone(),
-        bytes,
-        at: Utc::now(),
-    });
+    s.tasks
+        .emit(
+            &tid,
+            TaskEvent::SpecChanged {
+                thread_id: tid.clone(),
+                etag: etag.clone(),
+                bytes,
+                at: Utc::now(),
+            },
+        );
     if created {
-        let _ = tx.send(TaskEvent::ArtifactAdded {
-            thread_id: tid,
-            path: "spec.md".to_string(),
-            kind: "spec".to_string(),
-            at: Utc::now(),
-        });
+        s.tasks
+            .emit(
+                &tid,
+                TaskEvent::ArtifactAdded {
+                    thread_id: tid.clone(),
+                    path: "spec.md".to_string(),
+                    kind: "spec".to_string(),
+                    at: Utc::now(),
+                },
+            );
     }
 
     Ok(Json(WriteResponse {

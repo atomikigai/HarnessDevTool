@@ -20,6 +20,7 @@ use super::model::{
     Task, TaskDraft, TaskPatch, TaskStatus,
 };
 use super::state_machine::validate_transition;
+use crate::Store;
 use crate::{validate_profile_id, validate_task_id, validate_thread_id, Error};
 
 const BROADCAST_CAP: usize = 256;
@@ -51,6 +52,7 @@ pub struct TaskStore {
     /// switching profiles isolates tasks per workspace.
     profile: String,
     threads: Arc<Mutex<HashMap<String, ThreadState>>>,
+    event_store: Option<Arc<Store>>,
 }
 
 struct ThreadState {
@@ -75,7 +77,16 @@ impl TaskStore {
             home: home.to_path_buf(),
             profile: profile.to_string(),
             threads: Arc::new(Mutex::new(HashMap::new())),
+            event_store: None,
         })
+    }
+
+    /// Attach the append-only event store used by the server to persist every
+    /// emitted [`TaskEvent`] as a replayable envelope. Isolated callers such as
+    /// the MCP server intentionally leave this unset to avoid double writes.
+    pub fn with_event_store(mut self, event_store: Arc<Store>) -> Self {
+        self.event_store = Some(event_store);
+        self
     }
 
     fn threads_root(&self) -> PathBuf {
@@ -226,7 +237,7 @@ impl TaskStore {
                  complete or abandon one before creating another"
             )));
         }
-        let (index, bus) = self.ensure_thread(tid)?;
+        let (index, _) = self.ensure_thread(tid)?;
         let dir = self.thread_dir(tid)?;
         let id = next_id(&dir)?;
         let now = Utc::now();
@@ -277,11 +288,14 @@ impl TaskStore {
             let idx = index.lock().expect("index mutex poisoned");
             idx.upsert(&task)?;
         }
-        let _ = bus.send(TaskEvent::Created {
-            task_id: id.clone(),
-            by: draft.created_by,
-            at: now,
-        });
+        self.emit(
+            tid,
+            TaskEvent::Created {
+                task_id: id.clone(),
+                by: draft.created_by,
+                at: now,
+            },
+        );
         Ok(task)
     }
 
@@ -294,7 +308,7 @@ impl TaskStore {
         patch: TaskPatch,
         by: &str,
     ) -> Result<Task, Error> {
-        let (index, bus) = self.ensure_thread(tid)?;
+        let (index, _) = self.ensure_thread(tid)?;
         let path = self.task_path(tid, task_id)?;
         let (task, (prev_status, changed_fields)) =
             with_locked_task(&path, |task| apply_patch(task, &patch, by))?;
@@ -304,21 +318,27 @@ impl TaskStore {
             idx.upsert(&task)?;
         }
         if prev_status != task.status {
-            let _ = bus.send(TaskEvent::Changed {
-                task_id: task.id.clone(),
-                prev_status,
-                next_status: task.status,
-                by: by.into(),
-                at: task.updated_at,
-            });
+            self.emit(
+                tid,
+                TaskEvent::Changed {
+                    task_id: task.id.clone(),
+                    prev_status,
+                    next_status: task.status,
+                    by: by.into(),
+                    at: task.updated_at,
+                },
+            );
         }
         if !changed_fields.is_empty() {
-            let _ = bus.send(TaskEvent::Updated {
-                task_id: task.id.clone(),
-                by: by.into(),
-                at: task.updated_at,
-                fields: changed_fields,
-            });
+            self.emit(
+                tid,
+                TaskEvent::Updated {
+                    task_id: task.id.clone(),
+                    by: by.into(),
+                    at: task.updated_at,
+                    fields: changed_fields,
+                },
+            );
         }
         Ok(task)
     }
@@ -509,10 +529,29 @@ impl TaskStore {
         }
     }
 
-    /// Internal: get the broadcast sender so the scheduler can emit events.
-    pub fn sender(&self, tid: &str) -> Result<broadcast::Sender<TaskEvent>, Error> {
-        let (_, tx) = self.ensure_thread(tid)?;
-        Ok(tx)
+    /// Emit a task-domain event: persist it through the optional server sink,
+    /// then broadcast the original [`TaskEvent`] unchanged for SSE consumers.
+    pub fn emit(&self, tid: &str, event: TaskEvent) {
+        let (_, tx) = match self.ensure_thread(tid) {
+            Ok(thread) => thread,
+            Err(e) => {
+                tracing::warn!(error = %e, tid = %tid, "failed to persist task event");
+                return;
+            }
+        };
+        if let Some(store) = &self.event_store {
+            match event.to_envelope(tid) {
+                Ok(envelope) => {
+                    if let Err(e) = store.append_event(tid, &envelope) {
+                        tracing::warn!(error = %e, tid = %tid, "failed to persist task event");
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, tid = %tid, "failed to persist task event");
+                }
+            }
+        }
+        let _ = tx.send(event);
     }
 
     /// Internal: list known threads (those with a `tasks/` dir).
@@ -715,6 +754,41 @@ mod tests {
         assert_eq!(got.title, "first");
         let all = s.list("thr-1", ListFilters::default()).unwrap();
         assert_eq!(all.len(), 1);
+    }
+
+    #[test]
+    fn task_events_persist_as_envelopes_when_sink_is_attached() {
+        let dir = tempdir().unwrap();
+        let event_store = Arc::new(Store::new(dir.path()).unwrap());
+        let thread = event_store.create_thread(Some("tasks".into())).unwrap();
+        let s = TaskStore::new(dir.path())
+            .unwrap()
+            .with_event_store(event_store.clone());
+
+        let task = s.create(&thread.id, mk_draft("first")).unwrap();
+        s.patch(
+            &thread.id,
+            &task.id,
+            TaskPatch {
+                title: Some("renamed".into()),
+                ..Default::default()
+            },
+            "planner",
+        )
+        .unwrap();
+
+        let events = event_store.read_events(&thread.id).unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].seq, 0);
+        assert_eq!(events[0].event_type, "task.created");
+        assert_eq!(events[0].thread_id.as_deref(), Some(thread.id.as_str()));
+        assert_eq!(events[0].actor.as_deref(), Some("human"));
+        assert_eq!(events[0].payload.as_ref().unwrap()["type"], "task.created");
+        assert_eq!(events[0].payload.as_ref().unwrap()["task_id"], task.id);
+        assert_eq!(events[1].seq, 1);
+        assert_eq!(events[1].event_type, "task.updated");
+        assert_eq!(events[1].actor.as_deref(), Some("planner"));
+        assert_eq!(events[1].payload.as_ref().unwrap()["fields"][0], "title");
     }
 
     #[test]

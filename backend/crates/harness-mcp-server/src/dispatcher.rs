@@ -15,6 +15,7 @@ use crate::tools::{
     spec, tasks, wrap_error, wrap_text,
 };
 use harness_core::TaskStore;
+use harness_policy::{capability_default, Decision};
 use module_db::Manager as DbManager;
 
 pub struct Dispatcher {
@@ -136,19 +137,6 @@ impl Dispatcher {
         };
         let args = params.get("arguments").cloned().unwrap_or(json!({}));
 
-        if name == "task_create" && self.task_create_restricted() {
-            return result_response(
-                id,
-                json!({
-                    "content": [{
-                        "type": "text",
-                        "text": "task_create restringido al planner; usa task_propose"
-                    }],
-                    "isError": true
-                }),
-            );
-        }
-
         if let Some(msg) = self.check_tool_policy(&name, &args) {
             return result_response(id, wrap_error(&msg));
         }
@@ -246,23 +234,20 @@ impl Dispatcher {
         }
     }
 
-    fn task_create_restricted(&self) -> bool {
-        let Some(role) = self.role.as_deref() else {
-            return false;
-        };
-        let role = role.to_ascii_lowercase();
-        // Exact match — fail closed. A substring check (`contains`) would let a
-        // role like "super-planner-worker" bypass the gate via role-stuffing.
-        !(role == "planner" || role == "orchestrator")
-    }
-
     fn check_tool_policy(&self, tool_name: &str, tool_args: &Value) -> Option<String> {
-        let server_url = self.server_url.as_deref()?;
+        let Some(server_url) = self.server_url.as_deref() else {
+            return match capability_default(tool_name, self.role.as_deref()) {
+                Some(Decision::Deny) => Some(policy_denied_message(tool_name)),
+                // capability_default only produces None or Deny; anything else is unrestricted.
+                _ => None,
+            };
+        };
         let payload = json!({
             "tool": tool_name,
             "args": tool_args,
             "thread_id": self.thread_id,
             "agent_id": self.agent_id,
+            "role": self.role.as_deref(),
         });
         let url = format!("{}/api/approvals/check", server_url.trim_end_matches('/'));
         let mut req = ureq::post(&url).timeout(Duration::from_secs(120));
@@ -273,7 +258,7 @@ impl Dispatcher {
             Ok(resp) => match resp.into_json::<Value>() {
                 Ok(value) => match value.get("decision").and_then(|v| v.as_str()) {
                     Some("allow") => None,
-                    Some("deny") => Some(format!("tool call denied by policy: {tool_name}")),
+                    Some("deny") => Some(policy_denied_message(tool_name)),
                     Some(other) => Some(format!(
                         "approval check returned unknown decision `{other}` for {tool_name}; failing closed"
                     )),
@@ -297,6 +282,13 @@ impl Dispatcher {
                 ))
             }
         }
+    }
+}
+
+fn policy_denied_message(tool_name: &str) -> String {
+    match tool_name {
+        "task_create" => "tool call denied by policy: task_create; usa task_propose".to_string(),
+        _ => format!("tool call denied by policy: {tool_name}"),
     }
 }
 
@@ -563,12 +555,50 @@ mod tests {
         let resp = d.handle(parse_request(line).unwrap()).unwrap();
         assert_eq!(resp["result"]["isError"], true);
         let text = resp["result"]["content"][0]["text"].as_str().unwrap();
-        assert_eq!(text, "task_create restringido al planner; usa task_propose");
+        assert_eq!(
+            text,
+            "error: tool call denied by policy: task_create; usa task_propose"
+        );
     }
 
     #[test]
-    fn task_create_rejects_role_stuffing() {
-        // A role that merely *contains* "planner" must NOT pass the gate.
+    fn offline_capability_matrix_rejects_generator_spec_write() {
+        let (d, _home) = mk_with_role("t-generator-spec", "agent:generator", Some("generator"));
+        let line = r##"{
+            "jsonrpc":"2.0",
+            "id":39,
+            "method":"tools/call",
+            "params":{
+                "name":"spec_write",
+                "arguments":{"thread_id":"t-generator-spec","content":"# Should not write"}
+            }
+        }"##;
+        let resp = d.handle(parse_request(line).unwrap()).unwrap();
+        assert_eq!(resp["result"]["isError"], true);
+        let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+        assert_eq!(text, "error: tool call denied by policy: spec_write");
+    }
+
+    #[test]
+    fn offline_capability_matrix_rejects_evaluator_sensitive_tool() {
+        let (d, _home) = mk_with_role("t-evaluator-db", "agent:evaluator", Some("evaluator"));
+        let line = r#"{
+            "jsonrpc":"2.0",
+            "id":40,
+            "method":"tools/call",
+            "params":{
+                "name":"db_query",
+                "arguments":{"sql":"select 1"}
+            }
+        }"#;
+        let resp = d.handle(parse_request(line).unwrap()).unwrap();
+        assert_eq!(resp["result"]["isError"], true);
+        let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+        assert_eq!(text, "error: tool call denied by policy: db_query");
+    }
+
+    #[test]
+    fn task_create_allows_unknown_roles_by_default_matrix() {
         for role in ["super-planner-worker", "planner-worker", "not-orchestrator"] {
             let (d, _home) = mk_with_role("t-stuffed", "agent:worker", Some(role));
             let line = r#"{
@@ -581,9 +611,10 @@ mod tests {
                 }
             }"#;
             let resp = d.handle(parse_request(line).unwrap()).unwrap();
-            assert_eq!(resp["result"]["isError"], true, "role `{role}` should be restricted");
+            assert_ne!(resp["result"]["isError"], true);
             let text = resp["result"]["content"][0]["text"].as_str().unwrap();
-            assert!(text.contains("task_propose"), "role `{role}` should get the hint");
+            let created: serde_json::Value = serde_json::from_str(text).unwrap();
+            assert_eq!(created["status"], "queued", "role `{role}` is unknown");
         }
     }
 

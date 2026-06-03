@@ -221,19 +221,22 @@ impl Store {
     }
 
     /// Append a single event to a thread's `events.jsonl`. Returns the seq written.
-    pub fn append_event(&self, thread_id: &str, event: &Event) -> Result<(), StoreError> {
+    pub fn append_event(&self, thread_id: &str, event: &Event) -> Result<u64, StoreError> {
         let _guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
         let dir = self.thread_dir(thread_id)?;
         if !dir.exists() {
             return Err(StoreError::NotFound(thread_id.to_string()));
         }
         let path = dir.join("events.jsonl");
+        let seq = count_jsonl_records(&path)?;
+        let mut event = event.clone();
+        event.seq = seq;
         let mut f = OpenOptions::new().create(true).append(true).open(&path)?;
-        let line = serde_json::to_string(event)?;
+        let line = serde_json::to_string(&event)?;
         f.write_all(line.as_bytes())?;
         f.write_all(b"\n")?;
         f.sync_data()?;
-        Ok(())
+        Ok(seq)
     }
 
     pub fn read_events(&self, thread_id: &str) -> Result<Vec<Event>, StoreError> {
@@ -244,6 +247,20 @@ impl Store {
         let f = File::open(&path)?;
         read_jsonl_lossy(BufReader::new(f), &path)
     }
+}
+
+fn count_jsonl_records(path: &Path) -> Result<u64, StoreError> {
+    if !path.exists() {
+        return Ok(0);
+    }
+    let f = File::open(path)?;
+    let mut count = 0;
+    for line in BufReader::new(f).lines() {
+        if !line?.trim().is_empty() {
+            count += 1;
+        }
+    }
+    Ok(count)
 }
 
 fn read_jsonl_lossy<T: DeserializeOwned>(
@@ -301,11 +318,88 @@ mod tests {
             at: 123,
             event_type: "tick".into(),
             items: vec![],
+            thread_id: None,
+            actor: None,
+            payload: None,
         };
-        store.append_event(&t.id, &ev).unwrap();
+        let seq = store.append_event(&t.id, &ev).unwrap();
         let read = store.read_events(&t.id).unwrap();
+        assert_eq!(seq, 0);
         assert_eq!(read.len(), 1);
         assert_eq!(read[0].event_type, "tick");
+    }
+
+    #[test]
+    fn concurrent_appends_assign_unique_monotonic_seq() {
+        let home = tmp_home();
+        let store = std::sync::Arc::new(Store::new(home.path()).unwrap());
+        let t = store.create_thread(None).unwrap();
+        let mut handles = Vec::new();
+
+        for i in 0..16 {
+            let store = store.clone();
+            let tid = t.id.clone();
+            handles.push(std::thread::spawn(move || {
+                let ev = Event {
+                    seq: 999,
+                    at: i,
+                    event_type: "tick".into(),
+                    items: vec![],
+                    thread_id: Some(tid.clone()),
+                    actor: None,
+                    payload: Some(serde_json::json!({ "i": i })),
+                };
+                store.append_event(&tid, &ev).unwrap()
+            }));
+        }
+
+        let mut returned: Vec<u64> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        returned.sort_unstable();
+        assert_eq!(returned, (0..16).collect::<Vec<_>>());
+
+        let read = store.read_events(&t.id).unwrap();
+        assert_eq!(read.len(), 16);
+        assert_eq!(
+            read.iter().map(|ev| ev.seq).collect::<Vec<_>>(),
+            (0..16).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn old_event_without_envelope_fields_deserializes() {
+        let json = r#"{"seq":7,"at":123,"type":"capability.decided","items":[]}"#;
+        let ev: Event = serde_json::from_str(json).unwrap();
+        assert_eq!(ev.seq, 7);
+        assert_eq!(ev.event_type, "capability.decided");
+        assert!(ev.thread_id.is_none());
+        assert!(ev.actor.is_none());
+        assert!(ev.payload.is_none());
+    }
+
+    #[test]
+    fn new_envelope_round_trips() {
+        let ev = Event {
+            seq: 3,
+            at: 123,
+            event_type: "task.created".into(),
+            items: vec![],
+            thread_id: Some("thr-1".into()),
+            actor: Some("human".into()),
+            payload: Some(serde_json::json!({
+                "type": "task.created",
+                "task_id": "T-0001",
+                "by": "human",
+            })),
+        };
+        let json = serde_json::to_string(&ev).unwrap();
+        assert!(json.contains("\"thread_id\":\"thr-1\""));
+        let decoded: Event = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.event_type, "task.created");
+        assert_eq!(decoded.thread_id.as_deref(), Some("thr-1"));
+        assert_eq!(decoded.actor.as_deref(), Some("human"));
+        let payload = decoded.payload.unwrap();
+        assert_eq!(payload["type"], "task.created");
+        assert_eq!(payload["task_id"], "T-0001");
     }
 
     #[test]
@@ -318,12 +412,18 @@ mod tests {
             at: 123,
             event_type: "tick".into(),
             items: vec![],
+            thread_id: None,
+            actor: None,
+            payload: None,
         };
         let ev2 = Event {
             seq: 1,
             at: 124,
             event_type: "tock".into(),
             items: vec![],
+            thread_id: None,
+            actor: None,
+            payload: None,
         };
         let path = store.threads_dir().join(&t.id).join("events.jsonl");
         let mut f = OpenOptions::new().append(true).open(path).unwrap();
@@ -335,6 +435,44 @@ mod tests {
         assert_eq!(read.len(), 2);
         assert_eq!(read[0].event_type, "tick");
         assert_eq!(read[1].event_type, "tock");
+    }
+
+    #[test]
+    fn replay_orders_mixed_envelopes_by_append_seq() {
+        let home = tmp_home();
+        let store = Store::new(home.path()).unwrap();
+        let t = store.create_thread(None).unwrap();
+
+        for event_type in [
+            "task.created",
+            "thread.readiness.checked",
+            "capability.decided",
+            "task.ready",
+        ] {
+            let ev = Event {
+                seq: 999,
+                at: 123,
+                event_type: event_type.into(),
+                items: vec![],
+                thread_id: Some(t.id.clone()),
+                actor: None,
+                payload: Some(serde_json::json!({ "type": event_type })),
+            };
+            store.append_event(&t.id, &ev).unwrap();
+        }
+
+        let read = store.read_events(&t.id).unwrap();
+        assert_eq!(
+            read.iter()
+                .map(|ev| (ev.seq, ev.event_type.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                (0, "task.created"),
+                (1, "thread.readiness.checked"),
+                (2, "capability.decided"),
+                (3, "task.ready"),
+            ]
+        );
     }
 
     #[test]

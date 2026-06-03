@@ -85,7 +85,8 @@ impl AppState {
         let store = Arc::new(Store::with_profile(&cfg.home, profile)?);
         let sessions_root = cfg.home.join("profiles").join(profile).join("sessions");
         let manager = Arc::new(Manager::new(sessions_root)?);
-        let task_store = TaskStore::with_profile(&cfg.home, profile)?;
+        let task_store =
+            TaskStore::with_profile(&cfg.home, profile)?.with_event_store(store.clone());
         let agents = Arc::new(AgentsRegistry::with_profile(&cfg.home, profile)?);
         let roles = Arc::new(RolesRegistry::load_for_profile(&cfg.home, profile)?);
         let pause = Arc::new(PauseFlag::load(&cfg.home)?);

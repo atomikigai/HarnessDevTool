@@ -4,6 +4,8 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::events::Event;
+
 use super::model::TaskStatus;
 
 #[cfg(feature = "ts-export")]
@@ -59,6 +61,43 @@ pub enum TaskEvent {
 }
 
 impl TaskEvent {
+    pub fn event_type(&self) -> &'static str {
+        match self {
+            TaskEvent::Created { .. } => "task.created",
+            TaskEvent::Changed { .. } => "task.changed",
+            TaskEvent::Updated { .. } => "task.updated",
+            TaskEvent::Ready { .. } => "task.ready",
+            TaskEvent::LeaseExpired { .. } => "task.lease-expired",
+            TaskEvent::SpecChanged { .. } => "spec.changed",
+            TaskEvent::ArtifactAdded { .. } => "artifact.added",
+        }
+    }
+
+    pub fn actor(&self) -> Option<&str> {
+        match self {
+            TaskEvent::Created { by, .. }
+            | TaskEvent::Changed { by, .. }
+            | TaskEvent::Updated { by, .. } => Some(by.as_str()),
+            TaskEvent::Ready { .. } => Some("scheduler"),
+            TaskEvent::LeaseExpired {
+                previous_holder, ..
+            } => Some(previous_holder.as_str()),
+            TaskEvent::SpecChanged { .. } | TaskEvent::ArtifactAdded { .. } => None,
+        }
+    }
+
+    pub fn to_envelope(&self, tid: &str) -> Result<Event, serde_json::Error> {
+        Ok(Event {
+            seq: 0,
+            at: Utc::now().timestamp_millis(),
+            event_type: self.event_type().to_string(),
+            items: Vec::new(),
+            thread_id: Some(tid.to_string()),
+            actor: self.actor().map(str::to_string),
+            payload: Some(serde_json::to_value(self)?),
+        })
+    }
+
     pub fn task_id(&self) -> &str {
         match self {
             TaskEvent::Created { task_id, .. }

@@ -197,15 +197,17 @@ fn run_ready_pass(
         // Build a status lookup.
         let status_of: std::collections::HashMap<&str, TaskStatus> =
             tasks.iter().map(|t| (t.id.as_str(), t.status)).collect();
-        let sender = store.sender(&tid)?;
         for t in &tasks {
             match t.status {
                 TaskStatus::Queued if t.blocked_by.is_empty() => {
                     let key = (tid.clone(), t.id.clone());
                     if announced.insert(key) {
-                        let _ = sender.send(TaskEvent::Ready {
-                            task_id: t.id.clone(),
-                        });
+                        store.emit(
+                            &tid,
+                            TaskEvent::Ready {
+                                task_id: t.id.clone(),
+                            },
+                        );
                     }
                 }
                 TaskStatus::Blocked => {
@@ -227,13 +229,16 @@ fn run_ready_pass(
                             task.updated_by = "scheduler".into();
                             Ok(())
                         })?;
-                        let _ = sender.send(TaskEvent::Changed {
-                            task_id: t.id.clone(),
-                            prev_status: TaskStatus::Blocked,
-                            next_status: TaskStatus::Queued,
-                            by: "scheduler".into(),
-                            at: Utc::now(),
-                        });
+                        store.emit(
+                            &tid,
+                            TaskEvent::Changed {
+                                task_id: t.id.clone(),
+                                prev_status: TaskStatus::Blocked,
+                                next_status: TaskStatus::Queued,
+                                by: "scheduler".into(),
+                                at: Utc::now(),
+                            },
+                        );
                     }
                 }
                 _ => {}
@@ -625,7 +630,6 @@ fn run_lease_pass(store: &TaskStore) -> Result<(), crate::Error> {
     let now = Utc::now();
     for tid in store.known_threads()? {
         let tasks = store.list(&tid, ListFilters::default())?;
-        let sender = store.sender(&tid)?;
         for t in tasks {
             let expired = t
                 .claim_lease
@@ -655,10 +659,13 @@ fn run_lease_pass(store: &TaskStore) -> Result<(), crate::Error> {
                 task.updated_by = "scheduler".into();
                 Ok(())
             })?;
-            let _ = sender.send(TaskEvent::LeaseExpired {
-                task_id: t.id,
-                previous_holder: prev_holder,
-            });
+            store.emit(
+                &tid,
+                TaskEvent::LeaseExpired {
+                    task_id: t.id,
+                    previous_holder: prev_holder,
+                },
+            );
         }
     }
     Ok(())

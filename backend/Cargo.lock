@@ -1113,6 +1113,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "harness-core",
+ "harness-policy",
  "module-db",
  "serde",
  "serde_json",

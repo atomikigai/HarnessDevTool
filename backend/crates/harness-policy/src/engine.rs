@@ -83,14 +83,17 @@ impl PolicyEngine {
         }
     }
 
-    pub fn evaluate(&self, tool: &str, args: &serde_json::Value) -> Decision {
+    pub fn evaluate(&self, tool: &str, args: &serde_json::Value, role: Option<&str>) -> Decision {
         let state = self.state.read().expect("policy state rwlock");
         state
             .rules
             .iter()
-            .find(|rule| rule.matches(tool, args))
+            .find(|rule| rule.matches(tool, args, role))
             .map(|rule| rule.decision.clone())
-            .unwrap_or_else(|| fallback_decision(tool, &state.default))
+            .unwrap_or_else(|| {
+                capability_default(tool, role)
+                    .unwrap_or_else(|| fallback_decision(tool, &state.default))
+            })
     }
 
     pub fn timeout_secs(&self) -> u64 {
@@ -122,6 +125,9 @@ impl PolicyEngine {
             .expect("rules should be an array of tables");
         let mut table = Table::new();
         table["tool"] = value(rule.tool);
+        if let Some(role) = rule.role {
+            table["role"] = value(role);
+        }
         table["decision"] = value(match rule.decision {
             Decision::Allow => "allow",
             Decision::Deny => "deny",
@@ -140,6 +146,19 @@ impl PolicyEngine {
         let reloaded = read_policy_file(&self.path)?;
         *self.state.write().expect("policy state rwlock") = reloaded;
         Ok(())
+    }
+}
+
+pub fn capability_default(tool: &str, role: Option<&str>) -> Option<Decision> {
+    match role.map(|role| role.to_ascii_lowercase()).as_deref() {
+        Some("planner" | "orchestrator") => None,
+        Some("worker" | "generator") if matches!(tool, "task_create" | "spec_write") => {
+            Some(Decision::Deny)
+        }
+        Some("worker" | "generator") => None,
+        Some("evaluator") if is_sensitive_tool(tool) => Some(Decision::Deny),
+        Some("evaluator") => None,
+        Some(_) | None => None,
     }
 }
 
@@ -204,7 +223,10 @@ mod tests {
     #[test]
     fn evaluate_default_allows_read_only_tools_when_no_rules() {
         let engine = PolicyEngine::load(tmp_path("missing.toml")).unwrap();
-        assert_eq!(engine.evaluate("task_list", &json!({})), Decision::Allow);
+        assert_eq!(
+            engine.evaluate("task_list", &json!({}), None),
+            Decision::Allow
+        );
     }
 
     #[test]
@@ -223,7 +245,11 @@ mod tests {
             "session_send_input",
             "session_cancel_child",
         ] {
-            assert_eq!(engine.evaluate(tool, &json!({})), Decision::Ask, "{tool}");
+            assert_eq!(
+                engine.evaluate(tool, &json!({}), None),
+                Decision::Ask,
+                "{tool}"
+            );
         }
     }
 
@@ -240,7 +266,10 @@ decision = "allow"
         )
         .unwrap();
         let engine = PolicyEngine::load(path).unwrap();
-        assert_eq!(engine.evaluate("db_query", &json!({})), Decision::Allow);
+        assert_eq!(
+            engine.evaluate("db_query", &json!({}), None),
+            Decision::Allow
+        );
     }
 
     #[test]
@@ -260,7 +289,7 @@ decision = "deny"
         )
         .unwrap();
         let engine = PolicyEngine::load(path).unwrap();
-        assert_eq!(engine.evaluate("db_query", &json!({})), Decision::Ask);
+        assert_eq!(engine.evaluate("db_query", &json!({}), None), Decision::Ask);
     }
 
     #[test]
@@ -280,11 +309,11 @@ path = "docs/*md"
         .unwrap();
         let engine = PolicyEngine::load(path).unwrap();
         assert_eq!(
-            engine.evaluate("spec_write", &json!({ "path": "docs/readme.md" })),
+            engine.evaluate("spec_write", &json!({ "path": "docs/readme.md" }), None),
             Decision::Deny
         );
         assert_eq!(
-            engine.evaluate("spec_write", &json!({ "path": "src/readme.md" })),
+            engine.evaluate("spec_write", &json!({ "path": "src/readme.md" }), None),
             Decision::Ask
         );
     }
@@ -305,7 +334,10 @@ path = "*secret*"
         )
         .unwrap();
         let engine = PolicyEngine::load(path).unwrap();
-        assert_eq!(engine.evaluate("spec_write", &json!({})), Decision::Ask);
+        assert_eq!(
+            engine.evaluate("spec_write", &json!({}), None),
+            Decision::Ask
+        );
     }
 
     #[test]
@@ -315,12 +347,13 @@ path = "*secret*"
         engine
             .append_rule(Rule {
                 tool: "db_query".to_string(),
+                role: None,
                 args_match: BTreeMap::new(),
                 decision: Decision::Ask,
             })
             .unwrap();
         assert!(path.exists());
-        assert_eq!(engine.evaluate("db_query", &json!({})), Decision::Ask);
+        assert_eq!(engine.evaluate("db_query", &json!({}), None), Decision::Ask);
     }
 
     #[test]
@@ -341,6 +374,7 @@ decision = "allow"
         engine
             .append_rule(Rule {
                 tool: "db_query".to_string(),
+                role: None,
                 args_match: BTreeMap::new(),
                 decision: Decision::Deny,
             })
@@ -349,5 +383,76 @@ decision = "allow"
         assert!(text.contains("# keep this comment"));
         assert!(text.contains("tool = \"task_list\""));
         assert!(text.contains("tool = \"db_query\""));
+    }
+
+    #[test]
+    fn capability_default_applies_role_matrix() {
+        assert_eq!(capability_default("task_create", Some("planner")), None);
+        assert_eq!(
+            capability_default("task_create", Some("orchestrator")),
+            None
+        );
+        assert_eq!(
+            capability_default("task_create", Some("worker")),
+            Some(Decision::Deny)
+        );
+        assert_eq!(
+            capability_default("spec_write", Some("generator")),
+            Some(Decision::Deny)
+        );
+        assert_eq!(
+            capability_default("db_query", Some("evaluator")),
+            Some(Decision::Deny)
+        );
+        assert_eq!(capability_default("task_list", Some("evaluator")), None);
+        assert_eq!(capability_default("task_create", None), None);
+        assert_eq!(capability_default("task_create", Some("unknown")), None);
+    }
+
+    #[test]
+    fn role_specific_rule_matches_case_insensitively() {
+        let path = tmp_path("policy.toml");
+        fs::write(
+            &path,
+            r#"
+[[rules]]
+tool = "task_create"
+role = "Worker"
+decision = "allow"
+"#,
+        )
+        .unwrap();
+        let engine = PolicyEngine::load(path).unwrap();
+        assert_eq!(
+            engine.evaluate("task_create", &json!({}), Some("worker")),
+            Decision::Allow
+        );
+        assert_eq!(
+            engine.evaluate("task_create", &json!({}), Some("generator")),
+            Decision::Deny
+        );
+        assert_eq!(
+            engine.evaluate("task_create", &json!({}), None),
+            Decision::Ask
+        );
+    }
+
+    #[test]
+    fn global_rule_still_matches_any_role() {
+        let path = tmp_path("policy.toml");
+        fs::write(
+            &path,
+            r#"
+[[rules]]
+tool = "spec_write"
+decision = "allow"
+"#,
+        )
+        .unwrap();
+        let engine = PolicyEngine::load(path).unwrap();
+        assert_eq!(
+            engine.evaluate("spec_write", &json!({}), Some("worker")),
+            Decision::Allow
+        );
     }
 }

@@ -13,14 +13,24 @@ use ts_rs::TS;
 pub struct Rule {
     pub tool: String,
     #[serde(default)]
+    pub role: Option<String>,
+    #[serde(default)]
     pub args_match: BTreeMap<String, String>,
     pub decision: Decision,
 }
 
 impl Rule {
-    pub fn matches(&self, tool: &str, args: &serde_json::Value) -> bool {
+    pub fn matches(&self, tool: &str, args: &serde_json::Value, role: Option<&str>) -> bool {
         if self.tool != tool {
             return false;
+        }
+        if let Some(rule_role) = self.role.as_deref() {
+            let Some(role) = role else {
+                return false;
+            };
+            if !rule_role.eq_ignore_ascii_case(role) {
+                return false;
+            }
         }
         self.args_match.iter().all(|(key, pattern)| {
             args.get(key)

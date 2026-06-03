@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 /// Item is a single semantic unit inside an event (text, tool call, etc.).
 /// F0: just a placeholder to lock the binding shape.
@@ -25,4 +26,13 @@ pub struct Event {
     /// Optional structured items.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub items: Vec<Item>,
+    #[cfg_attr(feature = "ts-export", ts(optional = nullable))]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<String>,
+    #[cfg_attr(feature = "ts-export", ts(optional = nullable))]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actor: Option<String>,
+    #[cfg_attr(feature = "ts-export", ts(type = "unknown", optional))]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payload: Option<Value>,
 }

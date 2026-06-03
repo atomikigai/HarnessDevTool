@@ -123,9 +123,8 @@ async fn set_autonomy(
     let thread = state
         .store
         .set_autonomy_profile(&id, body.autonomy_profile)?;
-    let seq = state.store.read_events(&id)?.len() as u64;
     let event = Event {
-        seq,
+        seq: 0,
         at: Utc::now().timestamp_millis(),
         event_type: "thread.autonomy.changed".to_string(),
         items: vec![Item::Text {
@@ -134,6 +133,11 @@ async fn set_autonomy(
             }))
             .unwrap_or_else(|_| "{}".to_string()),
         }],
+        thread_id: Some(id.clone()),
+        actor: None,
+        payload: Some(json!({
+            "autonomy_profile": body.autonomy_profile,
+        })),
     };
     state.store.append_event(&id, &event)?;
     Ok(Json(thread))
@@ -184,9 +188,8 @@ fn append_readiness_event(
     thread_id: &str,
     report: &ReadinessReport,
 ) -> Result<(), ApiError> {
-    let seq = state.store.read_events(thread_id)?.len() as u64;
     let event = Event {
-        seq,
+        seq: 0,
         at: Utc::now().timestamp_millis(),
         event_type: "thread.readiness.checked".to_string(),
         items: vec![Item::Text {
@@ -198,6 +201,14 @@ fn append_readiness_event(
             }))
             .unwrap_or_else(|_| "{}".to_string()),
         }],
+        thread_id: Some(thread_id.to_string()),
+        actor: None,
+        payload: Some(json!({
+            "status": report.status,
+            "suggested_execution_mode": report.suggested_execution_mode,
+            "blocking": report.blocking.len(),
+            "warnings": report.warnings.len(),
+        })),
     };
     state.store.append_event(thread_id, &event)?;
     Ok(())

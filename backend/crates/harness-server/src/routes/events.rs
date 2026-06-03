@@ -71,18 +71,22 @@ fn thread_stream(
             Ok(ev) => ev,
             Err(_lag) => return None,
         };
-        let kind = match &ev {
-            harness_core::TaskEvent::Created { .. } => "task.created",
-            harness_core::TaskEvent::Changed { .. } => "task.changed",
-            harness_core::TaskEvent::Updated { .. } => "task.updated",
-            harness_core::TaskEvent::Ready { .. } => "task.ready",
-            harness_core::TaskEvent::LeaseExpired { .. } => "task.lease-expired",
-            harness_core::TaskEvent::SpecChanged { .. } => "spec.changed",
-            harness_core::TaskEvent::ArtifactAdded { .. } => "artifact.added",
-        };
+        let kind = task_event_sse_name(&ev);
         let data = serde_json::to_string(&ev).unwrap_or_else(|_| "{}".into());
         Some(Ok(SseEvent::default().event(kind).data(data)))
     })
+}
+
+fn task_event_sse_name(ev: &harness_core::TaskEvent) -> &'static str {
+    match ev {
+        harness_core::TaskEvent::Created { .. } => "task.created",
+        harness_core::TaskEvent::Changed { .. } => "task.changed",
+        harness_core::TaskEvent::Updated { .. } => "task.updated",
+        harness_core::TaskEvent::Ready { .. } => "task.ready",
+        harness_core::TaskEvent::LeaseExpired { .. } => "task.lease-expired",
+        harness_core::TaskEvent::SpecChanged { .. } => "spec.changed",
+        harness_core::TaskEvent::ArtifactAdded { .. } => "artifact.added",
+    }
 }
 
 /// Stream for `?session=<sid>`:
@@ -157,4 +161,79 @@ fn session_stream(
     });
 
     catchup_stream.chain(live)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+    use harness_core::{TaskEvent, TaskStatus};
+
+    #[test]
+    fn task_event_sse_names_are_unchanged() {
+        let events = vec![
+            (
+                TaskEvent::Created {
+                    task_id: "T-0001".into(),
+                    by: "human".into(),
+                    at: Utc::now(),
+                },
+                "task.created",
+            ),
+            (
+                TaskEvent::Changed {
+                    task_id: "T-0001".into(),
+                    prev_status: TaskStatus::Queued,
+                    next_status: TaskStatus::InProgress,
+                    by: "agent:a".into(),
+                    at: Utc::now(),
+                },
+                "task.changed",
+            ),
+            (
+                TaskEvent::Updated {
+                    task_id: "T-0001".into(),
+                    by: "human".into(),
+                    at: Utc::now(),
+                    fields: vec!["title".into()],
+                },
+                "task.updated",
+            ),
+            (
+                TaskEvent::Ready {
+                    task_id: "T-0001".into(),
+                },
+                "task.ready",
+            ),
+            (
+                TaskEvent::LeaseExpired {
+                    task_id: "T-0001".into(),
+                    previous_holder: "agent:a".into(),
+                },
+                "task.lease-expired",
+            ),
+            (
+                TaskEvent::SpecChanged {
+                    thread_id: "thr-1".into(),
+                    etag: "abc".into(),
+                    bytes: 3,
+                    at: Utc::now(),
+                },
+                "spec.changed",
+            ),
+            (
+                TaskEvent::ArtifactAdded {
+                    thread_id: "thr-1".into(),
+                    path: "spec.md".into(),
+                    kind: "spec".into(),
+                    at: Utc::now(),
+                },
+                "artifact.added",
+            ),
+        ];
+
+        for (event, expected) in events {
+            assert_eq!(task_event_sse_name(&event), expected);
+        }
+    }
 }

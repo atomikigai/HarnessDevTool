@@ -222,9 +222,8 @@ async fn create_handoff(
     };
     s.store.append_handoff(&tid, &handoff)?;
 
-    let seq = s.store.read_events(&tid)?.len() as u64;
     let event = Event {
-        seq,
+        seq: 0,
         at: Utc::now().timestamp_millis(),
         event_type: "handoff.created".to_string(),
         items: vec![Item::Text {
@@ -236,6 +235,14 @@ async fn create_handoff(
             }))
             .unwrap_or_else(|_| "{}".to_string()),
         }],
+        thread_id: Some(tid.clone()),
+        actor: Some(handoff.from.clone()),
+        payload: Some(json!({
+            "task_id": task_id,
+            "from": &handoff.from,
+            "to_role": &handoff.to_role,
+            "status": &handoff.status,
+        })),
     };
     s.store.append_event(&tid, &event)?;
 

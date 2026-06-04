@@ -75,16 +75,16 @@ Audit rápido del 2026-05-27:
 - [ ] **Tests de invariantes**: cobertura bridge parcial para invariantes ya implementables (`task_create`, `task_propose`, planner no-claim, worker no-spec, evaluator deny sensitive, repo_write path-gated, policy local). Pendiente completar cuando existan `memory.*`, `assigned_to/allowed_roles` y QA-only claim.
 
 ### Backend — roles
-- [ ] Plantillas en `~/.harness/profiles/<p>/roles/{planner,generator,evaluator}.toml`:
+- [x] Plantillas en `~/.harness/profiles/<p>/roles/{planner,generator,evaluator}.toml`:
   ```toml
   name = "planner"
   cli = "claude"               # | codex
   prompt_template = "..."      # se inyecta al spawn como mensaje inicial
-  enabled_tools = ["task.*", "spec.*"]   # whitelist sobre MCP
+  enabled_tools = ["task.*", "spec.*"]   # metadata; enforcement real vive en policy.toml / capability defaults
   disabled_tools = []
   ```
-- [ ] Al spawn de una sesión con rol, el `harness-session::Manager` envía el prompt-template como primer input.
-- [ ] Cuando un rol llama a una tool MCP no permitida → respuesta `denied_by_role` (no error duro, mensaje claro al modelo).
+- [x] Al spawn de una sesión con rol, el `harness-session::Manager` envía el prompt-template como primer input.
+- [x] Cuando un rol llama a una tool MCP no permitida → respuesta `denied_by_role` (tool result `isError`, no error duro JSON-RPC).
 
 ### Backend — budget
 - [x] Crate `harness-core::budget`:

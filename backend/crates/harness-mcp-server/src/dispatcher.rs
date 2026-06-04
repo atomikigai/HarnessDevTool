@@ -424,8 +424,8 @@ impl Dispatcher {
 
 fn policy_denied_message(tool_name: &str) -> String {
     match tool_name {
-        "task_create" => "tool call denied by policy: task_create; usa task_propose".to_string(),
-        _ => format!("tool call denied by policy: {tool_name}"),
+        "task_create" => "denied_by_role: task_create; usa task_propose".to_string(),
+        _ => format!("denied_by_role: {tool_name}"),
     }
 }
 
@@ -763,10 +763,7 @@ mod tests {
         let resp = d.handle(parse_request(line).unwrap()).unwrap();
         assert_eq!(resp["result"]["isError"], true);
         let text = resp["result"]["content"][0]["text"].as_str().unwrap();
-        assert_eq!(
-            text,
-            "error: tool call denied by policy: task_create; usa task_propose"
-        );
+        assert_eq!(text, "error: denied_by_role: task_create; usa task_propose");
     }
 
     #[test]
@@ -784,7 +781,7 @@ mod tests {
         let resp = d.handle(parse_request(line).unwrap()).unwrap();
         assert_eq!(resp["result"]["isError"], true);
         let text = resp["result"]["content"][0]["text"].as_str().unwrap();
-        assert_eq!(text, "error: tool call denied by policy: spec_write");
+        assert_eq!(text, "error: denied_by_role: spec_write");
     }
 
     #[test]
@@ -807,7 +804,7 @@ mod tests {
         let resp = d.handle(parse_request(line).unwrap()).unwrap();
         assert_eq!(resp["result"]["isError"], true);
         let text = resp["result"]["content"][0]["text"].as_str().unwrap();
-        assert_eq!(text, "error: tool call denied by policy: spec_set_section");
+        assert_eq!(text, "error: denied_by_role: spec_set_section");
     }
 
     #[test]
@@ -825,7 +822,7 @@ mod tests {
         let resp = d.handle(parse_request(line).unwrap()).unwrap();
         assert_eq!(resp["result"]["isError"], true);
         let text = resp["result"]["content"][0]["text"].as_str().unwrap();
-        assert_eq!(text, "error: tool call denied by policy: task_claim");
+        assert_eq!(text, "error: denied_by_role: task_claim");
     }
 
     #[test]
@@ -843,7 +840,7 @@ mod tests {
         let resp = d.handle(parse_request(line).unwrap()).unwrap();
         assert_eq!(resp["result"]["isError"], true);
         let text = resp["result"]["content"][0]["text"].as_str().unwrap();
-        assert_eq!(text, "error: tool call denied by policy: db_query");
+        assert_eq!(text, "error: denied_by_role: db_query");
     }
 
     #[test]
@@ -862,10 +859,7 @@ mod tests {
             let resp = d.handle(parse_request(line).unwrap()).unwrap();
             assert_eq!(resp["result"]["isError"], true);
             let text = resp["result"]["content"][0]["text"].as_str().unwrap();
-            assert_eq!(
-                text,
-                "error: tool call denied by policy: task_create; usa task_propose"
-            );
+            assert_eq!(text, "error: denied_by_role: task_create; usa task_propose");
         }
     }
 
@@ -903,10 +897,7 @@ mod tests {
         let resp = d.handle(parse_request(line).unwrap()).unwrap();
         assert_eq!(resp["result"]["isError"], true);
         let text = resp["result"]["content"][0]["text"].as_str().unwrap();
-        assert_eq!(
-            text,
-            "error: tool call denied by policy: task_create; usa task_propose"
-        );
+        assert_eq!(text, "error: denied_by_role: task_create; usa task_propose");
     }
 
     #[test]
@@ -939,7 +930,7 @@ decision = "deny"
         );
 
         let msg = d.check_tool_policy("task_list", &json!({})).unwrap();
-        assert_eq!(msg, "tool call denied by policy: task_list");
+        assert_eq!(msg, "denied_by_role: task_list");
     }
 
     #[test]

@@ -84,16 +84,25 @@ impl PolicyEngine {
     }
 
     pub fn evaluate(&self, tool: &str, args: &serde_json::Value, role: Option<&str>) -> Decision {
+        self.evaluate_rule(tool, args, role).unwrap_or_else(|| {
+            let state = self.state.read().expect("policy state rwlock");
+            capability_default(tool, role)
+                .unwrap_or_else(|| fallback_decision(tool, &state.default))
+        })
+    }
+
+    pub fn evaluate_rule(
+        &self,
+        tool: &str,
+        args: &serde_json::Value,
+        role: Option<&str>,
+    ) -> Option<Decision> {
         let state = self.state.read().expect("policy state rwlock");
         state
             .rules
             .iter()
             .find(|rule| rule.matches(tool, args, role))
             .map(|rule| rule.decision.clone())
-            .unwrap_or_else(|| {
-                capability_default(tool, role)
-                    .unwrap_or_else(|| fallback_decision(tool, &state.default))
-            })
     }
 
     pub fn timeout_secs(&self) -> u64 {

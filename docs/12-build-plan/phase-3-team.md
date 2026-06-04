@@ -63,10 +63,10 @@ Audit rápido del 2026-05-27:
 - [ ] Test de aceptación: dado un goal sintético, verificar que cada rol se delega al CLI esperado y que el fallback dispara cuando el primario está bloqueado.
 
 ### Backend — authorization (Q9 follow-ups)
-- [ ] **Capability policy loader**: el dispatcher del `harness-mcp-server` lee `capability-policy.yaml` al boot (ver matriz canónica en [[agents/role-capability-matrix]]).
-- [ ] **`check_capability(caller, tool, resource, scope)`**: middleware que envuelve cada handler de tool. Devuelve `Allow` o `Deny { reason }`. Deny se traduce a `permission_denied` para el CLI hijo.
-- [ ] **Nueva tool MCP `task.propose`**: workers no pueden `task.create`; en su lugar encolan propuestas que el planner convierte (o no) en tasks reales. Shape: `{ parent_task_id, discovered_by_role, rationale, suggested_title, suggested_acceptance_criteria }`.
-- [ ] **`spec.set_section` con version check**: exige `spec_version_required` que matchee la versión actual; rechazo si stale.
+- [x] **Capability policy loader**: el dispatcher del `harness-mcp-server` lee `~/.harness/profiles/<p>/policy.toml` al boot. Online delega al server; offline aplica reglas explícitas locales y falla cerrado si la policy está corrupta para tools sensibles.
+- [x] **`check_capability(caller, tool, resource, scope)` base**: middleware MCP `check_tool_policy` envuelve cada handler de tool. Devuelve deny recuperable al modelo como tool result `isError`.
+- [x] **Nueva tool MCP `task.propose`**: workers no pueden `task.create`; en su lugar encolan propuestas que el planner convierte (o no) en tasks reales.
+- [x] **`spec.set_section` con version check**: exige `spec_version_required` que matchee la versión actual; rechazo si stale.
 - [x] **`repo.write` path-gated**: la task lleva `write_paths` / `forbidden_paths`; el bridge rechaza writes fuera del allowlist aunque el rol tenga la capability.
 - [x] **Audit log base**: sink append-only en `$HARNESS_HOME/.runtime/audit/bridge.jsonl`. Una entrada por cada decisión `allow`/`deny`/`ask` resuelta por `/api/approvals/check`, con `actor_id`, `actor_role`, `tool`, `resource`, `decision`, `reason`, `input_hash`, `result_hash`.
 - [ ] **Audit rotation**: rotación zstd del bridge audit cuando el archivo crece.

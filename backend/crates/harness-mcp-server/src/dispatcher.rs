@@ -15,7 +15,7 @@ use crate::tools::{
     spec, ssh as ssh_tools, tasks, wrap_error, wrap_text,
 };
 use harness_core::TaskStore;
-use harness_policy::{capability_default, is_sensitive_tool, Decision};
+use harness_policy::{capability_default, is_sensitive_tool, Decision, PolicyEngine};
 use module_db::Manager as DbManager;
 use module_ssh::Manager as SshManager;
 
@@ -30,6 +30,8 @@ pub struct Dispatcher {
     role: Option<String>,
     task_id: Option<String>,
     scopes: Vec<String>,
+    policy: Option<PolicyEngine>,
+    policy_load_error: Option<String>,
     /// Stable session id owning this MCP instance. Used to attribute
     /// `session.spawn_child` calls to the right parent session in the tree.
     /// `None` for legacy callers that pre-date the `--session-id` flag.
@@ -78,6 +80,19 @@ impl Dispatcher {
         let store = TaskStore::with_profile(&harness_home, &profile).map_err(|e| e.to_string())?;
         let db = DbManager::new(&harness_home, &profile).map_err(|e| e.to_string())?;
         let ssh = SshManager::new(&harness_home, &profile).map_err(|e| e.to_string())?;
+        let policy_path = harness_home
+            .join("profiles")
+            .join(&profile)
+            .join("policy.toml");
+        let (policy, policy_load_error) = match PolicyEngine::load(policy_path) {
+            Ok(policy) => (Some(policy), None),
+            Err(e) => {
+                let msg = e.to_string();
+                warn!(error = %msg, "failed to load local MCP policy");
+                (None, Some(msg))
+            }
+        };
+
         Ok(Self {
             store,
             db,
@@ -89,6 +104,8 @@ impl Dispatcher {
             role,
             task_id,
             scopes,
+            policy,
+            policy_load_error,
             session_id,
             server_url,
             api_token,
@@ -294,14 +311,7 @@ impl Dispatcher {
 
     fn check_tool_policy(&self, tool_name: &str, tool_args: &Value) -> Option<String> {
         let Some(server_url) = self.server_url.as_deref() else {
-            return match capability_default(tool_name, self.role.as_deref()) {
-                Some(Decision::Deny) => Some(policy_denied_message(tool_name)),
-                None if self.offline_role_is_untrusted() && is_sensitive_tool(tool_name) => {
-                    Some(policy_denied_message(tool_name))
-                }
-                // capability_default only produces None or Deny; anything else is unrestricted.
-                _ => None,
-            };
+            return self.check_local_tool_policy(tool_name, tool_args);
         };
         let payload = json!({
             "tool": tool_name,
@@ -342,6 +352,40 @@ impl Dispatcher {
                     "approval check failed for {tool_name}; failing closed"
                 ))
             }
+        }
+    }
+
+    fn check_local_tool_policy(&self, tool_name: &str, tool_args: &Value) -> Option<String> {
+        if self.offline_role_is_untrusted() && is_sensitive_tool(tool_name) {
+            return Some(policy_denied_message(tool_name));
+        }
+
+        let Some(policy) = self.policy.as_ref() else {
+            return if is_sensitive_tool(tool_name) {
+                Some(format!(
+                    "tool call denied by policy: {tool_name}; local policy failed to load: {}",
+                    self.policy_load_error
+                        .as_deref()
+                        .unwrap_or("unknown policy load error")
+                ))
+            } else {
+                None
+            };
+        };
+
+        if let Some(decision) = policy.evaluate_rule(tool_name, tool_args, self.role.as_deref()) {
+            return match decision {
+                Decision::Allow => None,
+                Decision::Deny => Some(policy_denied_message(tool_name)),
+                Decision::Ask => Some(format!(
+                    "tool call requires approval by policy: {tool_name}; no approval server is configured"
+                )),
+            };
+        }
+
+        match capability_default(tool_name, self.role.as_deref()) {
+            Some(Decision::Deny) => Some(policy_denied_message(tool_name)),
+            _ => None,
         }
     }
 
@@ -436,6 +480,33 @@ mod tests {
 
     fn mk_with_role(thread: &str, agent: &str, role: Option<&str>) -> (Dispatcher, PathBuf) {
         let home = tmp_home();
+        let d = Dispatcher::new_with_server(
+            home.clone(),
+            thread.to_string(),
+            agent.to_string(),
+            None,
+            "default".into(),
+            None,
+            std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            None,
+            role.map(String::from),
+            None,
+            Vec::new(),
+        )
+        .unwrap();
+        (d, home)
+    }
+
+    fn mk_with_role_and_policy(
+        thread: &str,
+        agent: &str,
+        role: Option<&str>,
+        policy: &str,
+    ) -> (Dispatcher, PathBuf) {
+        let home = tmp_home();
+        let policy_dir = home.join("profiles/default");
+        std::fs::create_dir_all(&policy_dir).unwrap();
+        std::fs::write(policy_dir.join("policy.toml"), policy).unwrap();
         let d = Dispatcher::new_with_server(
             home.clone(),
             thread.to_string(),
@@ -811,6 +882,53 @@ mod tests {
         }"#;
         let resp = d.handle(parse_request(line).unwrap()).unwrap();
         assert_ne!(resp["result"]["isError"], true);
+    }
+
+    #[test]
+    fn offline_policy_file_can_deny_read_only_tool() {
+        let (d, _home) = mk_with_role_and_policy(
+            "t-policy-deny",
+            "agent:planner",
+            Some("planner"),
+            r#"
+[[rules]]
+tool = "task_list"
+decision = "deny"
+"#,
+        );
+
+        let msg = d.check_tool_policy("task_list", &json!({})).unwrap();
+        assert_eq!(msg, "tool call denied by policy: task_list");
+    }
+
+    #[test]
+    fn offline_policy_file_can_allow_sensitive_tool_for_trusted_role() {
+        let (d, _home) = mk_with_role_and_policy(
+            "t-policy-allow",
+            "agent:generator",
+            Some("generator"),
+            r#"
+[[rules]]
+tool = "task_create"
+decision = "allow"
+"#,
+        );
+
+        assert!(d.check_tool_policy("task_create", &json!({})).is_none());
+    }
+
+    #[test]
+    fn offline_corrupt_policy_fails_closed_for_sensitive_tools() {
+        let (d, _home) = mk_with_role_and_policy(
+            "t-policy-corrupt",
+            "agent:planner",
+            Some("planner"),
+            "this is not toml =",
+        );
+
+        let msg = d.check_tool_policy("task_create", &json!({})).unwrap();
+        assert!(msg.contains("local policy failed to load"));
+        assert!(d.check_tool_policy("task_list", &json!({})).is_none());
     }
 
     #[test]

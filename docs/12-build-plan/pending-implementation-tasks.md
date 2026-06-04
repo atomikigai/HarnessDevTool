@@ -647,6 +647,9 @@ Estado implementado:
 - El dispatcher MCP envuelve tools con `check_tool_policy`; online delega a
   `/api/approvals/check`, offline aplica la matriz local y niega tools
   sensibles cuando el rol falta o no es confiable.
+- El MCP offline carga `~/.harness/profiles/<p>/policy.toml` al boot: reglas
+  explícitas locales pueden permitir/denegar tools; `ask` falla cerrado sin
+  server de approvals y policy corrupta bloquea tools sensibles.
 - El server persiste decisiones como evento append-only `capability.decided`
   y escribe audit bridge en `$HARNESS_HOME/.runtime/audit/bridge.jsonl` para
   cada `allow`/`deny` resuelto por `/api/approvals/check`, con actor, rol,

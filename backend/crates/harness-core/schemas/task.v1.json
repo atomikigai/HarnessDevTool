@@ -20,6 +20,7 @@
     "status": {
       "type": "string",
       "enum": [
+        "proposed",
         "queued",
         "in_progress",
         "pending_verify",
@@ -48,6 +49,17 @@
     },
     "previous_assignees": { "type": "array", "items": { "type": "string" } },
     "labels": { "type": "array", "items": { "type": "string" } },
+    "spec_refs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["section", "version"],
+        "properties": {
+          "section": { "type": "string" },
+          "version": { "type": "integer", "minimum": 1 }
+        }
+      }
+    },
     "brief": {
       "type": ["object", "null"],
       "required": ["objective", "context", "tasks", "rules", "expected_result"],

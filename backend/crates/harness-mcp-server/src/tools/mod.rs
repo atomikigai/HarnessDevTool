@@ -77,6 +77,17 @@ pub fn list_descriptors() -> Vec<ToolDescriptor> {
                     "parent":     { "type": "string" },
                     "depends_on": { "type": "array", "items": { "type": "string" } },
                     "labels":     { "type": "array", "items": { "type": "string" } },
+                    "spec_refs": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "required": ["section", "version"],
+                            "properties": {
+                                "section": { "type": "string" },
+                                "version": { "type": "integer", "minimum": 1 }
+                            }
+                        }
+                    },
                     "acceptance": {
                         "type": "object",
                         "properties": {
@@ -132,6 +143,17 @@ pub fn list_descriptors() -> Vec<ToolDescriptor> {
                     "parent":     { "type": "string" },
                     "depends_on": { "type": "array", "items": { "type": "string" } },
                     "labels":     { "type": "array", "items": { "type": "string" } },
+                    "spec_refs": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "required": ["section", "version"],
+                            "properties": {
+                                "section": { "type": "string" },
+                                "version": { "type": "integer", "minimum": 1 }
+                            }
+                        }
+                    },
                     "acceptance": {
                         "type": "object",
                         "properties": {
@@ -298,6 +320,25 @@ pub fn list_descriptors() -> Vec<ToolDescriptor> {
                     "thread_id": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$" },
                     "content":   { "type": "string", "maxLength": 1048576 },
                     "etag":      { "type": "string" }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "spec_set_section".into(),
+            description:
+                "Set one named section of the thread spec. Requires the caller's current \
+                 spec version when `spec_version_required` is provided and increments the \
+                 append-only spec version."
+                    .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["thread_id", "section", "content"],
+                "properties": {
+                    "thread_id": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$" },
+                    "section":   { "type": "string" },
+                    "content":   { "type": "string", "maxLength": 1048576 },
+                    "spec_version_required": { "type": "integer", "minimum": 0 },
+                    "by":        { "type": "string" }
                 }
             }),
         },

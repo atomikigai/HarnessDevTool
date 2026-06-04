@@ -8,7 +8,7 @@ use std::str::FromStr;
 
 use harness_core::{
     validate_task_id, validate_thread_id, AcceptanceCheck, Artifacts, ClaimResult, ListFilters,
-    TaskBrief, TaskDraft, TaskPatch, TaskStatus, TaskStore,
+    SpecRef, TaskBrief, TaskDraft, TaskPatch, TaskStatus, TaskStore,
 };
 
 fn str_arg<'a>(args: &'a Value, key: &str) -> Result<&'a str, String> {
@@ -45,6 +45,27 @@ fn string_array_arg(args: &Value, key: &str) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+fn spec_refs_arg(args: &Value) -> Result<Vec<SpecRef>, String> {
+    let Some(items) = args.get("spec_refs").and_then(|v| v.as_array()) else {
+        return Ok(Vec::new());
+    };
+    items
+        .iter()
+        .map(|item| {
+            let section = item
+                .get("section")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "spec_refs[].section must be a string".to_string())?
+                .to_string();
+            let version = item
+                .get("version")
+                .and_then(|v| v.as_u64())
+                .ok_or_else(|| "spec_refs[].version must be an integer".to_string())?;
+            Ok(SpecRef { section, version })
+        })
+        .collect()
 }
 
 fn map_err(e: harness_core::Error) -> String {
@@ -207,6 +228,7 @@ fn draft_from_args(args: &Value, agent_id: &str) -> Result<TaskDraft, String> {
     let parent = opt_str(args, "parent").map(String::from);
     let depends_on = string_array_arg(args, "depends_on");
     let labels = string_array_arg(args, "labels");
+    let spec_refs = spec_refs_arg(args)?;
     let brief = brief_from_args(args)?;
     let acceptance = acceptance_from_args(args)?;
     Ok(TaskDraft {
@@ -216,6 +238,7 @@ fn draft_from_args(args: &Value, agent_id: &str) -> Result<TaskDraft, String> {
         brief,
         acceptance,
         labels,
+        spec_refs,
         created_by: agent_id.to_string(),
     })
 }
@@ -252,6 +275,7 @@ fn post_task_to_server(
         "parent": &draft.parent,
         "depends_on": &draft.depends_on,
         "labels": &draft.labels,
+        "spec_refs": &draft.spec_refs,
         "brief": &draft.brief,
         "acceptance": { "checks": draft.acceptance.iter().map(|c| json!({
             "id": c.id,

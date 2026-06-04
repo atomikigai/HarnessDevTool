@@ -23,12 +23,25 @@ pub fn read(home: &Path, default_thread: &str, args: &Value) -> Result<Value, St
         .join("threads")
         .join(thread_id)
         .join("spec.md");
-    let content = match std::fs::read_to_string(&path) {
-        Ok(s) => s,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
         Err(e) => return Err(format!("read spec: {e}")),
     };
-    Ok(json!({ "content": content }))
+    let content = match String::from_utf8(bytes.clone()) {
+        Ok(s) => s,
+        Err(e) => return Err(format!("read spec utf8: {e}")),
+    };
+    let version = match spec_version(&spec_events_path(home, thread_id)) {
+        Ok(version) => version,
+        Err(e) => return Err(format!("read spec version: {e}")),
+    };
+    let etag = if bytes.is_empty() && !path.exists() {
+        String::new()
+    } else {
+        sha256_hex(&bytes)
+    };
+    Ok(json!({ "content": content, "etag": etag, "version": version }))
 }
 
 pub fn write(
@@ -68,6 +81,52 @@ pub fn write(
     }
 
     write_local(home, thread_id, content, etag)
+}
+
+pub fn set_section(
+    home: &Path,
+    server_url: Option<&str>,
+    api_token: Option<&str>,
+    args: &Value,
+) -> Result<Value, String> {
+    let thread_id = str_arg(args, "thread_id")?;
+    validate_thread_id(thread_id).map_err(|e| format!("spec_set_section: {e}"))?;
+    let section = str_arg(args, "section")?;
+    validate_section(section)?;
+    let content = str_arg(args, "content")?;
+    validate_content(content)?;
+    let version_required = args.get("spec_version_required").and_then(|v| v.as_u64());
+    let by = opt_str_arg(args, "by")?;
+
+    if let Some(base) = server_url {
+        let url = format!(
+            "{}/api/threads/{}/spec/sections/{}",
+            base.trim_end_matches('/'),
+            thread_id,
+            section
+        );
+        let mut body = json!({ "content": content });
+        if let Some(version_required) = version_required {
+            body["spec_version_required"] = json!(version_required);
+        }
+        if let Some(by) = by {
+            body["by"] = json!(by);
+        }
+        let mut req = ureq::put(&url).timeout(Duration::from_secs(5));
+        if let Some(token) = api_token {
+            req = req.set("Authorization", &format!("Bearer {token}"));
+        }
+        return match req.send_json(&body) {
+            Ok(resp) => resp.into_json().map_err(|e| e.to_string()),
+            Err(ureq::Error::Status(code, resp)) => {
+                let body = resp.into_string().unwrap_or_default();
+                Err(format!("spec_set_section: server returned {code}: {body}"))
+            }
+            Err(e) => Err(format!("spec_set_section: HTTP delegation failed: {e}")),
+        };
+    }
+
+    set_section_local(home, thread_id, section, content, version_required)
 }
 
 fn write_local(
@@ -121,6 +180,121 @@ fn spec_path(home: &Path, thread_id: &str) -> PathBuf {
         .join("spec.md")
 }
 
+fn spec_events_path(home: &Path, thread_id: &str) -> PathBuf {
+    home.join("profiles")
+        .join("default")
+        .join("threads")
+        .join(thread_id)
+        .join("spec.events.jsonl")
+}
+
+fn set_section_local(
+    home: &Path,
+    thread_id: &str,
+    section: &str,
+    content: &str,
+    version_required: Option<u64>,
+) -> Result<Value, String> {
+    let events_path = spec_events_path(home, thread_id);
+    let current_version =
+        spec_version(&events_path).map_err(|e| format!("spec_set_section: {e}"))?;
+    if let Some(required) = version_required {
+        if required != current_version {
+            return Err(format!(
+                "spec_set_section: spec_version_mismatch current_version={current_version}"
+            ));
+        }
+    }
+    let path = spec_path(home, thread_id);
+    let current = match std::fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(format!("spec_set_section: read current spec: {e}")),
+    };
+    let next_content = set_marked_section(&current, section, content);
+    let parent = path
+        .parent()
+        .ok_or_else(|| "spec_set_section: invalid spec path".to_string())?;
+    std::fs::create_dir_all(parent).map_err(|e| format!("spec_set_section: create parent: {e}"))?;
+    let mut tmp = tempfile::NamedTempFile::new_in(parent)
+        .map_err(|e| format!("spec_set_section: temp file: {e}"))?;
+    tmp.write_all(next_content.as_bytes())
+        .map_err(|e| format!("spec_set_section: write temp file: {e}"))?;
+    tmp.flush()
+        .map_err(|e| format!("spec_set_section: flush temp file: {e}"))?;
+    tmp.persist(&path)
+        .map_err(|e| format!("spec_set_section: persist spec: {}", e.error))?;
+
+    let version = append_spec_event(&events_path, section)
+        .map_err(|e| format!("spec_set_section: append event: {e}"))?;
+    Ok(json!({
+        "ok": true,
+        "etag": sha256_hex(next_content.as_bytes()),
+        "version": version,
+        "section": section,
+        "bytes": next_content.len(),
+    }))
+}
+
+fn spec_version(path: &Path) -> std::io::Result<u64> {
+    if !path.exists() {
+        return Ok(0);
+    }
+    let content = std::fs::read_to_string(path)?;
+    Ok(content
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .count() as u64)
+}
+
+fn append_spec_event(path: &Path, section: &str) -> std::io::Result<u64> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| std::io::Error::other("invalid spec events path"))?;
+    std::fs::create_dir_all(parent)?;
+    let version = spec_version(path)? + 1;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    file.write_all(
+        json!({ "version": version, "section": section })
+            .to_string()
+            .as_bytes(),
+    )?;
+    file.write_all(b"\n")?;
+    file.sync_data()?;
+    Ok(version)
+}
+
+fn set_marked_section(current: &str, section: &str, section_content: &str) -> String {
+    let start = format!("<!-- harness:section {section} -->");
+    let end = format!("<!-- /harness:section {section} -->");
+    let replacement = format!("{start}\n{}\n{end}", section_content.trim_matches('\n'));
+    let Some(start_idx) = current.find(&start) else {
+        let mut next = current.trim_end().to_string();
+        if !next.is_empty() {
+            next.push_str("\n\n");
+        }
+        next.push_str(&replacement);
+        next.push('\n');
+        return next;
+    };
+    let Some(end_rel) = current[start_idx..].find(&end) else {
+        let mut next = current.trim_end().to_string();
+        next.push_str("\n\n");
+        next.push_str(&replacement);
+        next.push('\n');
+        return next;
+    };
+    let end_idx = start_idx + end_rel + end.len();
+    let mut next = String::new();
+    next.push_str(&current[..start_idx]);
+    next.push_str(&replacement);
+    next.push_str(&current[end_idx..]);
+    next
+}
+
 fn str_arg<'a>(args: &'a Value, key: &str) -> Result<&'a str, String> {
     args.get(key)
         .and_then(|v| v.as_str())
@@ -144,6 +318,19 @@ fn validate_content(content: &str) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+fn validate_section(section: &str) -> Result<(), String> {
+    let valid = !section.is_empty()
+        && section.len() <= 128
+        && section
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.' | ':'));
+    if valid {
+        Ok(())
+    } else {
+        Err("spec_set_section: section must be 1-128 chars of [A-Za-z0-9_.:-]".into())
+    }
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {

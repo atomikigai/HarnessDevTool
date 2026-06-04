@@ -53,6 +53,11 @@ export interface TaskBrief {
   expected_result: string;
 }
 
+export interface SpecRef {
+  section: string;
+  version: number;
+}
+
 export interface Task {
   schema_version: number;
   id: string;
@@ -70,6 +75,7 @@ export interface Task {
   claim_lease?: Lease;
   previous_assignees: string[];
   labels: string[];
+  spec_refs: SpecRef[];
   brief?: TaskBrief;
   acceptance: { checks: AcceptanceCheck[] };
   artifacts: TaskArtifacts;
@@ -85,6 +91,7 @@ export interface CreateTaskRequest {
   brief?: TaskBrief;
   acceptance?: { checks: { text: string }[] };
   labels?: string[];
+  spec_refs?: SpecRef[];
   created_by: string;
 }
 
@@ -93,6 +100,7 @@ export interface PatchTaskRequest {
   status?: TaskStatus;
   assignee?: string | null;
   labels?: string[];
+  spec_refs?: SpecRef[];
   acceptance?: { checks: AcceptanceCheck[] };
   notes?: TaskNotes;
   by: 'human' | string;

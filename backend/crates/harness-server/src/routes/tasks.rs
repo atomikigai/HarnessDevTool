@@ -4,8 +4,8 @@ use axum::routing::get;
 use axum::{Json, Router};
 use chrono::Utc;
 use harness_core::{
-    AcceptanceCheck, Event, Handoff, Item, ListFilters, Task, TaskBrief, TaskDraft, TaskPatch,
-    TaskStatus,
+    AcceptanceCheck, Event, Handoff, Item, ListFilters, SpecRef, Task, TaskBrief, TaskDraft,
+    TaskPatch, TaskStatus,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -69,6 +69,8 @@ pub struct CreateBody {
     pub acceptance: Option<AcceptanceBody>,
     #[serde(default)]
     pub labels: Vec<String>,
+    #[serde(default)]
+    pub spec_refs: Vec<SpecRef>,
     pub created_by: String,
 }
 
@@ -111,6 +113,7 @@ async fn create(
         brief: body.brief,
         acceptance,
         labels: body.labels,
+        spec_refs: body.spec_refs,
         created_by: body.created_by,
     };
     let requested_status = body.status.unwrap_or(TaskStatus::Queued);

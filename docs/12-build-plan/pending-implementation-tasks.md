@@ -32,7 +32,7 @@ revisar, aprobar y ejecutar sin mezclar scopes.
 15. **Task 14: Capability policy middleware mínimo** — enforcement real de roles/tools/resources.
 16. **Task 15: Eventos append-only unificados** — ejecutada (slice incremental backend-only): `Event` con envelope aditivo (`thread_id`/`actor`/`payload`), `seq` atómico en `append_event` (cierra Task 28), TaskEvents persistidos como envelopes vía sink server-side (MCP sink-free), `emit` best-effort, SSE intacto (cero frontend). Diferido a follow-up: broadcast en vivo de capability/handoff/readiness por SSE; envelope en el cable (opción full); endpoint/UI de replay (Task 23).
 17. **Task 16: Metadata fuerte de subagentes** — ejecutada 2026-06-04: `SessionMeta` persiste `owner_session_id`, `task_id` y `scopes`; `session_spawn_child`/REST aceptan task/scopes opcionales; children/API/UI exponen metadata segura; DB agents salen con scope de conexión/base. `just gen-types`, `pnpm check` y `just test` verdes.
-18. **Task 17: `spec.md` append-only con versiones** — referencias estables desde tasks.
+18. **Task 17: `spec.md` append-only con versiones** — ejecutada 2026-06-04: `spec.events.jsonl` append-only versiona cambios; `GET/PUT /spec` mantienen compat y exponen `version`; `PUT /spec/sections/:section` y MCP `spec_set_section` validan `spec_version_required`; `Task.spec_refs` permite `{ section, version }`; `spec.changed` incluye versión/sección. `just gen-types`, `pnpm check` y `just test` verdes.
 19. **Task 18: Artifacts como entidad/evento real** — metadata recuperable para diff, logs, screenshots.
 20. **Task 19: Razones estructuradas en tasks** — blocked/paused/rejected/needs_human.
 21. **Task 20: Scheduler explain/debug** — explicar por qué asignó o saltó una task.
@@ -688,6 +688,19 @@ qué task, con qué rol y con qué límites.
 
 Objetivo:
 Crear una spec por thread versionada y referenciable desde tasks.
+
+Estado implementado:
+- `spec.events.jsonl` registra cambios append-only por thread con versión global
+  y versión por sección.
+- `GET /api/threads/:tid/spec` mantiene `content`/`etag` y agrega `version`.
+- `PUT /api/threads/:tid/spec` mantiene compat legacy, incrementa versión y
+  emite `spec.changed`.
+- `PUT /api/threads/:tid/spec/sections/:section` actualiza una sección marcada
+  y rechaza writes obsoletos con `spec_version_mismatch`.
+- MCP agrega `spec_set_section`; `spec_read` devuelve `version`.
+- `Task.spec_refs` permite referenciar `{ section, version }` desde REST/MCP.
+- Verificado con `cargo test -p harness-core -p harness-server -p
+  harness-mcp-server`, `just gen-types`, `pnpm check` y `just test`.
 
 Contexto:
 F3 requiere que planner mantenga `spec.md` y que workers/evaluator sepan contra

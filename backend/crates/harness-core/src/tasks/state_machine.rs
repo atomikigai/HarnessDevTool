@@ -120,6 +120,7 @@ mod tests {
             claim_lease: None,
             previous_assignees: vec![],
             labels: vec![],
+            spec_refs: vec![],
             brief: None,
             acceptance: AcceptanceBlock::default(),
             artifacts: Artifacts::default(),

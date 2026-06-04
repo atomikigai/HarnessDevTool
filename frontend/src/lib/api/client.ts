@@ -438,10 +438,11 @@ export const api = {
       })
   },
   spec: {
-    get: (tid: string) => apiRequest<{ content: string; etag: string }>(`/threads/${tid}/spec`),
+    get: (tid: string) =>
+      apiRequest<{ content: string; etag: string; version?: number }>(`/threads/${tid}/spec`),
     put: async (tid: string, body: { content: string; etag?: string }) => {
       try {
-        return await apiRequest<{ etag: string; bytes: number; created: boolean }>(
+        return await apiRequest<{ etag: string; version?: number; bytes: number; created: boolean }>(
           `/threads/${tid}/spec`,
           { method: 'PUT', body }
         );

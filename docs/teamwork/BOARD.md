@@ -15,9 +15,29 @@ Modelo operativo: ver [`docs/teamwork/OPERATING_MODEL.md`](./OPERATING_MODEL.md)
 
 ## En curso
 
-_Ninguna. Task 16 quedó cerrada el 2026-06-04 con `just gen-types`, `pnpm check` y `just test` verdes._
+_Ninguna. Task 17 quedó cerrada el 2026-06-04 con `just gen-types`, `pnpm check` y `just test` verdes._
 
-## Última cerrada — Task 16
+## Última cerrada — Task 17
+
+| Campo | Valor |
+|---|---|
+| **Tarea** | Task 17 — `spec.md` append-only con versiones |
+| **Estado** | ✅ `DONE` — implementada por Codex el 2026-06-04; spec append-only en `spec.events.jsonl`, versión global/seccional, endpoint seccional con stale-write guard, MCP `spec_set_section`, `Task.spec_refs` y eventos `spec.changed` versionados. |
+| **Objetivo** | Crear una spec por thread versionada y referenciable desde tasks para que workers/evaluator verifiquen contra una versión concreta. |
+| **Alcance / archivos** | Backend spec route, MCP spec tool, task model/store/API, task schema, frontend spec/task types. |
+| **Responsables** | Planner/Codex con subagentes Codex para auditoría de contrato y docs. |
+| **Criterio de aceptación** | (1) `spec.md` se actualiza de forma append-only/versionada; (2) tasks referencian `{ section, version }`; (3) stale writes fallan con error explícito; (4) `spec.changed` queda en eventos/SSE; (5) tests relevantes verdes. |
+| **Checks corridos** | `cargo test -p harness-core -p harness-server -p harness-mcp-server`; `just gen-types`; `pnpm check`; `just test`. |
+
+### Contrato breve — Task 17
+
+1. La spec es estado por thread y sus cambios son trazables; no se reescribe historial.
+2. Solo planner/orchestrator puede editar spec; workers/evaluator solo leen y reportan contra versiones.
+3. Cada cambio incrementa una versión estable que las tasks pueden referenciar.
+4. `spec.set_section` debe exigir `spec_version_required` para evitar writes obsoletos.
+5. Los eventos `spec.changed` deben permitir replay/debug sin depender de estado implícito.
+
+## Cerrada anterior — Task 16
 
 | Campo | Valor |
 |---|---|

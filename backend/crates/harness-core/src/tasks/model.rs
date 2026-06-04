@@ -125,6 +125,14 @@ pub struct TaskBrief {
     pub expected_result: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[cfg_attr(feature = "ts-export", derive(TS))]
+#[cfg_attr(feature = "ts-export", ts(export, export_to = "../../../bindings/"))]
+pub struct SpecRef {
+    pub section: String,
+    pub version: u64,
+}
+
 /// Full task document — 1:1 with the on-disk TOML.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[cfg_attr(feature = "ts-export", derive(TS))]
@@ -159,6 +167,8 @@ pub struct Task {
 
     #[serde(default)]
     pub labels: Vec<String>,
+    #[serde(default)]
+    pub spec_refs: Vec<SpecRef>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub brief: Option<TaskBrief>,
@@ -205,6 +215,7 @@ pub struct TaskDraft {
     pub brief: Option<TaskBrief>,
     pub acceptance: Vec<AcceptanceCheck>,
     pub labels: Vec<String>,
+    pub spec_refs: Vec<SpecRef>,
     pub created_by: String,
 }
 
@@ -215,6 +226,7 @@ pub struct TaskPatch {
     pub status: Option<TaskStatus>,
     pub assignee: Option<Option<String>>,
     pub labels: Option<Vec<String>>,
+    pub spec_refs: Option<Vec<SpecRef>>,
     pub blocked_by: Option<Vec<String>>,
     pub acceptance_checks: Option<Vec<AcceptanceCheck>>,
     pub artifacts: Option<Artifacts>,

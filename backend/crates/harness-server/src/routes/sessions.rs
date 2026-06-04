@@ -1279,6 +1279,9 @@ mod tests {
             Some("T-0001"),
         );
 
-        assert_eq!(scopes, vec!["backend".to_string(), "task:T-0001".to_string()]);
+        assert_eq!(
+            scopes,
+            vec!["backend".to_string(), "task:T-0001".to_string()]
+        );
     }
 }

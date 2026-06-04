@@ -771,6 +771,7 @@ mod tests {
                     brief: None,
                     acceptance: vec![],
                     labels: vec![],
+                    spec_refs: vec![],
                     created_by: "human".into(),
                 },
             )
@@ -828,6 +829,7 @@ mod tests {
                     brief: None,
                     acceptance: vec![],
                     labels: vec![],
+                    spec_refs: vec![],
                     created_by: "human".into(),
                 },
             )
@@ -1198,6 +1200,7 @@ mod tests {
                     brief: None,
                     acceptance: vec![],
                     labels: vec![],
+                    spec_refs: vec![],
                     created_by: "human".into(),
                 },
             )
@@ -1253,6 +1256,7 @@ mod tests {
                     brief: None,
                     acceptance: vec![],
                     labels: vec![],
+                    spec_refs: vec![],
                     created_by: "human".into(),
                 },
             )

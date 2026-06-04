@@ -48,6 +48,11 @@ pub enum TaskEvent {
     SpecChanged {
         thread_id: String,
         etag: String,
+        version: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        section: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        section_version: Option<u64>,
         bytes: u64,
         at: DateTime<Utc>,
     },
@@ -119,6 +124,9 @@ mod tests {
         let ev = TaskEvent::SpecChanged {
             thread_id: "t1".to_string(),
             etag: "abc123".to_string(),
+            version: 1,
+            section: None,
+            section_version: None,
             bytes: 42,
             at: Utc::now(),
         };

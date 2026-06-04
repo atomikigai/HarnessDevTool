@@ -2,7 +2,15 @@ import { api, SpecEtagMismatchError } from '$lib/api/client';
 import { subscribeSSE, type SSEHandle } from '$lib/api/sse';
 
 // TODO: replace with ts-rs type after backend slice lands
-type SpecChangedEvent = { thread_id: string; etag: string; bytes: number; at: string };
+type SpecChangedEvent = {
+  thread_id: string;
+  etag: string;
+  bytes: number;
+  at: string;
+  version?: number;
+  section?: string | null;
+  section_version?: number | null;
+};
 type ArtifactAddedEvent = { thread_id: string; path: string; kind: string; at: string };
 
 export interface SpecArtifact {
@@ -15,6 +23,7 @@ class SpecState {
   threadId = $state<string | null>(null);
   content = $state('');
   etag = $state('');
+  version = $state(0);
   artifacts = $state<SpecArtifact[]>([]);
   loading = $state(false);
   error = $state<string | null>(null);
@@ -33,6 +42,7 @@ class SpecState {
       const res = await api.spec.get(this.threadId);
       this.content = res.data.content;
       this.etag = res.data.etag;
+      this.version = res.data.version ?? 0;
       this.error = null;
       this.staleEtag = false;
       this.updatedAt = new Date().toISOString();
@@ -83,6 +93,7 @@ class SpecState {
       const res = await api.spec.put(this.threadId, { content, etag: this.etag || undefined });
       this.content = content;
       this.etag = res.data.etag;
+      this.version = res.data.version ?? this.version;
       this.error = null;
       this.staleEtag = false;
       this.updatedAt = new Date().toISOString();
@@ -106,6 +117,7 @@ class SpecState {
     this.threadId = null;
     this.content = '';
     this.etag = '';
+    this.version = 0;
     this.artifacts = [];
     this.loading = false;
     this.error = null;

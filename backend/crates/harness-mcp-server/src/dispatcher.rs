@@ -172,6 +172,12 @@ impl Dispatcher {
                 self.api_token.as_deref(),
                 &args,
             ),
+            "spec_set_section" => spec::set_section(
+                &self.harness_home,
+                self.server_url.as_deref(),
+                self.api_token.as_deref(),
+                &args,
+            ),
             "knowledge_pdftotext_check" => Ok(knowledge_tools::pdftotext_check()),
             "knowledge_pdf_ingest" => {
                 knowledge_tools::pdf_ingest(&self.harness_home, &self.profile, &args)
@@ -442,7 +448,8 @@ mod tests {
                         "reglas":["No romper","Cambios mínimos","Seguir estilo existente","Agregar test"],
                         "resultado_esperado":"El worker puede leer el contrato completo."
                     },
-                    "labels":["backend","brief"]
+                    "labels":["backend","brief"],
+                    "spec_refs":[{"section":"requirements","version":1}]
                 }
             }
         }"#;
@@ -460,6 +467,8 @@ mod tests {
             "MCP task_create debe conservar memoria entre sesiones."
         );
         assert_eq!(created["brief"]["tasks"][0], "Crear task con brief");
+        assert_eq!(created["spec_refs"][0]["section"], "requirements");
+        assert_eq!(created["spec_refs"][0]["version"], 1);
         assert_eq!(created["brief"]["tasks"][1], "Recuperar task con task_get");
         assert_eq!(created["brief"]["rules"][0], "No romper");
         assert_eq!(
@@ -732,6 +741,27 @@ mod tests {
         let resp = d.handle(parse_request(read_line).unwrap()).unwrap();
         let text = resp["result"]["content"][0]["text"].as_str().unwrap();
         assert!(text.contains("# Spec\\nBody"));
+    }
+
+    #[test]
+    fn spec_set_section_versions_and_rejects_stale_writes() {
+        let (d, _) = mk_with_role("t1", "agent:planner", Some("planner"));
+        let set_line = r##"{"jsonrpc":"2.0","id":14,"method":"tools/call","params":{"name":"spec_set_section","arguments":{"thread_id":"t1","section":"requirements","content":"Must pass","spec_version_required":0}}}"##;
+        let resp = d.handle(parse_request(set_line).unwrap()).unwrap();
+        let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("\"version\":1"));
+
+        let stale_line = r##"{"jsonrpc":"2.0","id":15,"method":"tools/call","params":{"name":"spec_set_section","arguments":{"thread_id":"t1","section":"requirements","content":"Stale","spec_version_required":0}}}"##;
+        let resp = d.handle(parse_request(stale_line).unwrap()).unwrap();
+        assert_eq!(resp["result"]["isError"], true);
+        let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("spec_version_mismatch"));
+
+        let read_line = r#"{"jsonrpc":"2.0","id":16,"method":"tools/call","params":{"name":"spec_read","arguments":{"thread_id":"t1"}}}"#;
+        let resp = d.handle(parse_request(read_line).unwrap()).unwrap();
+        let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("harness:section requirements"));
+        assert!(text.contains("\"version\":1"));
     }
 
     #[test]

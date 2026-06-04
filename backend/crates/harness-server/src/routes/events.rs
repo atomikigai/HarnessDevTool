@@ -216,6 +216,9 @@ mod tests {
                 TaskEvent::SpecChanged {
                     thread_id: "thr-1".into(),
                     etag: "abc".into(),
+                    version: 1,
+                    section: Some("requirements".into()),
+                    section_version: Some(1),
                     bytes: 3,
                     at: Utc::now(),
                 },

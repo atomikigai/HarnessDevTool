@@ -269,6 +269,7 @@ impl TaskStore {
             claim_lease: None,
             previous_assignees: vec![],
             labels: draft.labels,
+            spec_refs: draft.spec_refs,
             brief: draft.brief,
             acceptance: AcceptanceBlock { checks },
             artifacts: Artifacts::default(),
@@ -617,6 +618,10 @@ fn apply_patch(
         task.labels = l.clone();
         fields.push("labels".into());
     }
+    if let Some(spec_refs) = &patch.spec_refs {
+        task.spec_refs = spec_refs.clone();
+        fields.push("spec_refs".into());
+    }
     if let Some(b) = &patch.blocked_by {
         task.blocked_by = b.clone();
         fields.push("blocked_by".into());
@@ -750,6 +755,7 @@ mod tests {
                     brief: None,
                     acceptance: vec![],
                     labels: vec!["x".into()],
+                    spec_refs: vec![],
                     created_by: "human".into(),
                 },
             )
@@ -832,6 +838,7 @@ mod tests {
                 brief: None,
                 acceptance: vec![],
                 labels: vec![],
+                spec_refs: vec![],
                 created_by: "human".into(),
             },
         )
@@ -869,6 +876,7 @@ mod tests {
                 brief: None,
                 acceptance: vec![],
                 labels: vec![],
+                spec_refs: vec![],
                 created_by: "human".into(),
             },
         )
@@ -897,6 +905,7 @@ mod tests {
             brief: None,
             acceptance: vec![],
             labels: vec![],
+            spec_refs: vec![],
             created_by: "human".into(),
         }
     }
@@ -956,6 +965,7 @@ mod tests {
                 brief: None,
                 acceptance: vec![],
                 labels: vec![],
+                spec_refs: vec![],
                 created_by: "human".into(),
             },
         )

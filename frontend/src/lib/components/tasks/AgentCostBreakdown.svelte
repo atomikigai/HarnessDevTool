@@ -15,6 +15,8 @@
   const agents = $derived(
     view ? [...view.agents].sort((a, b) => b.spent_usd - a.spent_usd) : []
   );
+  const taskCount = $derived(view ? view.tasks.filter((t) => t.task_id).length : 0);
+  const sessionCount = $derived(view ? view.sessions.length : 0);
 
   function displayRole(role: string): 'planner' | 'generator' | 'evaluator' | 'other' {
     switch (role) {
@@ -46,7 +48,9 @@
   {:else}
     <div class="flex items-center justify-between text-[11px]">
       <span class="uppercase tracking-wider" style="color: var(--fg-label);">Agents</span>
-      <span class="font-mono" style="color: var(--fg-muted);">{agents.length}</span>
+      <span class="font-mono" style="color: var(--fg-muted);">
+        {agents.length} · {taskCount} tasks · {sessionCount} sessions
+      </span>
     </div>
     <div class="flex flex-col gap-1.5">
       {#each agents as agent (agent.agent_id)}

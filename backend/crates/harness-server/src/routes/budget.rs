@@ -12,7 +12,7 @@ use std::sync::Arc;
 use axum::extract::{Path, State};
 use axum::routing::get;
 use axum::{Json, Router};
-use harness_core::{AgentCost, Budget};
+use harness_core::{AgentCost, Budget, RoleCost, SessionCostView, TaskCost};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{ApiError, ApiResult};
@@ -41,9 +41,22 @@ pub struct BudgetView {
     pub hard_pct: u8,
     #[serde(default)]
     pub agents: Vec<AgentCost>,
+    #[serde(default)]
+    pub tasks: Vec<TaskCost>,
+    #[serde(default)]
+    pub roles: Vec<RoleCost>,
+    #[serde(default)]
+    pub sessions: Vec<SessionCostView>,
 }
 
-fn view(thread_id: &str, b: &Budget, agents: Vec<AgentCost>) -> BudgetView {
+fn view(
+    thread_id: &str,
+    b: &Budget,
+    agents: Vec<AgentCost>,
+    tasks: Vec<TaskCost>,
+    roles: Vec<RoleCost>,
+    sessions: Vec<SessionCostView>,
+) -> BudgetView {
     BudgetView {
         thread_id: thread_id.to_string(),
         spent_usd: b.spent_usd,
@@ -52,6 +65,9 @@ fn view(thread_id: &str, b: &Budget, agents: Vec<AgentCost>) -> BudgetView {
         soft_pct: b.soft_pct,
         hard_pct: b.hard_pct,
         agents,
+        tasks,
+        roles,
+        sessions,
     }
 }
 
@@ -60,8 +76,15 @@ async fn get_budget(
     Path(tid): Path<String>,
 ) -> ApiResult<Json<BudgetView>> {
     let b = s.budgets.get(&tid);
-    let agents = s.budgets.agents_for(&tid);
-    Ok(Json(view(&tid, &b, agents)))
+    let breakdown = s.budgets.breakdown_for(&tid);
+    Ok(Json(view(
+        &tid,
+        &b,
+        breakdown.agents,
+        breakdown.tasks,
+        breakdown.roles,
+        breakdown.sessions,
+    )))
 }
 
 async fn set_budget(
@@ -75,6 +98,13 @@ async fn set_budget(
         ));
     }
     let b = s.budgets.set_limit(&tid, body.limit_usd)?;
-    let agents = s.budgets.agents_for(&tid);
-    Ok(Json(view(&tid, &b, agents)))
+    let breakdown = s.budgets.breakdown_for(&tid);
+    Ok(Json(view(
+        &tid,
+        &b,
+        breakdown.agents,
+        breakdown.tasks,
+        breakdown.roles,
+        breakdown.sessions,
+    )))
 }

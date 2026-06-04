@@ -274,12 +274,13 @@ fn run_ready_pass(
 /// request for an agent that already has a live session is cheap and turns
 /// into [`SpawnResult::AlreadyRunning`]. We log structured results so the
 /// "claimed but no PTY" failure mode is obvious in the scheduler logs.
-fn request_spawn(spawner: &dyn SessionSpawner, tid: &str, agent: &Agent) {
+fn request_spawn(spawner: &dyn SessionSpawner, tid: &str, task_id: &str, agent: &Agent) {
     let req = SpawnRequest {
         agent_id: agent.id.clone(),
         role: agent_role(agent).to_string(),
         kind: agent.kind.as_str().to_string(),
         thread_id: tid.to_string(),
+        task_id: Some(task_id.to_string()),
         cwd: None,
     };
     match spawner.spawn(req) {
@@ -287,6 +288,7 @@ fn request_spawn(spawner: &dyn SessionSpawner, tid: &str, agent: &Agent) {
             tracing::info!(
                 target: "scheduling",
                 thread = %tid,
+                task = %task_id,
                 agent = %agent.id,
                 role = %agent_role(agent),
                 session = %session_id,
@@ -297,6 +299,7 @@ fn request_spawn(spawner: &dyn SessionSpawner, tid: &str, agent: &Agent) {
             tracing::debug!(
                 target: "scheduling",
                 thread = %tid,
+                task = %task_id,
                 agent = %agent.id,
                 session = %session_id,
                 "scheduling.spawn_already_running"
@@ -308,6 +311,7 @@ fn request_spawn(spawner: &dyn SessionSpawner, tid: &str, agent: &Agent) {
             tracing::warn!(
                 target: "scheduling",
                 thread = %tid,
+                task = %task_id,
                 agent = %agent.id,
                 role = %agent_role(agent),
                 why = %why,
@@ -562,7 +566,7 @@ fn run_assign_pass(
                     );
                     explanation.agent_id = Some(agent.id.clone());
                     record_scheduler_explanation(store, &tid, explanation);
-                    request_spawn(spawner, &tid, agent);
+                    request_spawn(spawner, &tid, &t.id, agent);
                 }
                 Ok(ClaimResult::Busy { holder, .. }) => {
                     let mut explanation = scheduler_explanation(
@@ -637,7 +641,7 @@ fn run_assign_pass(
                     explanation.agent_id = Some(evaluator.id.clone());
                     explanation.previous_holder = prior;
                     record_scheduler_explanation(store, &tid, explanation);
-                    request_spawn(spawner, &tid, evaluator);
+                    request_spawn(spawner, &tid, &t.id, evaluator);
                 }
                 Err(e) => {
                     tracing::warn!(?e, task = %t.id, "scheduler evaluator reassign failed");
@@ -1213,6 +1217,10 @@ mod tests {
             kind: "claude".into(),
             agent_id: None,
             role: None,
+            task_id: None,
+            owner_session_id: None,
+            parent_session_id: None,
+            root_session_id: None,
         }];
 
         // 80% — over soft (band 75), under hard.
@@ -1247,6 +1255,10 @@ mod tests {
             kind: "claude".into(),
             agent_id: None,
             role: None,
+            task_id: None,
+            owner_session_id: None,
+            parent_session_id: None,
+            root_session_id: None,
         }];
         let wiring = mk_wiring(dir.path(), 10.0, sessions, sink.clone());
         wiring.store.set_limit("thr-x", 10.0).unwrap();
@@ -1272,6 +1284,10 @@ mod tests {
             kind: "codex".into(), // not in reporters map
             agent_id: None,
             role: None,
+            task_id: None,
+            owner_session_id: None,
+            parent_session_id: None,
+            root_session_id: None,
         }];
         let wiring = mk_wiring(dir.path(), 10.0, sessions, sink.clone());
         wiring.store.set_limit("thr-c", 10.0).unwrap();
@@ -1295,6 +1311,10 @@ mod tests {
                 kind: "claude".into(),
                 agent_id: Some("a1".into()),
                 role: Some("generator".into()),
+                task_id: None,
+                owner_session_id: None,
+                parent_session_id: None,
+                root_session_id: None,
             },
             ActiveSession {
                 thread_id: "thr-1".into(),
@@ -1303,6 +1323,10 @@ mod tests {
                 kind: "claude".into(),
                 agent_id: Some("a1".into()),
                 role: Some("generator".into()),
+                task_id: None,
+                owner_session_id: None,
+                parent_session_id: None,
+                root_session_id: None,
             },
             ActiveSession {
                 thread_id: "thr-1".into(),
@@ -1311,6 +1335,10 @@ mod tests {
                 kind: "claude".into(),
                 agent_id: Some("a2".into()),
                 role: Some("planner".into()),
+                task_id: None,
+                owner_session_id: None,
+                parent_session_id: None,
+                root_session_id: None,
             },
         ];
         let store = BudgetStore::load(dir.path()).unwrap();
@@ -1422,6 +1450,7 @@ mod tests {
         assert_eq!(calls[0].agent_id, gen.id);
         assert_eq!(calls[0].role, "generator");
         assert_eq!(calls[0].thread_id, "thr-spawn");
+        assert_eq!(calls[0].task_id.as_deref(), Some("T-0001"));
     }
 
     /// Routing `pending_verify` to an evaluator must also request a spawn —
@@ -1517,5 +1546,6 @@ mod tests {
         let eval_call = calls.iter().find(|c| c.role == "evaluator").unwrap();
         assert_eq!(eval_call.agent_id, evaluator.id);
         assert_eq!(eval_call.thread_id, "thr-eval");
+        assert_eq!(eval_call.task_id.as_deref(), Some("T-0001"));
     }
 }

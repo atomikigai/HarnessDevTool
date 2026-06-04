@@ -9,13 +9,19 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+
+#[cfg(feature = "ts-export")]
+use ts_rs::TS;
 
 use crate::Error;
 
 use super::pricing::model_price;
 
-#[derive(Debug, Default, Clone, Copy, PartialEq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[cfg_attr(feature = "ts-export", derive(TS))]
+#[cfg_attr(feature = "ts-export", ts(export, export_to = "../../../bindings/"))]
 pub struct Usage {
     pub input_tokens: u64,
     pub output_tokens: u64,
@@ -36,7 +42,9 @@ impl Usage {
 }
 
 /// Cost data for a single agent session.
-#[derive(Debug, Default, Clone, PartialEq)]
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[cfg_attr(feature = "ts-export", derive(TS))]
+#[cfg_attr(feature = "ts-export", ts(export, export_to = "../../../bindings/"))]
 pub struct SessionCost {
     pub model: String,
     pub usage: Usage,

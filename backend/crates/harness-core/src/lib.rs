@@ -16,9 +16,10 @@ pub mod threads;
 
 pub use agents::{Agent, AgentDraft, AgentKind, AgentsRegistry};
 pub use budget::{
-    ActiveSession, ActiveSessionsSource, AgentCost, Budget, BudgetStore, BudgetWarning,
-    BudgetWarningSink, ClaudeTranscriptReporter, CodexStubReporter, CostReporter, SessionCost,
-    StubReporter, Usage,
+    ActiveSession, ActiveSessionsSource, AgentCost, Budget, BudgetBreakdown, BudgetLedgerView,
+    BudgetObservation, BudgetStore, BudgetWarning, BudgetWarningSink, ClaudeTranscriptReporter,
+    CodexStubReporter, CostReporter, RoleCost, SessionCost, SessionCostView, StubReporter,
+    TaskCost, Usage,
 };
 pub use events::{Event, Item};
 pub use ids::{validate_path_id, validate_profile_id, validate_task_id, validate_thread_id};

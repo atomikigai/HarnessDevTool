@@ -43,6 +43,14 @@
   const selected = $derived(selectedId ? tasksState.byId(selectedId) : null);
   const budgetEntry = $derived(budgetStore.get(threadId));
   const budgetView = $derived(budgetEntry.view);
+  const taskCostById = $derived.by(() => {
+    const out = new Map<string, { spent: number; sessions: number }>();
+    for (const cost of budgetView?.tasks ?? []) {
+      if (cost.task_id) out.set(cost.task_id, { spent: cost.spent_usd, sessions: cost.sessions });
+    }
+    return out;
+  });
+  const selectedCost = $derived(selected ? (taskCostById.get(selected.id) ?? null) : null);
 
   // Hard cap visible rows at 200 (see deuda about virtualization).
   const visible = $derived(tasksState.items.slice(0, 200));
@@ -76,6 +84,10 @@
 
   function selectRow(id: string) {
     selectedId = id;
+  }
+
+  function fmtUsd(n: number): string {
+    return `$${(Number.isFinite(n) ? n : 0).toFixed(2)}`;
   }
 
   function reasonTitle(task: (typeof tasksState.items)[number]): string {
@@ -244,6 +256,7 @@
                 <th class="px-4 py-2">Title</th>
                 <th class="px-4 py-2">Status</th>
                 <th class="px-4 py-2">Assignee</th>
+                <th class="px-4 py-2">Cost</th>
                 <th class="px-4 py-2">Updated</th>
                 <th class="px-4 py-2">Blocked by</th>
               </tr>
@@ -251,6 +264,7 @@
             <tbody>
               {#each visible as t (t.id)}
                 {@const isSel = t.id === selectedId}
+                {@const cost = taskCostById.get(t.id)}
                 <tr
                   class="cursor-pointer border-b transition-colors hover:bg-[var(--accent-soft)]"
                   style="border-color: var(--row-divider); {isSel
@@ -278,6 +292,15 @@
                   <td class="px-4 py-2"><TaskStatusBadge status={t.status} /></td>
                   <td class="px-4 py-2 font-mono text-[12px]" style="color: var(--fg-muted);">
                     {t.assignee ?? '—'}
+                  </td>
+                  <td class="px-4 py-2 font-mono text-[12px]" style="color: var(--fg-muted);">
+                    {#if cost}
+                      <span title={`${cost.sessions} budgeted session${cost.sessions === 1 ? '' : 's'}`}>
+                        {fmtUsd(cost.spent)}
+                      </span>
+                    {:else}
+                      <span>—</span>
+                    {/if}
                   </td>
                   <td class="px-4 py-2 text-[12px]" style="color: var(--fg-muted);">
                     {formatDistanceToNow(new Date(t.updated_at), { addSuffix: true })}
@@ -308,6 +331,7 @@
         <TaskDetail
           {threadId}
           task={selected}
+          cost={selectedCost}
           onClose={() => (selectedId = null)}
           onSelect={selectRow}
           onChange={() => tasksState.refreshOne(selected!.id)}

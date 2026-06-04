@@ -19,6 +19,7 @@ export {
   ChevronLeft,
   ChevronRight,
   Circle,
+  CircleDollarSign,
   ListChecks,
   Pause,
   Play,

@@ -88,6 +88,29 @@ setup:
       fi
     }
     npm_global_install "opensrc" "opensrc"
+    npm_global_install "@ast-grep/cli" "ast-grep"
+
+    # — Herramientas cargo (se instalan si faltan, primera vez puede tardar) —
+    echo ""
+    echo "Herramientas cargo:"
+    cargo_install_if_missing() {
+      local crate="$1"
+      local bin="${2:-$1}"
+      if command -v "$bin" &>/dev/null; then
+        ok "$bin ($(${bin} --version 2>/dev/null | head -1 || echo 'instalado'))"
+      else
+        echo -e "  ${YELLOW}→${NC} Instalando $crate..."
+        if command -v cargo-binstall &>/dev/null; then
+          cargo binstall -y --quiet "$crate" 2>&1 | tail -1
+        else
+          cargo install --locked "$crate" --quiet 2>&1 | tail -1
+        fi
+        ok "$bin instalado"
+      fi
+    }
+    cargo_install_if_missing "cargo-nextest" "cargo-nextest"
+    cargo_install_if_missing "cargo-audit"   "cargo-audit"
+    cargo_install_if_missing "difftastic"    "difft"
 
     # — CLIs de agentes (opcionales, el harness funciona sin ellos) —
     echo ""
@@ -149,10 +172,20 @@ gen-types:
       cp -r "$dir" "frontend/src/lib/api/crates/$crate/"; \
     done
 
-# Run all tests
+# Run all tests (usa cargo-nextest si está disponible, fallback a cargo test)
 test:
-    cd backend && cargo test
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if command -v cargo-nextest &>/dev/null; then
+        (cd backend && cargo nextest run)
+    else
+        (cd backend && cargo test)
+    fi
     cd frontend && pnpm check
+
+# Audita vulnerabilidades en dependencias Rust
+audit:
+    cd backend && cargo audit
 
 # Format both stacks
 fmt:

@@ -35,6 +35,10 @@ pub struct SpawnRequest {
     /// the session to the thread and to resolve a working directory (if the
     /// thread has one recorded).
     pub thread_id: String,
+    /// Harness task id that caused this spawn. Scheduler-launched sessions are
+    /// root sessions, but they still need task attribution for budget and
+    /// audit metadata.
+    pub task_id: Option<String>,
     /// Optional override cwd. When `None`, the spawner falls back to its
     /// default (typically `$HOME`).
     pub cwd: Option<PathBuf>,

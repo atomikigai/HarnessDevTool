@@ -237,6 +237,12 @@ impl ActiveSessionsSource for ManagerSessionsSource {
                     kind: s.kind().as_str().to_string(),
                     agent_id,
                     role,
+                    task_id: s.task_id_static().map(str::to_string),
+                    owner_session_id: s.owner_session_id_static().map(str::to_string),
+                    parent_session_id: s.parent_session_id_static().map(str::to_string),
+                    root_session_id: Some(s.root_session_id_static().to_string()),
+                    // TODO(Task 21): extend harness_core::budget::ActiveSession
+                    // with scopes, then populate it here from s.scopes().
                 }
             })
             .collect()
@@ -419,6 +425,8 @@ impl SessionSpawner for ManagerSpawner {
         let mut opts = SpawnOpts {
             role_prompt: Some(role.prompt_template.clone()),
             role: Some(req.agent_id.clone()),
+            task_id: req.task_id.clone(),
+            scopes: task_scopes(req.task_id.as_deref()),
             ..SpawnOpts::default()
         };
 
@@ -511,6 +519,12 @@ impl SessionSpawner for ManagerSpawner {
             Err(e) => SpawnResult::Failed(format!("manager.spawn: {e}")),
         }
     }
+}
+
+fn task_scopes(task_id: Option<&str>) -> Vec<String> {
+    task_id
+        .map(|task_id| vec![format!("task:{task_id}")])
+        .unwrap_or_default()
 }
 
 fn detect_binaries() -> HashMap<AgentKind, PathBuf> {

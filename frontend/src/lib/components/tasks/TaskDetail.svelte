@@ -22,6 +22,7 @@
     User,
     GitBranch,
     Link2,
+    CircleDollarSign,
     Loader2
   } from '$lib/icons';
   import type { Task, Artifact, AcceptanceCheck, PatchTaskRequest } from '$lib/api/models/task';
@@ -33,12 +34,13 @@
   interface Props {
     threadId: string;
     task: Task;
+    cost?: { spent: number; sessions: number } | null;
     onClose: () => void;
     onSelect: (taskId: string) => void;
     onChange?: () => void;
   }
 
-  let { threadId, task, onClose, onSelect, onChange }: Props = $props();
+  let { threadId, task, cost = null, onClose, onSelect, onChange }: Props = $props();
 
   let busy = $state(false);
   let editingRaw = $state(false);
@@ -325,6 +327,12 @@
         <Clock class="h-3 w-3" />
         <span>Updated {formatDistanceToNow(new Date(task.updated_at), { addSuffix: true })}</span>
       </div>
+      {#if cost}
+        <div class="flex items-center gap-1.5" style="color: var(--fg-muted);">
+          <CircleDollarSign class="h-3 w-3" />
+          <span class="font-mono">${cost.spent.toFixed(2)} · {cost.sessions} ses</span>
+        </div>
+      {/if}
       {#if task.parent}
         <div class="flex items-center gap-1.5" style="color: var(--fg-muted);">
           <GitBranch class="h-3 w-3" />

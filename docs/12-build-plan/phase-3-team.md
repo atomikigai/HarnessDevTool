@@ -74,7 +74,7 @@ Audit rápido del 2026-05-27:
 - [x] **`repo.write` path-gated**: la task lleva `write_paths` / `forbidden_paths`; el bridge rechaza writes fuera del allowlist aunque el rol tenga la capability.
 - [x] **Audit log base**: sink append-only en `$HARNESS_HOME/.runtime/audit/bridge.jsonl`. Una entrada por cada decisión `allow`/`deny`/`ask` resuelta por `/api/approvals/check`, con `actor_id`, `actor_role`, `tool`, `resource`, `decision`, `reason`, `input_hash`, `result_hash`.
 - [x] **Audit rotation**: rotación zstd del bridge audit cuando `bridge.jsonl` crece.
-- [ ] **Tests de invariantes**: cobertura bridge parcial para invariantes ya implementables (`task_create`, `task_propose`, planner no-claim, worker no-spec, evaluator deny sensitive, repo_write path-gated, policy local). Pendiente completar cuando existan `memory.*`, `assigned_to/allowed_roles` y QA-only claim.
+- [x] **Tests de invariantes**: cobertura bridge parcial para invariantes ya implementables (`task_create`, `task_propose`, planner no-claim, worker no-spec, evaluator deny sensitive, repo_write path-gated, policy local). Pendiente ampliar cuando existan `memory.*`, `assigned_to/allowed_roles` y QA-only claim.
 
 ### Backend — roles
 - [x] Plantillas en `~/.harness/profiles/<p>/roles/{planner,generator,evaluator}.toml`:

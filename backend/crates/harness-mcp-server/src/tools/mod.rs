@@ -286,10 +286,28 @@ pub fn list_descriptors() -> Vec<ToolDescriptor> {
                         "type": "object",
                         "properties": {
                             "files": { "type": "array", "items": { "type": "string" } },
-                            "turns": { "type": "integer" },
-                            "diff":  { "type": "string" }
-                        },
-                        "required": ["files"]
+                            "turns": { "type": "array", "items": { "type": "string" } },
+                            "diff":  { "type": "string" },
+                            "metadata": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "required": ["kind", "path"],
+                                    "properties": {
+                                        "artifact_id": { "type": "string" },
+                                        "task_id": { "type": "string" },
+                                        "kind": {
+                                            "type": "string",
+                                            "enum": ["file", "diff", "test_output", "screenshot", "log"]
+                                        },
+                                        "path": { "type": "string" },
+                                        "produced_by": { "type": "string" },
+                                        "created_at": { "type": "string" },
+                                        "summary": { "type": "string" }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }),

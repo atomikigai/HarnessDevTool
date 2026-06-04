@@ -15,7 +15,73 @@ Modelo operativo: ver [`docs/teamwork/OPERATING_MODEL.md`](./OPERATING_MODEL.md)
 
 ## En curso
 
-_Ninguna. Task 17 quedó cerrada el 2026-06-04 con `just gen-types`, `pnpm check` y `just test` verdes._
+| Campo | Valor |
+|---|---|
+| **Tarea** | Task 18 — Artifacts como entidad/evento real |
+| **Estado** | `VERIFY` — implementación Codex completa el 2026-06-04; auditorías auxiliares backend/frontend incorporadas y findings de revisión auxiliar corregidos. Pendiente decisión del Planner para pasar a `DONE`. |
+| **Objetivo** | Modelar artifacts con metadata propia para que evaluator, replay y UI sepan quién produjo cada evidencia, cuándo, de qué tipo es y cómo se relaciona con una task. |
+| **Alcance / archivos** | Backend/core task model/store/events/schema, MCP `task_submit`, server routes/SSE si hace falta; frontend TaskDetail/SessionRightPanel y tipos/API. |
+| **Responsables** | Planner/Codex. Subagentes auxiliares Codex: backend audit (`Harvey`) y frontend audit (`Herschel`). QA oficial requerida antes de cierre por tocar append-only/eventos. |
+| **Criterio de aceptación** | (1) existe `Artifact { artifact_id, task_id, kind, path, produced_by, created_at, summary }`; (2) kinds iniciales `file`, `diff`, `test_output`, `screenshot`, `log`; (3) artifacts se persisten como eventos append-only sin duplicar blobs; (4) `task.artifacts` mantiene compatibilidad con `task_submit`; (5) TaskDetail/SessionRightPanel muestran metadata relevante; (6) tests cubren creación, listado y referencia inexistente. |
+| **Checks obligatorios** | ✅ `cargo test -p harness-core -p harness-mcp-server -p harness-server`; ✅ `just gen-types`; ✅ `pnpm check`; ✅ `just test`. |
+
+### Contrato breve — Task 18
+
+1. No reescribir historial: cada artifact nuevo se registra como evento append-only y referencia blobs por path.
+2. Mantener compatibilidad con `task_submit` actual: los callers legacy que mandan `artifacts.files/turns/diff` deben seguir funcionando.
+3. La metadata nueva debe ser recuperable por task y usable por replay/debug sin depender solo del snapshot mutable de la task.
+4. Los paths de artifacts son referencias, no contenido grande; no duplicar logs/diffs/screenshots dentro del evento salvo resumen corto.
+5. UI muestra evidencia inspeccionable de forma compacta, sin bloquear el flujo existente de submit/verificación.
+
+### Handoff inicial — Planner/Codex 2026-06-04
+
+**Backend audit auxiliar (`Harvey`)**:
+- Auditar `Task.artifacts`, `TaskStore::submit`, `TaskEvent::ArtifactAdded`, MCP `task_submit`, schemas y tests.
+- Reportar archivos backend a tocar y riesgos de compatibilidad.
+
+**Frontend audit auxiliar (`Herschel`)**:
+- Auditar TaskDetail/SessionRightPanel/SpecViewer, modelos task y API client.
+- Reportar dónde integrar artifact metadata y qué checks frontend cubrir.
+
+**Ruta propuesta**:
+1. ✅ Integrar hallazgos de auditoría.
+2. ✅ Implementar backend/core + tests.
+3. ✅ Regenerar tipos si el contrato Rust cambia.
+4. ✅ Implementar UI mínima.
+5. ✅ Correr checks; revisión auxiliar final (`Averroes`) reportó 4 findings y quedaron corregidos.
+
+### Handoff Implementación — Codex 2026-06-04
+
+**Archivos tocados:**
+- `backend/crates/harness-core/src/tasks/{model.rs,events.rs,store.rs,state_machine.rs,mod.rs}`
+- `backend/crates/harness-core/schemas/task.v1.json`
+- `backend/crates/harness-server/src/routes/{tasks.rs,events.rs,spec.rs}`
+- `backend/crates/harness-mcp-server/src/tools/mod.rs`
+- `frontend/src/lib/api/{client.ts,models/task.ts}`
+- `frontend/src/lib/{stores/tasks.svelte.ts,components/tasks/TaskDetail.svelte,components/app/SessionRightPanel.svelte}`
+
+**Implementado:**
+- `ArtifactKind` + `Artifact` exportados desde Rust; `Artifacts` conserva `files/turns/diff` y agrega `metadata`.
+- `TaskStore::submit` normaliza artifacts legacy a metadata, mantiene el snapshot legacy y emite `artifact.added` por artifact.
+- `TaskEvent::ArtifactAdded` incluye `artifact_id`, `task_id`, `produced_by` y `summary`, con defaults para eventos históricos.
+- `GET /api/threads/:tid/tasks/:task_id/artifacts` lista metadata de una task.
+- `task_submit` MCP mantiene compatibilidad y corrige schema de `turns` a array de strings.
+- TaskDetail muestra metadata compacta; SessionRightPanel muestra conteo; task store refresca en `artifact.added`.
+
+**Checks corridos:**
+- `cargo test -p harness-core -p harness-mcp-server -p harness-server` ✅
+- `just gen-types` ✅
+- `pnpm check` ✅
+- `just test` ✅
+
+**Review auxiliar (`Averroes`)**:
+- Finding M: endpoint nuevo devolvía `[]` para artifacts legacy sin metadata. Corregido: `list_artifacts` sintetiza metadata on-read.
+- Finding M: submit híbrido `metadata + files/turns/diff` omitía eventos/visibilidad de legacy. Corregido: normalización combina metadata existente con legacy no duplicado.
+- Finding L/M: schema MCP no exponía metadata y exigía `files`. Corregido: `metadata` documentado y `files` ya no es requerido.
+- Finding L: tipos frontend duplicaban `Artifact`. Corregido: el modelo manual re-exporta `Artifact`/`ArtifactKind` generados por `ts-rs`.
+
+**Notas:**
+- `Justfile` tiene un cambio no relacionado (`setup`) presente en el worktree y no pertenece a esta task.
 
 ## Última cerrada — Task 17
 

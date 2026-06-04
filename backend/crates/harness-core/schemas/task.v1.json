@@ -95,7 +95,26 @@
       "properties": {
         "files": { "type": "array", "items": { "type": "string" } },
         "turns": { "type": "array", "items": { "type": "string" } },
-        "diff": { "type": ["string", "null"] }
+        "diff": { "type": ["string", "null"] },
+        "metadata": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["artifact_id", "task_id", "kind", "path", "produced_by", "created_at"],
+            "properties": {
+              "artifact_id": { "type": "string" },
+              "task_id": { "type": "string" },
+              "kind": {
+                "type": "string",
+                "enum": ["file", "diff", "test_output", "screenshot", "log"]
+              },
+              "path": { "type": "string" },
+              "produced_by": { "type": "string" },
+              "created_at": { "type": "string", "format": "date-time" },
+              "summary": { "type": "string" }
+            }
+          }
+        }
       }
     },
     "notes": {

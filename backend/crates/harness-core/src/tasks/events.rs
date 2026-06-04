@@ -59,8 +59,16 @@ pub enum TaskEvent {
     #[serde(rename = "artifact.added")]
     ArtifactAdded {
         thread_id: String,
+        #[serde(default)]
+        artifact_id: String,
+        #[serde(default)]
+        task_id: String,
         path: String,
         kind: String,
+        #[serde(default)]
+        produced_by: String,
+        #[serde(default)]
+        summary: String,
         at: DateTime<Utc>,
     },
 }
@@ -87,7 +95,11 @@ impl TaskEvent {
             TaskEvent::LeaseExpired {
                 previous_holder, ..
             } => Some(previous_holder.as_str()),
-            TaskEvent::SpecChanged { .. } | TaskEvent::ArtifactAdded { .. } => None,
+            TaskEvent::SpecChanged { .. } => None,
+            TaskEvent::ArtifactAdded { produced_by, .. } if !produced_by.is_empty() => {
+                Some(produced_by.as_str())
+            }
+            TaskEvent::ArtifactAdded { .. } => None,
         }
     }
 
@@ -110,7 +122,8 @@ impl TaskEvent {
             | TaskEvent::Updated { task_id, .. }
             | TaskEvent::Ready { task_id }
             | TaskEvent::LeaseExpired { task_id, .. } => task_id,
-            TaskEvent::SpecChanged { .. } | TaskEvent::ArtifactAdded { .. } => "",
+            TaskEvent::SpecChanged { .. } => "",
+            TaskEvent::ArtifactAdded { task_id, .. } => task_id,
         }
     }
 }
@@ -142,8 +155,12 @@ mod tests {
     fn artifact_added_round_trips() {
         let ev = TaskEvent::ArtifactAdded {
             thread_id: "t1".to_string(),
+            artifact_id: "A-1".to_string(),
+            task_id: "T-0001".to_string(),
             path: "spec.md".to_string(),
-            kind: "spec".to_string(),
+            kind: "file".to_string(),
+            produced_by: "agent:a".to_string(),
+            summary: "Spec file".to_string(),
             at: Utc::now(),
         };
 
@@ -151,6 +168,33 @@ mod tests {
         assert!(json.contains("\"type\":\"artifact.added\""));
         let decoded: TaskEvent = serde_json::from_str(&json).unwrap();
         assert_eq!(decoded, ev);
-        assert_eq!(decoded.task_id(), "");
+        assert_eq!(decoded.task_id(), "T-0001");
+    }
+
+    #[test]
+    fn legacy_artifact_added_still_decodes() {
+        let json = r#"{
+            "type":"artifact.added",
+            "thread_id":"t1",
+            "path":"spec.md",
+            "kind":"spec",
+            "at":"2026-06-04T00:00:00Z"
+        }"#;
+        let decoded: TaskEvent = serde_json::from_str(json).unwrap();
+        match decoded {
+            TaskEvent::ArtifactAdded {
+                artifact_id,
+                task_id,
+                produced_by,
+                summary,
+                ..
+            } => {
+                assert_eq!(artifact_id, "");
+                assert_eq!(task_id, "");
+                assert_eq!(produced_by, "");
+                assert_eq!(summary, "");
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
     }
 }

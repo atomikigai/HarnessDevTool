@@ -227,8 +227,12 @@ mod tests {
             (
                 TaskEvent::ArtifactAdded {
                     thread_id: "thr-1".into(),
+                    artifact_id: "spec-v1".into(),
+                    task_id: "".into(),
                     path: "spec.md".into(),
                     kind: "spec".into(),
+                    produced_by: "legacy_put".into(),
+                    summary: "Thread spec created".into(),
                     at: Utc::now(),
                 },
                 "artifact.added",

@@ -184,8 +184,12 @@ async fn write(
             &tid,
             TaskEvent::ArtifactAdded {
                 thread_id: tid.clone(),
+                artifact_id: format!("spec-v{}", version.version),
+                task_id: String::new(),
                 path: "spec.md".to_string(),
                 kind: "spec".to_string(),
+                produced_by: "legacy_put".to_string(),
+                summary: "Thread spec created".to_string(),
                 at: Utc::now(),
             },
         );

@@ -54,9 +54,10 @@ pub fn validate_transition(task: &Task, to: TaskStatus, by: &str) -> Result<(), 
             }
         }
         PendingVerify => {
-            if task.artifacts.files.is_empty() {
+            if task.artifacts.files.is_empty() && task.artifacts.metadata.is_empty() {
                 return Err(Error::Validation(
-                    "in_progress→pending_verify requires artifacts.files".into(),
+                    "in_progress→pending_verify requires artifacts.files or artifacts.metadata"
+                        .into(),
                 ));
             }
         }

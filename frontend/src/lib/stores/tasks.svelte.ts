@@ -107,6 +107,10 @@ class TasksState {
           'task.lease-expired': (data) => {
             const tid = (data as { task_id?: string })?.task_id;
             if (tid) void this.refreshOne(tid);
+          },
+          'artifact.added': (data) => {
+            const tid = (data as { task_id?: string })?.task_id;
+            if (tid) void this.refreshOne(tid);
           }
         },
         onError: () => {

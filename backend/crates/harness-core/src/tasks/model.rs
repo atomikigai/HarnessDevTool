@@ -67,6 +67,52 @@ pub struct AcceptanceCheck {
     pub verified_by: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[cfg_attr(feature = "ts-export", derive(TS))]
+#[cfg_attr(feature = "ts-export", ts(export, export_to = "../../../bindings/"))]
+#[serde(rename_all = "snake_case")]
+pub enum ArtifactKind {
+    File,
+    Diff,
+    TestOutput,
+    Screenshot,
+    Log,
+}
+
+impl ArtifactKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ArtifactKind::File => "file",
+            ArtifactKind::Diff => "diff",
+            ArtifactKind::TestOutput => "test_output",
+            ArtifactKind::Screenshot => "screenshot",
+            ArtifactKind::Log => "log",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[cfg_attr(feature = "ts-export", derive(TS))]
+#[cfg_attr(feature = "ts-export", ts(export, export_to = "../../../bindings/"))]
+pub struct Artifact {
+    #[serde(default)]
+    pub artifact_id: String,
+    #[serde(default)]
+    pub task_id: String,
+    pub kind: ArtifactKind,
+    pub path: String,
+    #[serde(default)]
+    pub produced_by: String,
+    #[serde(default = "default_artifact_created_at")]
+    pub created_at: DateTime<Utc>,
+    #[serde(default)]
+    pub summary: String,
+}
+
+fn default_artifact_created_at() -> DateTime<Utc> {
+    Utc::now()
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[cfg_attr(feature = "ts-export", derive(TS))]
 #[cfg_attr(feature = "ts-export", ts(export, export_to = "../../../bindings/"))]
@@ -77,6 +123,8 @@ pub struct Artifacts {
     pub turns: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub diff: Option<String>,
+    #[serde(default)]
+    pub metadata: Vec<Artifact>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]

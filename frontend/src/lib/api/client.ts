@@ -275,6 +275,7 @@ import type { ApprovalSummary } from './types/ApprovalSummary';
 import type { Decision } from './types/Decision';
 import type { RememberScope } from './types/RememberScope';
 import type {
+  Artifact,
   Task,
   CreateTaskRequest,
   PatchTaskRequest,
@@ -398,6 +399,8 @@ export const api = {
       }),
     handoffs: (threadId: string, taskId: string, signal?: AbortSignal) =>
       apiRequest<Handoff[]>(`/threads/${threadId}/tasks/${taskId}/handoffs`, { signal }),
+    artifacts: (threadId: string, taskId: string, signal?: AbortSignal) =>
+      apiRequest<Artifact[]>(`/threads/${threadId}/tasks/${taskId}/artifacts`, { signal }),
     createHandoff: (
       threadId: string,
       taskId: string,

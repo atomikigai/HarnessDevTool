@@ -49,6 +49,13 @@
     return status === 'done';
   }
 
+  function artifactCount(task: (typeof tasksState.items)[number]): number {
+    return (
+      (task.artifacts.metadata?.length ?? 0) ||
+      task.artifacts.files.length + task.artifacts.turns.length + (task.artifacts.diff ? 1 : 0)
+    );
+  }
+
   function resetChildren() {
     children = [];
     childrenError = null;
@@ -215,6 +222,7 @@
         {:else}
           {#each tasksState.items as t (t.id)}
             {@const done = isDone(t.status)}
+            {@const artifacts = artifactCount(t)}
             <div
               class="flex items-start gap-2.5 rounded-md border px-2.5 py-2"
               style="
@@ -250,6 +258,15 @@
               >
                 {t.title}
               </span>
+              {#if artifacts > 0}
+                <span
+                  class="ml-auto shrink-0 rounded-sm px-1.5 py-0.5 text-[10px]"
+                  style="background: var(--surface-titlebar); color: var(--fg-muted);"
+                  title={`${artifacts} artifact${artifacts === 1 ? '' : 's'}`}
+                >
+                  {artifacts}
+                </span>
+              {/if}
             </div>
           {/each}
         {/if}

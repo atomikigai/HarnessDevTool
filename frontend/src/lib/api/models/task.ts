@@ -4,6 +4,11 @@
  * replaced with the generated bindings.
  */
 
+import type { Artifact } from '../types/Artifact';
+import type { ArtifactKind } from '../types/ArtifactKind';
+
+export type { Artifact, ArtifactKind };
+
 export type TaskStatus =
   | 'proposed'
   | 'queued'
@@ -37,6 +42,7 @@ export interface TaskArtifacts {
   files: string[];
   turns: string[];
   diff?: string;
+  metadata?: Artifact[];
 }
 
 export interface TaskNotes {

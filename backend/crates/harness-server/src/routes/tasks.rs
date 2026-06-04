@@ -4,8 +4,8 @@ use axum::routing::get;
 use axum::{Json, Router};
 use chrono::Utc;
 use harness_core::{
-    AcceptanceCheck, Event, Handoff, Item, ListFilters, SpecRef, Task, TaskBrief, TaskDraft,
-    TaskPatch, TaskStatus,
+    AcceptanceCheck, Artifact, Event, Handoff, Item, ListFilters, SpecRef, Task, TaskBrief,
+    TaskDraft, TaskPatch, TaskStatus,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -21,6 +21,10 @@ pub fn router() -> Router<Arc<AppState>> {
         .route(
             "/api/threads/:tid/tasks/:task_id",
             get(get_one).patch(patch_one).delete(delete_one),
+        )
+        .route(
+            "/api/threads/:tid/tasks/:task_id/artifacts",
+            get(list_artifacts),
         )
         .route(
             "/api/threads/:tid/tasks/:task_id/handoffs",
@@ -143,6 +147,13 @@ async fn get_one(
     Path((tid, task_id)): Path<(String, String)>,
 ) -> ApiResult<Json<Task>> {
     Ok(Json(s.tasks.get(&tid, &task_id)?))
+}
+
+async fn list_artifacts(
+    State(s): State<Arc<AppState>>,
+    Path((tid, task_id)): Path<(String, String)>,
+) -> ApiResult<Json<Vec<Artifact>>> {
+    Ok(Json(s.tasks.list_artifacts(&tid, &task_id)?))
 }
 
 #[derive(Debug, Deserialize)]

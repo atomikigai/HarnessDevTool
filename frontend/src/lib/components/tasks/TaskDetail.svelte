@@ -24,7 +24,7 @@
     Link2,
     Loader2
   } from '$lib/icons';
-  import type { Task, AcceptanceCheck, PatchTaskRequest } from '$lib/api/models/task';
+  import type { Task, Artifact, AcceptanceCheck, PatchTaskRequest } from '$lib/api/models/task';
   import { api, ApiError, type Handoff } from '$lib/api/client';
   import { toast } from 'svelte-sonner';
   import { formatDistanceToNow } from 'date-fns';
@@ -61,6 +61,10 @@
         task.brief.rules.length ||
         task.brief.expected_result.trim()
       )
+  );
+  const artifactMetadata = $derived<Artifact[]>(task.artifacts.metadata ?? []);
+  const hasLegacyArtifacts = $derived(
+    task.artifacts.files.length > 0 || task.artifacts.turns.length > 0 || !!task.artifacts.diff
   );
 
   async function patch(body: PatchTaskRequest, optimisticMsg?: string) {
@@ -137,6 +141,16 @@
   function promote() {
     const status = task.blocked_by.length > 0 ? 'blocked' : 'queued';
     void patch({ status, by: 'human' }, `${task.id} ${status}`);
+  }
+
+  function artifactKindLabel(kind: string): string {
+    return kind.replaceAll('_', ' ');
+  }
+
+  function artifactDate(value: string): string {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return value;
+    return formatDistanceToNow(date, { addSuffix: true });
   }
 
   function openRaw() {
@@ -481,17 +495,55 @@
     <!-- Artifacts -->
     <section class="mb-4">
       <h3 class="h-eyebrow mb-2">Artifacts</h3>
-      {#if task.artifacts.files.length === 0 && task.artifacts.turns.length === 0}
+      {#if artifactMetadata.length === 0 && !hasLegacyArtifacts}
         <p class="text-xs" style="color: var(--fg-muted);">No artifacts yet.</p>
       {:else}
-        <ul class="flex flex-col gap-1">
-          {#each task.artifacts.files as f (f)}
-            <li class="font-mono text-[11px]" style="color: var(--fg-breadcrumb);">{f}</li>
-          {/each}
-          {#each task.artifacts.turns as t (t)}
-            <li class="font-mono text-[11px]" style="color: var(--fg-muted);">turn: {t}</li>
-          {/each}
-        </ul>
+        {#if artifactMetadata.length > 0}
+          <ul class="flex flex-col gap-2">
+            {#each artifactMetadata as artifact (artifact.artifact_id)}
+              <li
+                class="rounded-md border px-2.5 py-2"
+                style="border-color: var(--border-subtle); background: var(--surface-panel);"
+              >
+                <div class="flex min-w-0 items-center gap-2">
+                  <span
+                    class="shrink-0 rounded-sm px-1.5 py-0.5 text-[10px] uppercase"
+                    style="background: var(--surface-titlebar); color: var(--fg-label);"
+                  >
+                    {artifactKindLabel(artifact.kind)}
+                  </span>
+                  <span class="min-w-0 flex-1 truncate font-mono text-[11px]" title={artifact.path}>
+                    {artifact.path}
+                  </span>
+                </div>
+                <div class="mt-1 flex min-w-0 items-center gap-2 text-[10px]">
+                  <span class="truncate" style="color: var(--fg-muted);">
+                    {artifact.produced_by}
+                  </span>
+                  <span style="color: var(--fg-muted);">·</span>
+                  <span style="color: var(--fg-muted);">{artifactDate(artifact.created_at)}</span>
+                </div>
+                {#if artifact.summary}
+                  <p class="mt-1 line-clamp-2 text-[11px]" style="color: var(--fg-muted);">
+                    {artifact.summary}
+                  </p>
+                {/if}
+              </li>
+            {/each}
+          </ul>
+        {:else}
+          <ul class="flex flex-col gap-1">
+            {#each task.artifacts.files as f (f)}
+              <li class="font-mono text-[11px]" style="color: var(--fg-breadcrumb);">{f}</li>
+            {/each}
+            {#each task.artifacts.turns as t (t)}
+              <li class="font-mono text-[11px]" style="color: var(--fg-muted);">turn: {t}</li>
+            {/each}
+            {#if task.artifacts.diff}
+              <li class="font-mono text-[11px]" style="color: var(--fg-muted);">diff</li>
+            {/if}
+          </ul>
+        {/if}
       {/if}
     </section>
 

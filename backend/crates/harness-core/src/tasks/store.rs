@@ -16,8 +16,8 @@ use super::events::TaskEvent;
 use super::ids::next_id;
 use super::index::Index;
 use super::model::{
-    AcceptanceBlock, Artifacts, ClaimResult, HistoryBlock, HistoryEvent, Lease, ListFilters, Notes,
-    Task, TaskDraft, TaskPatch, TaskStatus,
+    AcceptanceBlock, Artifact, ArtifactKind, Artifacts, ClaimResult, HistoryBlock, HistoryEvent,
+    Lease, ListFilters, Notes, Task, TaskDraft, TaskPatch, TaskStatus,
 };
 use super::state_machine::validate_transition;
 use crate::Store;
@@ -501,15 +501,44 @@ impl TaskStore {
         &self,
         tid: &str,
         task_id: &str,
-        artifacts: Artifacts,
+        mut artifacts: Artifacts,
         by: &str,
     ) -> Result<Task, Error> {
+        let now = Utc::now();
+        normalize_artifacts(task_id, &mut artifacts, by, now);
+        let emitted_artifacts = artifacts.metadata.clone();
         let patch = TaskPatch {
             artifacts: Some(artifacts),
             status: Some(TaskStatus::PendingVerify),
             ..Default::default()
         };
-        self.patch(tid, task_id, patch, by)
+        let task = self.patch(tid, task_id, patch, by)?;
+        for artifact in emitted_artifacts {
+            self.emit(
+                tid,
+                TaskEvent::ArtifactAdded {
+                    thread_id: tid.to_string(),
+                    artifact_id: artifact.artifact_id,
+                    task_id: artifact.task_id,
+                    path: artifact.path,
+                    kind: artifact.kind.as_str().to_string(),
+                    produced_by: artifact.produced_by,
+                    summary: artifact.summary,
+                    at: artifact.created_at,
+                },
+            );
+        }
+        Ok(task)
+    }
+
+    /// Return artifact metadata for a task. The task itself remains the
+    /// compatibility snapshot; append-only `artifact.added` events are emitted
+    /// when metadata is created.
+    pub fn list_artifacts(&self, tid: &str, task_id: &str) -> Result<Vec<Artifact>, Error> {
+        let task = self.get(tid, task_id)?;
+        let mut artifacts = task.artifacts;
+        normalize_artifacts(&task.id, &mut artifacts, &task.updated_by, task.updated_at);
+        Ok(artifacts.metadata)
     }
 
     /// Transition the task to `abandoned` with a reason. Humans only.
@@ -675,6 +704,121 @@ fn apply_patch(
     task.updated_by = by.into();
 
     Ok((prev, fields))
+}
+
+fn normalize_artifacts(
+    task_id: &str,
+    artifacts: &mut Artifacts,
+    by: &str,
+    created_at: chrono::DateTime<Utc>,
+) {
+    if !artifacts.metadata.is_empty() {
+        for (idx, artifact) in artifacts.metadata.iter_mut().enumerate() {
+            if artifact.artifact_id.trim().is_empty() {
+                artifact.artifact_id = artifact_id(task_id, created_at, idx);
+            }
+            artifact.task_id = task_id.to_string();
+            if artifact.produced_by.trim().is_empty() {
+                artifact.produced_by = by.to_string();
+            }
+            if artifact.summary.trim().is_empty() {
+                artifact.summary = summarize_artifact(&artifact.kind, &artifact.path);
+            }
+        }
+    }
+
+    append_legacy_artifact_metadata(task_id, artifacts, by, created_at);
+}
+
+fn append_legacy_artifact_metadata(
+    task_id: &str,
+    artifacts: &mut Artifacts,
+    by: &str,
+    created_at: chrono::DateTime<Utc>,
+) {
+    for path in &artifacts.files {
+        let kind = classify_file_artifact(path);
+        if has_artifact_metadata(artifacts, &kind, path) {
+            continue;
+        }
+        let idx = artifacts.metadata.len();
+        artifacts.metadata.push(Artifact {
+            artifact_id: artifact_id(task_id, created_at, idx),
+            task_id: task_id.to_string(),
+            kind: kind.clone(),
+            path: path.clone(),
+            produced_by: by.to_string(),
+            created_at,
+            summary: summarize_artifact(&kind, path),
+        });
+    }
+    for turn in &artifacts.turns {
+        let path = format!("turn:{turn}");
+        if has_artifact_metadata(artifacts, &ArtifactKind::Log, &path) {
+            continue;
+        }
+        let idx = artifacts.metadata.len();
+        artifacts.metadata.push(Artifact {
+            artifact_id: artifact_id(task_id, created_at, idx),
+            task_id: task_id.to_string(),
+            kind: ArtifactKind::Log,
+            path,
+            produced_by: by.to_string(),
+            created_at,
+            summary: format!("Referenced turn {turn}"),
+        });
+    }
+    if artifacts.diff.is_some() {
+        if has_artifact_metadata(artifacts, &ArtifactKind::Diff, "diff") {
+            return;
+        }
+        let idx = artifacts.metadata.len();
+        artifacts.metadata.push(Artifact {
+            artifact_id: artifact_id(task_id, created_at, idx),
+            task_id: task_id.to_string(),
+            kind: ArtifactKind::Diff,
+            path: "diff".to_string(),
+            produced_by: by.to_string(),
+            created_at,
+            summary: "Submitted diff".to_string(),
+        });
+    }
+}
+
+fn has_artifact_metadata(artifacts: &Artifacts, kind: &ArtifactKind, path: &str) -> bool {
+    artifacts
+        .metadata
+        .iter()
+        .any(|artifact| artifact.kind == *kind && artifact.path == path)
+}
+
+fn artifact_id(task_id: &str, created_at: chrono::DateTime<Utc>, idx: usize) -> String {
+    format!("{task_id}-A{}-{}", created_at.timestamp_millis(), idx + 1)
+}
+
+fn classify_file_artifact(path: &str) -> ArtifactKind {
+    let lower = path.to_ascii_lowercase();
+    if lower.ends_with(".png")
+        || lower.ends_with(".jpg")
+        || lower.ends_with(".jpeg")
+        || lower.ends_with(".webp")
+    {
+        ArtifactKind::Screenshot
+    } else if lower.ends_with(".log") || lower.contains("test-output") {
+        ArtifactKind::TestOutput
+    } else {
+        ArtifactKind::File
+    }
+}
+
+fn summarize_artifact(kind: &ArtifactKind, path: &str) -> String {
+    match kind {
+        ArtifactKind::File => format!("Submitted file {path}"),
+        ArtifactKind::Diff => "Submitted diff".to_string(),
+        ArtifactKind::TestOutput => format!("Submitted test output {path}"),
+        ArtifactKind::Screenshot => format!("Submitted screenshot {path}"),
+        ArtifactKind::Log => format!("Submitted log {path}"),
+    }
 }
 
 /// Acquire an exclusive flock, deserialize, mutate, atomically persist.
@@ -895,6 +1039,160 @@ mod tests {
             .claim("thr-1", "T-0001", "agent:a", Duration::from_secs(60))
             .expect_err("blocked dependencies should prevent claim");
         assert!(matches!(err, Error::Validation(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn submit_materializes_artifact_metadata_and_events() {
+        let (_dir, s) = store();
+        s.create("thr-1", mk_draft("with artifacts")).unwrap();
+        s.claim("thr-1", "T-0001", "agent:a", Duration::from_secs(60))
+            .unwrap();
+        s.patch(
+            "thr-1",
+            "T-0001",
+            TaskPatch {
+                status: Some(TaskStatus::InProgress),
+                ..Default::default()
+            },
+            "agent:a",
+        )
+        .unwrap();
+        let mut rx = s.subscribe("thr-1");
+
+        let task = s
+            .submit(
+                "thr-1",
+                "T-0001",
+                Artifacts {
+                    files: vec!["src/lib.rs".into(), "screenshots/pass.png".into()],
+                    turns: vec!["turn-7".into()],
+                    diff: Some("--- diff".into()),
+                    metadata: vec![],
+                },
+                "agent:a",
+            )
+            .unwrap();
+
+        assert_eq!(task.status, TaskStatus::PendingVerify);
+        assert_eq!(
+            task.artifacts.files,
+            vec!["src/lib.rs", "screenshots/pass.png"]
+        );
+        assert_eq!(task.artifacts.metadata.len(), 4);
+        assert_eq!(task.artifacts.metadata[0].task_id, "T-0001");
+        assert_eq!(task.artifacts.metadata[0].produced_by, "agent:a");
+        assert_eq!(task.artifacts.metadata[1].kind, ArtifactKind::Screenshot);
+        assert_eq!(task.artifacts.metadata[2].kind, ArtifactKind::Log);
+        assert_eq!(task.artifacts.metadata[3].kind, ArtifactKind::Diff);
+
+        let listed = s.list_artifacts("thr-1", "T-0001").unwrap();
+        assert_eq!(listed, task.artifacts.metadata);
+
+        let mut artifact_events = 0;
+        while let Ok(ev) = rx.try_recv() {
+            if let TaskEvent::ArtifactAdded {
+                task_id,
+                produced_by,
+                ..
+            } = ev
+            {
+                artifact_events += 1;
+                assert_eq!(task_id, "T-0001");
+                assert_eq!(produced_by, "agent:a");
+            }
+        }
+        assert_eq!(artifact_events, 4);
+    }
+
+    #[test]
+    fn list_artifacts_rejects_unknown_task() {
+        let (_dir, s) = store();
+        let err = s
+            .list_artifacts("thr-1", "T-9999")
+            .expect_err("unknown task should fail");
+        assert!(matches!(err, Error::NotFound(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn list_artifacts_synthesizes_legacy_snapshot() {
+        let (_dir, s) = store();
+        s.create("thr-1", mk_draft("legacy artifacts")).unwrap();
+        s.patch(
+            "thr-1",
+            "T-0001",
+            TaskPatch {
+                artifacts: Some(Artifacts {
+                    files: vec!["src/main.rs".into()],
+                    turns: vec!["turn-3".into()],
+                    diff: Some("diff".into()),
+                    metadata: vec![],
+                }),
+                ..Default::default()
+            },
+            "human",
+        )
+        .unwrap();
+
+        let artifacts = s.list_artifacts("thr-1", "T-0001").unwrap();
+        assert_eq!(artifacts.len(), 3);
+        assert_eq!(artifacts[0].kind, ArtifactKind::File);
+        assert_eq!(artifacts[1].kind, ArtifactKind::Log);
+        assert_eq!(artifacts[2].kind, ArtifactKind::Diff);
+        assert_eq!(artifacts[0].produced_by, "human");
+    }
+
+    #[test]
+    fn submit_hybrid_artifacts_emits_metadata_and_legacy_entries() {
+        let (_dir, s) = store();
+        s.create("thr-1", mk_draft("hybrid artifacts")).unwrap();
+        s.claim("thr-1", "T-0001", "agent:a", Duration::from_secs(60))
+            .unwrap();
+        s.patch(
+            "thr-1",
+            "T-0001",
+            TaskPatch {
+                status: Some(TaskStatus::InProgress),
+                ..Default::default()
+            },
+            "agent:a",
+        )
+        .unwrap();
+        let mut rx = s.subscribe("thr-1");
+
+        let task = s
+            .submit(
+                "thr-1",
+                "T-0001",
+                Artifacts {
+                    files: vec!["src/lib.rs".into()],
+                    turns: vec!["turn-7".into()],
+                    diff: Some("--- diff".into()),
+                    metadata: vec![Artifact {
+                        artifact_id: "custom-a".into(),
+                        task_id: "wrong-task".into(),
+                        kind: ArtifactKind::TestOutput,
+                        path: "test-output.txt".into(),
+                        produced_by: "".into(),
+                        created_at: Utc::now(),
+                        summary: "".into(),
+                    }],
+                },
+                "agent:a",
+            )
+            .unwrap();
+
+        assert_eq!(task.artifacts.metadata.len(), 4);
+        assert_eq!(task.artifacts.metadata[0].artifact_id, "custom-a");
+        assert_eq!(task.artifacts.metadata[0].task_id, "T-0001");
+        assert_eq!(task.artifacts.metadata[0].produced_by, "agent:a");
+
+        let mut artifact_events = 0;
+        while let Ok(ev) = rx.try_recv() {
+            if matches!(ev, TaskEvent::ArtifactAdded { .. }) {
+                artifact_events += 1;
+            }
+        }
+        assert_eq!(artifact_events, 4);
     }
 
     fn mk_draft(title: &str) -> TaskDraft {

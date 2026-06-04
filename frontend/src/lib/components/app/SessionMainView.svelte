@@ -19,7 +19,7 @@
 -->
 <script lang="ts">
   import { api, ApiError, type SessionMeta } from '$lib/api/client';
-  import { Paperclip, RotateCcw, Send } from '$lib/icons';
+  import { Bot, Paperclip, RotateCcw, Send, Terminal } from '$lib/icons';
   import { toast } from 'svelte-sonner';
   import TerminalView from './TerminalView.svelte';
   import HarnessIcons from './HarnessIcons.svelte';
@@ -34,6 +34,8 @@
 
   interface Props {
     session: SessionMeta | null;
+    relatedSessions?: SessionMeta[];
+    onSelectSession?: (sessionId: string) => void;
     /** Notified after a Restart with the new session id so the parent
      *  can update its selection. */
     onSessionReplaced?: (newSessionId: string) => void;
@@ -41,7 +43,13 @@
     onSessionKilled?: (sessionId: string) => void;
   }
 
-  let { session, onSessionReplaced, onSessionKilled }: Props = $props();
+  let {
+    session,
+    relatedSessions = [],
+    onSelectSession,
+    onSessionReplaced,
+    onSessionKilled
+  }: Props = $props();
 
   let input = $state('');
   let sending = $state(false);
@@ -55,6 +63,26 @@
   const k = $derived(session ? kindChip(session.kind) : null);
   const u = $derived(uiStatus(session));
   const stopped = $derived(session ? isTerminal(session.status) : true);
+  const sessionTabs = $derived.by<SessionMeta[]>(() => {
+    if (!session || relatedSessions.length <= 1) return [];
+    const seen = new Set<string>();
+    return relatedSessions.filter((s) => {
+      if (seen.has(s.id)) return false;
+      seen.add(s.id);
+      return true;
+    });
+  });
+
+  function isRootSession(s: SessionMeta): boolean {
+    return !s.parent_session_id || s.parent_session_id === s.id;
+  }
+
+  function tabLabel(s: SessionMeta): string {
+    if (isRootSession(s) && (s.kind === 'zeus' || s.role === 'zeus-orchestrator')) {
+      return 'Zeus session';
+    }
+    return s.role ?? s.kind;
+  }
 
   async function sendInput() {
     if (!session || !input || sending || stopped) return;
@@ -250,6 +278,43 @@
         </div>
       </div>
     </header>
+
+    {#if sessionTabs.length > 0}
+      <nav
+        class="flex h-10 shrink-0 items-center gap-1 overflow-x-auto border-b px-3"
+        style="background: var(--surface-window); border-color: var(--border-subtle);"
+        aria-label="Session tree"
+      >
+        {#each sessionTabs as tab (tab.id)}
+          {@const selectedTab = tab.id === session.id}
+          {@const rootTab = isRootSession(tab)}
+          <button
+            type="button"
+            onclick={() => onSelectSession?.(tab.id)}
+            class="inline-flex h-7 max-w-[180px] shrink-0 items-center gap-1.5 rounded-md border px-2.5 text-[11px] font-medium transition-colors"
+            style="
+              border-color: {selectedTab ? 'var(--accent-soft-border)' : 'var(--border-subtle)'};
+              background: {selectedTab ? 'var(--accent-soft)' : 'var(--surface-titlebar)'};
+              color: {selectedTab ? 'var(--accent)' : 'var(--fg-muted)'};
+            "
+            title={`${rootTab ? 'Root session' : 'Child session'} · ${tab.kind} · ${tab.id}`}
+            aria-current={selectedTab ? 'page' : undefined}
+          >
+            {#if rootTab}
+              <Terminal class="h-3.5 w-3.5 shrink-0" />
+            {:else}
+              <Bot class="h-3.5 w-3.5 shrink-0" />
+            {/if}
+            <span class="min-w-0 truncate">{tabLabel(tab)}</span>
+            {#if !rootTab && tab.task_id}
+              <span class="shrink-0 font-mono text-[10px]" style="color: var(--fg-muted);">
+                {tab.task_id}
+              </span>
+            {/if}
+          </button>
+        {/each}
+      </nav>
+    {/if}
 
     <!-- Window frame (macOS dots + cwd line + terminal) -->
     <div class="flex min-h-0 flex-1 flex-col p-3">

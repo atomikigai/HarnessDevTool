@@ -63,7 +63,7 @@ Audit rápido del 2026-05-27:
 - [ ] Audit log para fallbacks `quota_exceeded` / `runtime_error`.
   - [x] Audit append-only para fallbacks de fallos inmediatos de spawn clasificados.
 - [x] `POST /api/threads/:tid/sessions { kind: "zeus" }` deja de devolver 400 BadRequest y resuelve a Codex como CLI principal.
-- [ ] UI: tab carrusel principal "Zeus session" + sub-tabs por hija con `parent_session_id`.
+- [x] UI: tab carrusel principal "Zeus session" + sub-tabs por hija con `parent_session_id`.
 - [ ] Test de aceptación: dado un goal sintético, verificar que cada rol se delega al CLI esperado y que el fallback dispara cuando el primario está bloqueado.
 
 ### Backend — authorization (Q9 follow-ups)

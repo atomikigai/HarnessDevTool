@@ -103,6 +103,16 @@
       : null
   );
 
+  const selectedSessionTree = $derived.by<SessionMeta[]>(() => {
+    if (!selectedSession) return [];
+    const rootId = selectedSession.root_session_id ?? selectedSession.parent_session_id ?? selectedSession.id;
+    const root = allSessions.find((s) => s.id === rootId) ?? selectedSession;
+    const children = allSessions
+      .filter((s) => s.id !== root.id && (s.root_session_id === root.id || s.parent_session_id === root.id))
+      .sort((a, b) => (a.started_at < b.started_at ? -1 : 1));
+    return [root, ...children];
+  });
+
   const readiness = $derived(selectedThread?.readiness ?? null);
 
   // Per-thread task progress — only computed for the currently-selected
@@ -350,7 +360,13 @@
       {onToggleCollapsed}
       {progressByThread}
     />
-    <SessionMainView session={selectedSession} {onSessionReplaced} {onSessionKilled} />
+    <SessionMainView
+      session={selectedSession}
+      relatedSessions={selectedSessionTree}
+      onSelectSession={onSelect}
+      {onSessionReplaced}
+      {onSessionKilled}
+    />
     <SessionRightPanel
       session={selectedSession}
       onChildSelected={(cid) => (selectedSessionId = cid)}

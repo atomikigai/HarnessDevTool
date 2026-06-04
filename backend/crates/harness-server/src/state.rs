@@ -386,6 +386,8 @@ impl ManagerSpawner {
         match role_cli {
             harness_core::agents::AgentKind::Claude => Ok(AgentKind::Claude),
             harness_core::agents::AgentKind::Codex => Ok(AgentKind::Codex),
+            harness_core::agents::AgentKind::Cursor => Ok(AgentKind::Cursor),
+            harness_core::agents::AgentKind::Antigravity => Ok(AgentKind::Antigravity),
             harness_core::agents::AgentKind::Generic => Self::kind_from_request(requested_kind)
                 .ok_or_else(|| format!("unknown kind: {requested_kind}")),
         }

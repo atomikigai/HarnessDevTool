@@ -3,9 +3,9 @@
 //! list; the sessions route looks them up by name to inject an initial prompt
 //! into the spawned PTY.
 //!
-//! Storage: `<home>/profiles/default/roles/*.toml`. On first load with an
-//! empty/missing directory we materialize three baseline templates so the user
-//! has a starting point.
+//! Storage: `<home>/profiles/default/roles/*.toml`. On load we materialize any
+//! missing baseline templates so the user has a starting point without
+//! overwriting customized roles.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -41,9 +41,9 @@ pub struct RolesRegistry {
 }
 
 impl RolesRegistry {
-    /// Scan `<home>/profiles/default/roles/*.toml`. If the directory is empty
-    /// or missing, write three baseline templates and load them. Kept for
-    /// backwards compatibility with tests; prefer [`Self::load_for_profile`].
+    /// Scan `<home>/profiles/default/roles/*.toml` and write any missing
+    /// baseline templates. Kept for backwards compatibility with tests; prefer
+    /// [`Self::load_for_profile`].
     pub fn load(home: &Path) -> Result<Self, Error> {
         Self::load_for_profile(home, "default")
     }
@@ -54,15 +54,7 @@ impl RolesRegistry {
         fs::create_dir_all(&dir)?;
 
         let mut roles = read_roles(&dir)?;
-        if roles.is_empty() {
-            for r in baseline_roles() {
-                let path = dir.join(format!("{}.toml", r.name));
-                let text =
-                    toml_edit::ser::to_string_pretty(&r).map_err(|e| Error::Toml(e.to_string()))?;
-                fs::write(&path, text)?;
-                roles.push(r);
-            }
-        }
+        materialize_missing_baseline_roles(&dir, &mut roles)?;
 
         Ok(Self {
             dir,
@@ -107,6 +99,25 @@ fn read_roles(dir: &Path) -> Result<Vec<Role>, Error> {
     Ok(out)
 }
 
+fn materialize_missing_baseline_roles(dir: &Path, roles: &mut Vec<Role>) -> Result<(), Error> {
+    for r in baseline_roles() {
+        if roles.iter().any(|existing| existing.name == r.name) {
+            continue;
+        }
+
+        let path = dir.join(format!("{}.toml", r.name));
+        if path.exists() {
+            continue;
+        }
+
+        let text = toml_edit::ser::to_string_pretty(&r).map_err(|e| Error::Toml(e.to_string()))?;
+        fs::write(&path, text)?;
+        roles.push(r);
+    }
+    roles.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(())
+}
+
 fn baseline_roles() -> Vec<Role> {
     vec![
         Role {
@@ -135,6 +146,15 @@ fn baseline_roles() -> Vec<Role> {
             enabled_tools: vec!["task.*".into(), "spec.read".into(), "artifact.read".into()],
             disabled_tools: vec![],
         },
+        Role {
+            name: "frontend-visual".into(),
+            cli: AgentKind::Cursor,
+            prompt_template:
+                "You are the frontend visual worker. Focus on Svelte views, CSS, layout, responsive behavior, polish and visual accessibility."
+                    .into(),
+            enabled_tools: vec!["task.*".into(), "spec.read".into(), "artifact.*".into()],
+            disabled_tools: vec![],
+        },
     ]
 }
 
@@ -151,20 +171,51 @@ mod tests {
         assert!(names.contains(&"planner".to_string()));
         assert!(names.contains(&"generator".to_string()));
         assert!(names.contains(&"evaluator".to_string()));
+        assert!(names.contains(&"frontend-visual".to_string()));
 
         // Files exist on disk.
         let roles_dir = dir.path().join("profiles/default/roles");
         assert!(roles_dir.join("planner.toml").exists());
         assert!(roles_dir.join("generator.toml").exists());
         assert!(roles_dir.join("evaluator.toml").exists());
+        assert!(roles_dir.join("frontend-visual.toml").exists());
 
         // Reload reads from disk without re-creating.
         let reg2 = RolesRegistry::load(dir.path()).unwrap();
-        assert_eq!(reg2.list().len(), 3);
+        assert_eq!(reg2.list().len(), 4);
 
         // get() round trips.
         let g = reg2.get("generator").unwrap();
         assert!(g.prompt_template.contains("generator"));
         assert!(reg2.get("nope").is_none());
+    }
+
+    #[test]
+    fn load_adds_missing_baseline_roles_without_overwriting_existing_roles() {
+        let dir = tempdir().unwrap();
+        let roles_dir = dir.path().join("profiles/default/roles");
+        fs::create_dir_all(&roles_dir).unwrap();
+        fs::write(
+            roles_dir.join("generator.toml"),
+            r#"
+name = "generator"
+cli = "codex"
+prompt_template = "custom generator"
+enabled_tools = ["task.*"]
+disabled_tools = []
+"#,
+        )
+        .unwrap();
+
+        let reg = RolesRegistry::load(dir.path()).unwrap();
+        assert_eq!(reg.get("generator").unwrap().cli, AgentKind::Codex);
+        assert_eq!(
+            reg.get("generator").unwrap().prompt_template,
+            "custom generator"
+        );
+        assert_eq!(reg.list().len(), 4);
+        assert!(roles_dir.join("planner.toml").exists());
+        assert!(roles_dir.join("evaluator.toml").exists());
+        assert!(roles_dir.join("frontend-visual.toml").exists());
     }
 }

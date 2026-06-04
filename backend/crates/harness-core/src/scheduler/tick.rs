@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use chrono::Utc;
 use tokio::task::JoinHandle;
 
-use crate::agents::{Agent, AgentsRegistry};
+use crate::agents::{Agent, AgentKind, AgentsRegistry};
 use crate::budget::{
     ActiveSessionsSource, AgentCost, BudgetStore, BudgetWarning, BudgetWarningSink, CostReporter,
 };
@@ -42,6 +42,13 @@ pub const COOLDOWN_AFTER_VERIFY_FAIL: Duration = Duration::from_secs(60);
 /// Effective role of an agent (with the legacy-default applied).
 fn agent_role(a: &Agent) -> &str {
     a.role.as_deref().unwrap_or("generator")
+}
+
+fn agent_can_generate(a: &Agent) -> bool {
+    matches!(
+        agent_role(a),
+        "generator" | "frontend" | "frontend-worker" | "frontend-visual"
+    )
 }
 
 /// Cooldown key — a specific generator on a specific task in a specific thread.
@@ -350,7 +357,7 @@ fn pick_idle_generator_preferred<'a>(
     preferred_agent_id: Option<&str>,
 ) -> Option<&'a Agent> {
     let eligible = |a: &&Agent| {
-        if agent_role(a) != "generator" {
+        if !agent_can_generate(a) {
             return false;
         }
         if busy.contains(&a.id) {
@@ -465,6 +472,47 @@ fn preferred_generator_for_task(task: &Task, affinity: &HashMap<String, String>)
         .find_map(|(path, agent)| path_matches_task_text(path, &text).then(|| agent.clone()))
 }
 
+fn is_frontend_visual_task(task: &Task) -> bool {
+    let text = task_text(task);
+    let visual_terms = [
+        "frontend",
+        "ui",
+        "screen",
+        "view",
+        "layout",
+        "css",
+        "responsive",
+        "shadcn",
+        "polish",
+        "a11y",
+        "accessibility",
+        "visual",
+        ".svelte",
+        "tailwind",
+    ];
+    let frontend_path = task.write_paths.iter().any(|path| {
+        let path = path.to_ascii_lowercase();
+        path.starts_with("frontend/")
+            || path.ends_with(".svelte")
+            || path.ends_with(".css")
+            || path.contains("/components/")
+    });
+    frontend_path || visual_terms.iter().any(|term| text.contains(term))
+}
+
+fn preferred_frontend_visual_agent(task: &Task, agents: &[Agent]) -> Option<String> {
+    if !is_frontend_visual_task(task) {
+        return None;
+    }
+    agents
+        .iter()
+        .find(|agent| {
+            agent_can_generate(agent)
+                && (agent.kind == AgentKind::Cursor || agent_role(agent) == "frontend-visual")
+        })
+        .map(|agent| agent.id.clone())
+}
+
 fn scheduler_explanation(
     task_id: &str,
     decision: SchedulerDecisionKind,
@@ -500,7 +548,7 @@ fn cooldown_skip_seconds(
 ) -> Option<u64> {
     agents
         .iter()
-        .filter(|a| agent_role(a) == "generator" && !busy.contains(&a.id))
+        .filter(|a| agent_can_generate(a) && !busy.contains(&a.id))
         .filter_map(|a| {
             let key = (tid.to_string(), task_id.to_string(), a.id.clone());
             cooldown
@@ -652,7 +700,8 @@ fn run_assign_pass(
             }
             let cd_snapshot = cooldown.lock().expect("cooldown mutex").clone();
             let pick_now = Instant::now();
-            let preferred = preferred_generator_for_task(t, &affinity);
+            let preferred = preferred_frontend_visual_agent(t, &all_agents)
+                .or_else(|| preferred_generator_for_task(t, &affinity));
             let Some(agent) = pick_idle_generator_preferred(
                 &all_agents,
                 &busy_ids,
@@ -704,7 +753,13 @@ fn run_assign_pass(
                         &t.id,
                         SchedulerDecisionKind::Assigned,
                         if preferred.as_deref() == Some(agent.id.as_str()) {
-                            "Assigned to preferred generator by file affinity"
+                            if agent.kind == AgentKind::Cursor
+                                || agent_role(agent) == "frontend-visual"
+                            {
+                                "Assigned to preferred Cursor frontend visual generator"
+                            } else {
+                                "Assigned to preferred generator by file affinity"
+                            }
                         } else {
                             "Assigned to an idle generator"
                         },
@@ -1447,6 +1502,73 @@ mod tests {
         assert_eq!(
             assigned.scheduler_explanation.unwrap().reason,
             "Assigned to preferred generator by file affinity"
+        );
+    }
+
+    #[test]
+    fn assign_pass_prefers_cursor_for_frontend_visual_task() {
+        use crate::agents::{AgentDraft, AgentsRegistry};
+        use crate::pause::PauseFlag;
+        use crate::tasks::{TaskDraft, TaskStore};
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let store = TaskStore::new(dir.path()).unwrap();
+        let agents = AgentsRegistry::new(dir.path()).unwrap();
+        let pause = PauseFlag::load(dir.path()).unwrap();
+        let codex = agents
+            .create(AgentDraft {
+                kind: AgentKind::Codex,
+                label: "logic".into(),
+                role: Some("generator".into()),
+            })
+            .unwrap();
+        let cursor = agents
+            .create(AgentDraft {
+                kind: AgentKind::Cursor,
+                label: "visual".into(),
+                role: Some("frontend-visual".into()),
+            })
+            .unwrap();
+
+        store
+            .create(
+                "thr-visual",
+                TaskDraft {
+                    title: "Polish responsive layout for settings screen".into(),
+                    parent: None,
+                    depends_on: vec![],
+                    brief: None,
+                    acceptance: vec![],
+                    labels: vec!["frontend".into(), "visual".into(), "a11y".into()],
+                    spec_refs: vec![],
+                    write_paths: vec!["frontend/src/routes/settings/+page.svelte".into()],
+                    forbidden_paths: vec![],
+                    created_by: "human".into(),
+                },
+            )
+            .unwrap();
+
+        let mut prev = StatusSnapshot::new();
+        let cd = Mutex::new(HashMap::new());
+        run_assign_pass(
+            &store,
+            &agents,
+            &pause,
+            3,
+            None,
+            &mut prev,
+            &cd,
+            &NoopSpawner,
+        )
+        .unwrap();
+
+        let assigned = store.get("thr-visual", "T-0001").unwrap();
+        assert_eq!(assigned.assignee.as_deref(), Some(cursor.id.as_str()));
+        assert_ne!(assigned.assignee.as_deref(), Some(codex.id.as_str()));
+        assert_eq!(
+            assigned.scheduler_explanation.unwrap().reason,
+            "Assigned to preferred Cursor frontend visual generator"
         );
     }
 

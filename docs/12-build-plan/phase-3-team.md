@@ -53,7 +53,7 @@ Audit rápido del 2026-05-27:
 
 ### Backend — Zeus orchestrator (work item)
 - [x] Implementar el routing rol → CLI base según `~/.harness/profiles/<p>/roles/*.toml`: `Role.cli` fuerza Claude/Codex y `generic` conserva el kind pedido por el scheduler.
-- [ ] Routing especial frontend visual: tasks de pantallas, CSS, layout,
+- [x] Routing especial frontend visual: tasks de pantallas, CSS, layout,
   responsive, shadcn/polish y a11y visual se delegan a Cursor primero; frontend
   logic/API/stores usa Codex/Claude.
 - [x] Selector con fallback a Claude cuando falta el binario del CLI primario (`reason: binary_missing`).

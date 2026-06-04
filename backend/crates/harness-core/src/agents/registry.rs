@@ -18,6 +18,8 @@ use crate::Error;
 pub enum AgentKind {
     Claude,
     Codex,
+    Cursor,
+    Antigravity,
     Generic,
 }
 
@@ -26,6 +28,8 @@ impl AgentKind {
         match self {
             Self::Claude => "claude",
             Self::Codex => "codex",
+            Self::Cursor => "cursor",
+            Self::Antigravity => "antigravity",
             Self::Generic => "generic",
         }
     }

@@ -114,7 +114,7 @@ Audit rápido del 2026-05-27:
 
 ### Backend — file-based coordination
 - [x] `spec.md` por thread: planner lo crea/mantiene; resto lo lee.
-- [ ] `artifacts/` por task: workers escriben aquí (mounted al sandbox).
+- [x] `artifacts/` por task: workers reciben `artifact_dir` canónico para escribir; el montaje dentro del sandbox queda cubierto por el bloque sandbox.
 - [x] Eventos `spec.changed`, `artifact.added` → SSE → UI.
 
 ### Frontend

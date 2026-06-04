@@ -865,7 +865,7 @@ mod tests {
 
     #[test]
     fn task_create_allows_planner_role() {
-        let (d, _home) = mk_with_role("t-planner-create", "agent:planner", Some("planner"));
+        let (d, home) = mk_with_role("t-planner-create", "agent:planner", Some("planner"));
         let line = r#"{
                 "jsonrpc":"2.0",
                 "id":37,
@@ -880,6 +880,10 @@ mod tests {
         let text = resp["result"]["content"][0]["text"].as_str().unwrap();
         let created: serde_json::Value = serde_json::from_str(text).unwrap();
         assert_eq!(created["status"], "queued");
+        let artifact_dir = created["artifact_dir"].as_str().expect("artifact_dir");
+        assert!(artifact_dir.ends_with("threads/t-planner-create/artifacts/T-0001"));
+        assert!(std::path::Path::new(artifact_dir).is_dir());
+        assert!(std::path::Path::new(artifact_dir).starts_with(&home));
     }
 
     #[test]

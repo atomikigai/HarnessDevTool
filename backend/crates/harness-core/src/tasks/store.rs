@@ -119,6 +119,22 @@ impl TaskStore {
             .join(format!("{task_id}.jsonl")))
     }
 
+    pub fn artifacts_dir(&self, tid: &str, task_id: &str) -> Result<PathBuf, Error> {
+        validate_thread_id(tid).map_err(Error::Validation)?;
+        validate_task_id(task_id).map_err(Error::Validation)?;
+        Ok(self
+            .threads_root()
+            .join(tid)
+            .join("artifacts")
+            .join(task_id))
+    }
+
+    pub fn ensure_artifacts_dir(&self, tid: &str, task_id: &str) -> Result<PathBuf, Error> {
+        let dir = self.artifacts_dir(tid, task_id)?;
+        fs::create_dir_all(&dir)?;
+        Ok(dir)
+    }
+
     fn ensure_thread(
         &self,
         tid: &str,
@@ -313,6 +329,7 @@ impl TaskStore {
                 at: now,
             },
         );
+        let _ = self.ensure_artifacts_dir(tid, &id)?;
         Ok(task)
     }
 
@@ -1186,6 +1203,7 @@ mod tests {
             .unwrap();
         assert_eq!(t.id, "T-0001");
         assert_eq!(t.status, TaskStatus::Queued);
+        assert!(s.artifacts_dir("thr-1", "T-0001").unwrap().is_dir());
         let got = s.get("thr-1", "T-0001").unwrap();
         assert_eq!(got.title, "first");
         let all = s.list("thr-1", ListFilters::default()).unwrap();

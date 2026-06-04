@@ -302,6 +302,26 @@ fn post_task_to_server(
         .map_err(|e| PostTaskError::Decode(e.to_string()))
 }
 
+fn with_artifact_dir(
+    store: &TaskStore,
+    thread_id: &str,
+    mut value: Value,
+) -> Result<Value, String> {
+    let Some(task_id) = value.get("id").and_then(|v| v.as_str()).map(str::to_string) else {
+        return Ok(value);
+    };
+    let dir = store
+        .ensure_artifacts_dir(thread_id, &task_id)
+        .map_err(map_err)?;
+    if let Some(obj) = value.as_object_mut() {
+        obj.insert(
+            "artifact_dir".to_string(),
+            Value::String(dir.display().to_string()),
+        );
+    }
+    Ok(value)
+}
+
 /// `task_create` — primary path: delegate to the harness-server REST endpoint
 /// so the in-process `TaskStore` (the one the SSE stream subscribes to) does
 /// the write. That guarantees the right panel updates without a refresh.
@@ -325,7 +345,7 @@ pub fn create(
         // Delegate to harness-server so the in-process broadcast bus emits
         // `task.created` and SSE subscribers see the new task immediately.
         match post_task_to_server(base, &thread_id, agent_id, api_token, &draft, None) {
-            Ok(value) => return Ok(value),
+            Ok(value) => return with_artifact_dir(store, &thread_id, value),
             Err(PostTaskError::Http(ureq::Error::Transport(e))) => {
                 tracing::warn!(error = %e, "task_create: HTTP delegation failed, falling back to local store");
                 // fall through to local-store path
@@ -335,7 +355,7 @@ pub fn create(
     }
 
     let task = store.create(&thread_id, draft).map_err(map_err)?;
-    Ok(json!(task))
+    with_artifact_dir(store, &thread_id, json!(task))
 }
 
 pub fn propose(
@@ -358,7 +378,7 @@ pub fn propose(
             &draft,
             Some(TaskStatus::Proposed),
         ) {
-            Ok(value) => return Ok(value),
+            Ok(value) => return with_artifact_dir(store, &thread_id, value),
             Err(PostTaskError::Http(ureq::Error::Transport(e))) => {
                 tracing::warn!(error = %e, "task_propose: HTTP delegation failed, falling back to local store");
             }
@@ -367,7 +387,7 @@ pub fn propose(
     }
 
     let task = store.propose(&thread_id, draft).map_err(map_err)?;
-    Ok(json!(task))
+    with_artifact_dir(store, &thread_id, json!(task))
 }
 
 pub fn list(store: &TaskStore, default_thread: &str, args: &Value) -> Result<Value, String> {
@@ -389,7 +409,7 @@ pub fn get(store: &TaskStore, default_thread: &str, args: &Value) -> Result<Valu
     let thread_id = valid_thread_or_default(args, default_thread)?;
     let task_id = valid_task_arg(args)?;
     let t = store.get(thread_id, task_id).map_err(map_err)?;
-    Ok(json!(t))
+    with_artifact_dir(store, thread_id, json!(t))
 }
 
 pub fn claim(store: &TaskStore, default_thread: &str, args: &Value) -> Result<Value, String> {
@@ -401,7 +421,16 @@ pub fn claim(store: &TaskStore, default_thread: &str, args: &Value) -> Result<Va
         .claim(thread_id, task_id, agent_id, Duration::from_secs(ttl_s))
         .map_err(map_err)?
     {
-        ClaimResult::Granted(lease) => Ok(json!({ "ok": true, "lease": lease })),
+        ClaimResult::Granted(lease) => {
+            let artifact_dir = store
+                .ensure_artifacts_dir(thread_id, task_id)
+                .map_err(map_err)?;
+            Ok(json!({
+                "ok": true,
+                "lease": lease,
+                "artifact_dir": artifact_dir.display().to_string(),
+            }))
+        }
         ClaimResult::Busy { holder, until } => Ok(json!({
             "ok": false,
             "busy_holder": holder,
@@ -463,5 +492,5 @@ pub fn submit(
     let t = store
         .submit(thread_id, task_id, artifacts, agent_id)
         .map_err(map_err)?;
-    Ok(json!(t))
+    with_artifact_dir(store, thread_id, json!(t))
 }

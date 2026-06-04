@@ -58,6 +58,24 @@ just test            # tests de ambos stacks
 Copia `.env.example` a `.env` y ajusta `HARNESS_HOME` si no quieres
 `~/.harness`.
 
+## Herramientas disponibles (skills)
+
+El directorio `skills/bundled/` contiene guías de uso para las herramientas instaladas por `just setup`.
+Cada skill describe cuándo usar la herramienta, patrones concretos y cuándo no usarla:
+
+| Skill | Herramienta | Uso principal |
+|---|---|---|
+| `opensrc` | CLI npm | Leer source code de dependencias |
+| `ast-grep` | CLI npm | Búsqueda estructural de código por AST |
+| `difftastic` | CLI cargo | Diffs semánticos sin ruido |
+| `cargo-nextest` | CLI cargo | Tests Rust más rápidos |
+| `cargo-audit` | CLI cargo | Auditoría de CVEs en deps Rust |
+| `pdf-oxide` | CLI cargo | Extracción de PDFs a markdown |
+| `efficient-cli` | CLIs Rust/Go | Búsqueda, selección, HTTP, benchmarks, watchers y streams |
+| `rust-tooling` | CLIs cargo | Calidad, deps, tamaño binario y profiling Rust |
+| `security-tooling` | CLIs Rust/Go/sistema | Secret scanning, CVEs, containers, Dockerfiles y shell |
+| `frontend-testing` | pnpm/Playwright | Validación SvelteKit y E2E acotado con timeouts bajos |
+
 ## CLIs soportados y auth compartida (importante)
 
 El harness sabe spawnear 4 CLIs: `claude`, `codex`, `cursor` (binario

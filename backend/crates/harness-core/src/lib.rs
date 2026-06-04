@@ -21,7 +21,7 @@ pub use budget::{
     CodexStubReporter, CostReporter, RoleCost, SessionCost, SessionCostView, StubReporter,
     TaskCost, Usage,
 };
-pub use events::{Event, Item};
+pub use events::{Event, Item, TimelineEntity, TimelineItem, TimelineReport};
 pub use ids::{validate_path_id, validate_profile_id, validate_task_id, validate_thread_id};
 pub use knowledge::{
     check_pdftotext, ingest_pdf, ingest_text, KnowledgeIngestRequest, KnowledgeIngestResult,
@@ -36,8 +36,9 @@ pub use scheduler::{
 pub use store::{Store, StoreError};
 pub use tasks::{
     AcceptanceCheck, Artifact, ArtifactKind, Artifacts, ClaimResult, HistoryEvent, Lease,
-    ListFilters, SchedulerDecisionKind, SchedulerExplanation, SpecRef, Task, TaskBrief, TaskDraft,
-    TaskEvent, TaskPatch, TaskStatus, TaskStore,
+    ListFilters, ReconcileEntity, ReconcileIssue, ReconcileReport, ReconcileSessionRef,
+    ReconcileSeverity, SchedulerDecisionKind, SchedulerExplanation, SpecRef, Task, TaskBrief,
+    TaskDraft, TaskEvent, TaskPatch, TaskStatus, TaskStore,
 };
 pub use threads::{
     AutonomyProfile, ExecutionMode, Handoff, ReadinessIssue, ReadinessReport, ReadinessStatus,

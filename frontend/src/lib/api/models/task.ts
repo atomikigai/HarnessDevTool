@@ -167,6 +167,52 @@ export interface CreateAgentRequest {
   label: string;
 }
 
+export type ReconcileSeverity = 'info' | 'warning' | 'error';
+
+export interface ReconcileEntity {
+  kind: string;
+  id: string;
+}
+
+export interface ReconcileIssue {
+  kind: string;
+  severity: ReconcileSeverity;
+  entity: ReconcileEntity;
+  message: string;
+  related: ReconcileEntity[];
+}
+
+export interface ReconcileReport {
+  thread_id: string;
+  generated_at: string;
+  task_count: number;
+  session_count: number;
+  artifact_count: number;
+  issues: ReconcileIssue[];
+}
+
+export interface TimelineEntity {
+  kind: string;
+  id: string;
+}
+
+export interface TimelineItem {
+  seq: number;
+  at: number;
+  type: string;
+  actor?: string | null;
+  summary: string;
+  entity?: TimelineEntity | null;
+  payload?: unknown;
+}
+
+export interface TimelineReport {
+  thread_id: string;
+  generated_at: number;
+  event_count: number;
+  items: TimelineItem[];
+}
+
 /** Convenience: status → tone (color category) for badges. */
 export function statusTone(s: TaskStatus): 'neutral' | 'accent' | 'warn' | 'success' | 'danger' {
   switch (s) {

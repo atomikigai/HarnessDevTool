@@ -26,7 +26,7 @@ La sección final ("Roadmap por fases") agrupa el trabajo en tandas ejecutables.
 | T1 | **Path traversal** vía `thread_id`/`task_id`/`profile id` sin validar, concatenados a rutas | core, server, mcp-server | **ALTA** |
 | T2 | **SQL injection** por identificadores sin escapar + gate read-only solo por keyword (bypass con CTE `WITH`) | module-db, mcp-server | **ALTA** |
 | T3 | **API sin autenticación** en endpoints mutadores (spawn, PTY input, SQL) | server | **ALTA** |
-| T4 | **Bug de persistencia de sesión** (estado no sobrevive al reabrir/reiniciar) | session (causa raíz), frontend (carrera de selección) | **ALTA** |
+| T4 | ✅ **Bug de persistencia de sesión** (estado no sobrevive al reabrir/reiniciar) | session (causa raíz), frontend (carrera de selección) | **CERRADO 2026-06-04** |
 | T5 | **I/O bloqueante en rutas async** (lecturas de archivo completas, `block_on`, rescans del scheduler) | core, server, session, module-db | **ALTA** |
 | T6 | **SSE pierde eventos en silencio bajo lag** (`Lagged` → `None` sin resync) | server, session, frontend | **MEDIA** |
 | T7 | **`seq` calculado con `read_events().len()`** → relee todo el log y es racy | server (core lo origina) | **MEDIA** |
@@ -57,8 +57,10 @@ La sección final ("Roadmap por fases") agrupa el trabajo en tandas ejecutables.
 > **Residuales de S10 (MEDIA, NO bloqueantes, pendientes):** `DefaultBodyLimit` global y `TimeoutLayer`
 > de request en `harness-server/app.rs`; rutas absolutas filtradas al cliente. Tracked aparte (no P0).
 >
-> **Gate de dogfooding (CLAUDE.md §6):** 10 P0 ✅ + rehidratación de sesiones (T4) ❌ → **T4 es el
-> único bloqueador restante.** T7 (`seq` racy) también cerrado por Task 15.
+> **Gate de dogfooding (CLAUDE.md §6):** 10 P0 ✅ + rehidratación de sesiones (T4) ✅.
+> T4 queda cerrado para historial/selección/read-only tras reinicio; reattach interactivo al mismo PTY
+> no se soporta con el modelo actual y las sesiones rehidratadas se exponen como no-live.
+> T7 (`seq` racy) también cerrado por Task 15.
 
 ### S1. Path traversal por IDs sin validar (T1) — **ALTA / M**
 `thread_id`, `task_id` y `profile id` fluyen del agente/API directamente a `join(...)`.
@@ -115,7 +117,15 @@ La sección final ("Roadmap por fases") agrupa el trabajo en tandas ejecutables.
 
 ## P1 — Correctitud y rendimiento
 
-### El bug conocido: persistencia de estado de sesión (T4)
+### El bug conocido: persistencia de estado de sesión (T4) — ✅ cerrado 2026-06-04
+
+Estado implementado:
+- `Manager::load_existing()` escanea `sessions_root`, carga `meta.json` y conserva sesiones detached en vistas read-only.
+- `GET /api/threads` usa `manager.list_metas()` para listar sesiones live + detached.
+- `output.log` sigue disponible para replay/catch-up de sesiones detached.
+- Una sesión rehidratada con `status=running` se reconcilia a `exited` aunque el PID exista, porque el harness ya no tiene writer/killer/read tasks para controlar ese PTY.
+- `GET /api/sessions/:sid/children` lista hijos detached desde metadata para mantener visible el árbol de agentes tras reinicio.
+- Tests cubren rehidratación de sesión exited, running huérfana, running con PID vivo y merge live/detached.
 
 **Causa raíz (backend)** — `harness-session/src/manager.rs:84-95` — `Manager::new` solo crea un `DashMap` vacío; `all()` (`:114`) es la **única** fuente para listar sesiones (`harness-server/routes/threads.rs:75`). Tras reiniciar el server (o el hot-reload de perfil que mata todas las sesiones, `main.rs:85`) el mapa está vacío aunque `meta.json` + `output.log` siguen en disco. **Nada rehidrata desde disco.**
 - **Fix**: `Manager::load_existing()` que escanee `sessions_root`, lea cada `meta.json` e inserte una representación "detached/exited" (necesita un tipo read-only o `enum { Live, Detached(SessionMeta) }`, porque `AgentSession` exige `pty_writer`/`killer` vivos). Reconciliar `Running` obsoleto vía `pid_alive` al cargar (`session.rs:307-311`). — **ALTA / L**
@@ -208,8 +218,8 @@ La sección final ("Roadmap por fases") agrupa el trabajo en tandas ejecutables.
 > Recomendado tras la Fase A: correr `/security-review` sobre el diff.
 
 ### Fase B — El bug de sesión + correctitud caliente (P1)
-1. T4 `Manager::load_existing()` + reconciliación `pid_alive` (backend).
-2. T4 Máquina de estados de selección del frontend + `profileResolved`.
+1. ✅ T4 `Manager::load_existing()` + sesiones detached no-live (backend).
+2. ✅ T4 selección frontend estable con sesiones rehidratadas.
 3. Ciclo de vida de tareas de fondo de sesión (handles + shutdown) y carrera kill/exit.
 4. Reload aborta watchers/ticker; approval RAII cleanup; lock poisoning → parking_lot.
 5. `module-db` fuga de lease (`drop_lease_async`) y `PoolCache.locks`.

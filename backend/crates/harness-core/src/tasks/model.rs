@@ -246,6 +246,76 @@ pub struct SchedulerExplanation {
     pub at: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[cfg_attr(feature = "ts-export", derive(TS))]
+#[cfg_attr(feature = "ts-export", ts(export, export_to = "../../../bindings/"))]
+#[serde(rename_all = "snake_case")]
+pub enum ReconcileSeverity {
+    Info,
+    Warning,
+    Error,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[cfg_attr(feature = "ts-export", derive(TS))]
+#[cfg_attr(feature = "ts-export", ts(export, export_to = "../../../bindings/"))]
+pub struct ReconcileEntity {
+    pub kind: String,
+    pub id: String,
+}
+
+impl ReconcileEntity {
+    pub fn new(kind: impl Into<String>, id: impl Into<String>) -> Self {
+        Self {
+            kind: kind.into(),
+            id: id.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[cfg_attr(feature = "ts-export", derive(TS))]
+#[cfg_attr(feature = "ts-export", ts(export, export_to = "../../../bindings/"))]
+pub struct ReconcileIssue {
+    pub kind: String,
+    pub severity: ReconcileSeverity,
+    pub entity: ReconcileEntity,
+    pub message: String,
+    #[serde(default)]
+    pub related: Vec<ReconcileEntity>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[cfg_attr(feature = "ts-export", derive(TS))]
+#[cfg_attr(feature = "ts-export", ts(export, export_to = "../../../bindings/"))]
+pub struct ReconcileSessionRef {
+    pub session_id: String,
+    pub thread_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_session_id: Option<String>,
+    #[serde(default)]
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[cfg_attr(feature = "ts-export", derive(TS))]
+#[cfg_attr(feature = "ts-export", ts(export, export_to = "../../../bindings/"))]
+pub struct ReconcileReport {
+    pub thread_id: String,
+    pub generated_at: DateTime<Utc>,
+    pub task_count: usize,
+    pub session_count: usize,
+    pub artifact_count: usize,
+    #[serde(default)]
+    pub issues: Vec<ReconcileIssue>,
+}
+
 /// Full task document — 1:1 with the on-disk TOML.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[cfg_attr(feature = "ts-export", derive(TS))]

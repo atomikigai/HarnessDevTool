@@ -62,8 +62,8 @@ fi
 # --- Recordatorio de seguridad ---
 if [ -f "$improvement" ]; then
   echo "## Recordatorio"
-  echo "- Hay hallazgos de seguridad pendientes (P0/P1) en \`$improvement\`."
-  echo "- Dogfooding sigue bloqueado hasta cerrar los P0 y que las sesiones rehidraten (CLAUDE.md §6)."
+  echo "- Revisa residuales P1/P2 en \`$improvement\` antes de abrir trabajo grande."
+  echo "- Gate histórico de dogfooding cerrado: P0 y rehidratación T4 están resueltos (CLAUDE.md §6)."
   echo
 fi
 

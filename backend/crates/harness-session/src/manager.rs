@@ -9,7 +9,7 @@ use crate::errors::SessionError;
 use crate::kind::AgentKind;
 use crate::meta::{SessionMeta, SessionStatus};
 use crate::output::OutputWriter;
-use crate::session::{persist_meta, pid_alive, AgentSession};
+use crate::session::{persist_meta, AgentSession};
 
 const DEFAULT_CLAUDE_MODEL: &str = "claude-opus-4-7";
 const DEFAULT_CLAUDE_EFFORT: &str = "medium";
@@ -157,9 +157,11 @@ impl Manager {
             if meta.root_session_id.is_empty() {
                 meta.root_session_id = meta.id.clone();
             }
-            if meta.status == SessionStatus::Running
-                && (meta.pid == 0 || !pid_alive(meta.pid as i32))
-            {
+            if meta.status == SessionStatus::Running {
+                // After a backend restart we only have persisted metadata, not
+                // the PTY writer/killer/read tasks needed to control the
+                // process. Even if the pid still exists, this manager cannot
+                // interact with it, so expose it as non-live state.
                 meta.status = SessionStatus::Exited;
                 if let Err(e) = persist_meta(&dir, &meta) {
                     tracing::warn!(
@@ -954,6 +956,36 @@ mod tests {
 
         let persisted: SessionMeta = serde_json::from_slice(
             &std::fs::read(sessions_root.join("orphan-1").join("meta.json"))
+                .expect("read persisted meta"),
+        )
+        .expect("parse persisted meta");
+        assert_eq!(persisted.status, SessionStatus::Exited);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn load_existing_reconciles_running_even_if_pid_is_alive() {
+        let root = temp_test_dir("rehydrate-live-pid-detached");
+        let sessions_root = root.join("sessions");
+        let meta = test_meta(
+            "detached-live-pid",
+            "thread-1",
+            SessionStatus::Running,
+            std::process::id(),
+        );
+        write_meta(&sessions_root, &meta);
+
+        let manager = Manager::new(&sessions_root).expect("manager");
+        manager.load_existing().expect("load existing");
+
+        assert!(manager.get("detached-live-pid").is_none());
+        let metas = manager.list_metas().await;
+        assert_eq!(metas.len(), 1);
+        assert_eq!(metas[0].status, SessionStatus::Exited);
+
+        let persisted: SessionMeta = serde_json::from_slice(
+            &std::fs::read(sessions_root.join("detached-live-pid").join("meta.json"))
                 .expect("read persisted meta"),
         )
         .expect("parse persisted meta");

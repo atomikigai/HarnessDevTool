@@ -139,12 +139,12 @@ del equipo; Frontend, Doc-agent, Revisor y QA son subagentes Claude nativos.
 ## 6. Dogfooding — hito condicionado (aún no)
 
 La meta es que el harness se desarrolle a sí mismo (usar HarnessDevTool para mejorar
-HarnessDevTool). **Hoy es prematuro**: hay auditoría de seguridad con P0 abiertos y un bug de
-persistencia de sesiones tras reinicio (ver `docs/12-build-plan/improvement-plan.md`).
+HarnessDevTool). El gate histórico era: 10 P0 cerrados **y** sesiones rehidratadas tras
+reinicio; ambos quedaron cerrados el 2026-06-04 (ver `docs/12-build-plan/improvement-plan.md`).
 
-**Criterio para graduar a dogfooding:** los 10 P0 cerrados **y** las sesiones rehidratan tras
-reinicio. Hasta entonces se construye con el equipo nativo de §1. Buen criterio de madurez: *el
-harness está listo cuando puede desarrollarse a sí mismo.*
+**Criterio operativo para dogfooding:** iniciar con tareas pequeñas y reversibles, manteniendo
+review/QA externo hasta que replay/debug y reconciliación den suficiente observabilidad. Buen
+criterio de madurez: *el harness está listo cuando puede desarrollarse a sí mismo.*
 
 ---
 

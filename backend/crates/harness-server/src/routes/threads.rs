@@ -8,9 +8,10 @@ use axum::routing::get;
 use axum::{Json, Router};
 use chrono::Utc;
 use harness_core::{
-    AutonomyProfile, Event, ExecutionMode, Item, ReadinessIssue, ReadinessReport, Thread,
+    AutonomyProfile, Event, ExecutionMode, Item, ReadinessIssue, ReadinessReport,
+    ReconcileReport, ReconcileSessionRef, Thread,
 };
-use harness_session::SessionMeta;
+use harness_session::{SessionMeta, SessionStatus};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -48,6 +49,14 @@ pub struct ReadinessQuery {
     pub cwd: Option<String>,
 }
 
+#[derive(Debug, Default, Deserialize)]
+pub struct TimelineQuery {
+    #[serde(default)]
+    pub after: Option<u64>,
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct SetAutonomyRequest {
     pub autonomy_profile: AutonomyProfile,
@@ -60,6 +69,8 @@ pub fn router() -> Router<Arc<AppState>> {
             "/api/threads/:id/readiness",
             get(get_readiness).post(recalculate_readiness),
         )
+        .route("/api/threads/:id/reconcile", get(reconcile_thread))
+        .route("/api/threads/:id/timeline", get(get_timeline))
         .route(
             "/api/threads/:id/autonomy",
             axum::routing::post(set_autonomy),
@@ -112,6 +123,62 @@ async fn create_thread(
             readiness,
         }),
     ))
+}
+
+async fn reconcile_thread(
+    State(state): State<Arc<AppState>>,
+    AxumPath(id): AxumPath<String>,
+) -> Result<Json<ReconcileReport>, ApiError> {
+    let sessions = state
+        .manager
+        .list_metas()
+        .await
+        .into_iter()
+        .filter(|meta| meta.thread_id == id)
+        .map(session_ref)
+        .collect();
+    Ok(Json(state.tasks.reconcile(&id, sessions)?))
+}
+
+async fn get_timeline(
+    State(state): State<Arc<AppState>>,
+    AxumPath(id): AxumPath<String>,
+    Query(q): Query<TimelineQuery>,
+) -> Result<Json<harness_core::TimelineReport>, ApiError> {
+    let mut report = state.store.read_timeline(&id)?;
+    if q.after.is_some() || q.limit.is_some() {
+        let after = q.after.unwrap_or(0);
+        let limit = q.limit.unwrap_or(200).clamp(1, 1000);
+        report.items = report
+            .items
+            .into_iter()
+            .filter(|item| q.after.is_none_or(|_| item.seq > after))
+            .take(limit)
+            .collect();
+        report.event_count = report.items.len();
+    }
+    Ok(Json(report))
+}
+
+fn session_ref(meta: SessionMeta) -> ReconcileSessionRef {
+    ReconcileSessionRef {
+        session_id: meta.id,
+        thread_id: meta.thread_id,
+        task_id: meta.task_id,
+        parent_session_id: meta.parent_session_id,
+        owner_session_id: meta.owner_session_id,
+        root_session_id: if meta.root_session_id.is_empty() {
+            None
+        } else {
+            Some(meta.root_session_id)
+        },
+        status: match meta.status {
+            SessionStatus::Running => "running",
+            SessionStatus::Exited => "exited",
+            SessionStatus::Killed => "killed",
+        }
+        .into(),
+    }
 }
 
 async fn set_autonomy(

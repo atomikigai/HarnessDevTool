@@ -17,13 +17,105 @@ Modelo operativo: ver [`docs/teamwork/OPERATING_MODEL.md`](./OPERATING_MODEL.md)
 
 | Campo | Valor |
 |---|---|
+| **Tarea** | Ninguna |
+| **Estado** | `IDLE` — Task 23 cerrada; próxima sugerida: Task 24 — Tipos TS generados desde Rust para tasks. |
+| **Objetivo** | Esperando apertura explícita de la siguiente tarea. |
+| **Alcance / archivos** | N/A |
+| **Responsables** | Planner/Codex. |
+| **Criterio de aceptación** | N/A |
+| **Checks obligatorios** | N/A |
+
+## Última cerrada — Task 23
+
+| Campo | Valor |
+|---|---|
+| **Tarea** | Task 23 — Replay/debug timeline |
+| **Estado** | ✅ `DONE` — implementada por Codex el 2026-06-04; auditoría auxiliar (`Sartre`) incorporada. |
+| **Objetivo** | Exponer una vista reconstruible de un thread completo desde eventos append-only y metadata relacionada para depurar qué pasó sin leer logs crudos. |
+| **Alcance / archivos** | Backend/core timeline model/store helper; server endpoint por thread; frontend vista compacta de timeline. |
+| **Responsables** | Planner/Codex. Subagente auxiliar: `Sartre`. |
+| **Criterio de aceptación** | ✅ timeline desde `events.jsonl`; ✅ items con seq/type/actor/at/summary/entity/payload; ✅ endpoint `/api/threads/:tid/timeline`; ✅ UI `/threads/:id/timeline`; ✅ tests de orden y summary. |
+| **Checks corridos** | ✅ `cargo test -p harness-core -p harness-server`; ✅ `just gen-types`; ✅ `pnpm --dir frontend check`; ✅ `just test`. |
+
+### Contrato breve — Task 23
+
+1. Timeline es read-only y append-only: reconstruye, no repara ni normaliza historial.
+2. `seq` del evento append-only manda sobre timestamps para orden.
+3. El payload raw queda disponible, pero la UI muestra resumen compacto.
+4. Eventos legacy sin envelope deben seguir visibles con fallback razonable.
+5. No mezclar transcript PTY completo en este slice; enlazar sesiones/artifacts, no duplicar blobs.
+
+### Handoff Implementación — Codex 2026-06-04
+
+**Archivos tocados:**
+- `backend/crates/harness-core/src/{events/mod.rs,store/mod.rs,lib.rs}`
+- `backend/crates/harness-server/src/routes/threads.rs`
+- `frontend/src/lib/{api/models/task.ts,icons.ts}`
+- `frontend/src/routes/threads/[id]/{tasks/+page.svelte,timeline/+page.svelte}`
+
+**Implementado:**
+- `TimelineEntity`, `TimelineItem`, `TimelineReport` exportables.
+- `TimelineItem::from_event` resume eventos conocidos (`task.*`, `artifact.added`, `spec.changed`, readiness, handoff, capability) y mantiene eventos legacy visibles.
+- `Store::read_timeline` ordena por `seq` desde `events.jsonl`.
+- Endpoint `GET /api/threads/:tid/timeline?after=<seq>&limit=<n>`.
+- Vista `/threads/:id/timeline` con filtro por entidad y payload raw colapsable.
+- Acceso desde la vista Tasks mediante icono de timeline.
+
+**Handoff de agente:**
+- `Sartre`: recomendó separar thread events de transcript/output, usar `seq` como orden canónico, mantener payload raw pero normalizar summary/entity en backend, y evitar incluir PTY raw en este slice.
+
+## Cerrada anterior — Task 22
+
+| Campo | Valor |
+|---|---|
+| **Tarea** | Task 22 — Reconciliador de estado |
+| **Estado** | ✅ `DONE` — implementada por Codex el 2026-06-04; auditoría auxiliar backend (`Nietzsche`) incorporada. |
+| **Objetivo** | Detectar inconsistencias entre task/session/artifact para que planner, evaluator y replay puedan distinguir estado válido de drift o corrupción recuperable. |
+| **Alcance / archivos** | Backend/core reconciler y task store; endpoint de thread; UI compacta en Tasks; hardening relacionado de T4 en sesiones rehidratadas. |
+| **Responsables** | Planner/Codex. Subagentes auxiliares: `Nietzsche` (Task 22) y `Plato` (T4). |
+| **Criterio de aceptación** | ✅ referencias rotas task↔session y task↔artifact; ✅ no reescribe historial append-only; ✅ reporte machine-readable con severidad/entidad; ✅ `GET /api/threads/:tid/reconcile`; ✅ tests de estado consistente, artifact mismatch/duplicado y sesión/task desalineada. |
+| **Checks corridos** | ✅ `cargo test -p harness-core`; ✅ `cargo test -p harness-server`; ✅ `cargo test -p harness-session -p harness-server`; ✅ `just gen-types`; ✅ `pnpm --dir frontend check`; ✅ `just test`. |
+
+### Contrato breve — Task 22
+
+1. El reconciliador reporta drift; cualquier reparación futura debe entrar como evento append-only separado.
+2. No inferir relaciones por parsing de transcript si ya existe metadata estructurada (`task_id`, artifacts metadata, handoffs).
+3. Mantener compatibilidad con sesiones legacy sin `task_id` y artifacts legacy sintetizados.
+4. El reporte debe ser estable para UI/replay: `kind`, `severity`, `entity`, `message`, `related`.
+5. Evitar scans globales caros en rutas calientes; recalcular bajo demanda o en tick controlado.
+
+### Handoff Implementación — Codex 2026-06-04
+
+**Archivos tocados:**
+- `backend/crates/harness-core/src/tasks/{model.rs,mod.rs,store.rs,reconcile.rs}`
+- `backend/crates/harness-core/src/lib.rs`
+- `backend/crates/harness-server/src/routes/{threads.rs,sessions.rs}`
+- `backend/crates/harness-session/src/manager.rs`
+- `frontend/src/lib/api/models/task.ts`
+- `frontend/src/routes/threads/[id]/tasks/+page.svelte`
+
+**Implementado:**
+- `ReconcileReport`/`ReconcileIssue`/`ReconcileSessionRef` y severidades exportables.
+- Reconciliador puro que detecta refs de tasks rotas, artifacts inconsistentes, duplicados y sesiones apuntando a tasks inexistentes.
+- `TaskStore::reconcile` y endpoint `GET /api/threads/:tid/reconcile`.
+- Barra compacta en Tasks con resumen de consistencia.
+- T4 hardening: sesiones rehidratadas desde disco pasan de `running` a `exited` aunque el PID exista, porque el harness no tiene handle PTY; children route lista hijos detached por metadata.
+
+**Handoff de agentes:**
+- `Nietzsche`: recomendó reporte sin reparación, endpoint por thread y tests core sobre refs rotas.
+- `Plato`: confirmó que T4 estaba parcialmente cerrado y señaló el riesgo de sesiones detached mostradas como `running`; se aplicó la opción conservadora sin nuevo status.
+
+## Cerrada anterior — Task 21
+
+| Campo | Valor |
+|---|---|
 | **Tarea** | Task 21 — Budget por task/agente |
-| **Estado** | `OPEN` — pendiente inicializar auditoría antes de implementar. |
+| **Estado** | ✅ `DONE` — implementada en commit `e21710d` (`Implement task budget attribution`) y presente en `main`/`origin/main`. |
 | **Objetivo** | Atribuir costo por thread/session/task/role y retries para que planner pueda limitar gasto real y comparar eficiencia por agente. |
-| **Alcance / archivos** | Backend/core budget reporter/store/scheduler/session metadata/task linkage; server/API si aplica; frontend paneles de budget/task; tests de agregación y compat. |
-| **Responsables** | Planner/Codex. Usar auditoría auxiliar backend/frontend antes del primer patch. |
-| **Criterio de aceptación** | (1) el budget conserva breakdown por agente/rol y puede asociarse a task cuando hay metadata; (2) retries/reasignaciones no duplican costo; (3) scheduler/pausa usan datos agregados correctamente; (4) UI muestra costo compacto por thread/task/agente; (5) tests cubren sesiones sin task y sesiones con task. |
-| **Checks obligatorios** | `cargo test -p harness-core -p harness-mcp-server -p harness-server`; `just gen-types` si cambian tipos exportados; `pnpm check`; `just test` al cierre. |
+| **Alcance / archivos** | Backend/core budget reporter/store/scheduler/session metadata/task linkage; server/API; frontend paneles de budget/task. |
+| **Responsables** | Planner/Codex. |
+| **Criterio de aceptación** | ✅ budget con breakdown por agente/rol y task cuando hay metadata; ✅ compat con sesiones sin task; ✅ scheduler usa datos agregados; ✅ UI muestra costo compacto por thread/task/agente. |
+| **Checks corridos** | No re-ejecutados en esta sesión; commit ya está integrado y pusheado a `main`. |
 
 ### Contrato breve — Task 21
 
@@ -33,7 +125,7 @@ Modelo operativo: ver [`docs/teamwork/OPERATING_MODEL.md`](./OPERATING_MODEL.md)
 4. La UI debe mostrar costo como señal operativa compacta, no como reporte financiero exhaustivo.
 5. Cualquier nueva métrica debe poder recalcularse desde estado persistido o eventos append-only.
 
-## Última cerrada — Task 20
+## Cerrada anterior — Task 20
 
 | Campo | Valor |
 |---|---|

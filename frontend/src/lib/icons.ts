@@ -34,6 +34,7 @@ export {
   Link2,
   AlertTriangle,
   Network,
+  History,
   Paperclip,
   RotateCcw,
   Save,

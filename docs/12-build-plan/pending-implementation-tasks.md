@@ -36,9 +36,9 @@ revisar, aprobar y ejecutar sin mezclar scopes.
 19. **Task 18: Artifacts como entidad/evento real** — metadata recuperable para diff, logs, screenshots.
 20. **Task 19: Razones estructuradas en tasks** — blocked/paused/rejected/needs_human.
 21. **Task 20: Scheduler explain/debug** — explicar por qué asignó o saltó una task.
-22. **Task 21: Budget por task/agente** — costo por thread/session/task/role y retries.
-23. **Task 22: Reconciliador de estado** — detectar inconsistencias task/session/artifact.
-24. **Task 23: Replay/debug timeline** — vista reconstruible de un thread completo.
+22. **Task 21: Budget por task/agente** — ejecutada 2026-06-04 en commit `e21710d`; costo por thread/session/task/role y retries con UI compacta.
+23. **Task 22: Reconciliador de estado** — ejecutada 2026-06-04; reporte por thread para inconsistencias task/session/artifact, endpoint `/api/threads/:tid/reconcile`, UI compacta y hardening T4 de sesiones detached.
+24. **Task 23: Replay/debug timeline** — ejecutada 2026-06-04; timeline read-only desde `events.jsonl`, endpoint `/api/threads/:tid/timeline`, UI `/threads/:id/timeline` con filtros y payload raw.
 25. **Task 24: Tipos TS generados desde Rust para tasks** — reemplazar hand-rolled frontend models.
 26. **Task 25: E2E pequeño planner→worker→evaluator** — antes del TODO app challenge completo.
 27. **Task 26: Árbol aislado de sesiones y mailbox de subagentes** — comunicación controlada, multi-nivel y auditable.

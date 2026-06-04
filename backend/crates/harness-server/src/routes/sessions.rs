@@ -772,6 +772,23 @@ pub struct ChildSummary {
     pub detected_state: Option<AgentState>,
 }
 
+fn child_summary(meta: SessionMeta) -> ChildSummary {
+    ChildSummary {
+        session_id: meta.id,
+        parent_session_id: meta.parent_session_id,
+        root_session_id: meta.root_session_id,
+        kind: meta.kind,
+        role: meta.role,
+        owner_session_id: meta.owner_session_id,
+        task_id: meta.task_id,
+        scopes: meta.scopes,
+        status: meta.status,
+        started_at: meta.started_at,
+        pid: meta.pid,
+        detected_state: meta.detected_state,
+    }
+}
+
 fn normalize_child_scopes(mut scopes: Vec<String>, task_id: Option<&str>) -> Vec<String> {
     if let Some(task_id) = task_id {
         scopes.push(format!("task:{task_id}"));
@@ -836,50 +853,22 @@ async fn spawn_child_route(
         .get(&child_sid)
         .ok_or_else(|| ApiError::Internal("child session missing after spawn".into()))?;
     let meta = child.meta().await;
-    Ok((
-        StatusCode::CREATED,
-        Json(ChildSummary {
-            session_id: meta.id,
-            parent_session_id: meta.parent_session_id,
-            root_session_id: meta.root_session_id,
-            kind: meta.kind,
-            role: meta.role,
-            owner_session_id: meta.owner_session_id,
-            task_id: meta.task_id,
-            scopes: meta.scopes,
-            status: meta.status,
-            started_at: meta.started_at,
-            pid: meta.pid,
-            detected_state: meta.detected_state,
-        }),
-    ))
+    Ok((StatusCode::CREATED, Json(child_summary(meta))))
 }
 
 async fn list_children_route(
     State(state): State<Arc<AppState>>,
     Path(parent_sid): Path<String>,
 ) -> Result<Json<Vec<ChildSummary>>, ApiError> {
-    state
-        .manager
-        .get(&parent_sid)
-        .ok_or_else(|| ApiError::NotFound(format!("session {parent_sid}")))?;
+    let metas = state.manager.list_metas().await;
+    if !metas.iter().any(|meta| meta.id == parent_sid) {
+        return Err(ApiError::NotFound(format!("session {parent_sid}")));
+    }
     let mut out: Vec<ChildSummary> = Vec::new();
-    for child in state.manager.children_of(&parent_sid) {
-        let meta = child.meta().await;
-        out.push(ChildSummary {
-            session_id: meta.id,
-            parent_session_id: meta.parent_session_id,
-            root_session_id: meta.root_session_id,
-            kind: meta.kind,
-            role: meta.role,
-            owner_session_id: meta.owner_session_id,
-            task_id: meta.task_id,
-            scopes: meta.scopes,
-            status: meta.status,
-            started_at: meta.started_at,
-            pid: meta.pid,
-            detected_state: meta.detected_state,
-        });
+    for meta in metas {
+        if meta.parent_session_id.as_deref() == Some(parent_sid.as_str()) {
+            out.push(child_summary(meta));
+        }
     }
     Ok(Json(out))
 }

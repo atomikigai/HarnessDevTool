@@ -17,11 +17,14 @@
   import { Button } from '$lib/components/ui/button';
   import { Input } from '$lib/components/ui/input';
   import { budgetStore } from '$lib/stores/budget.svelte';
+  import { apiRequest } from '$lib/api/client';
   import {
     Plus,
     ChevronLeft,
     Loader2,
     CircleAlert,
+    CircleCheck,
+    History,
     ListChecks,
     Network,
     RefreshCw,
@@ -29,13 +32,16 @@
     AlertTriangle
   } from '$lib/icons';
   import { formatDistanceToNow } from 'date-fns';
-  import type { TaskStatus } from '$lib/api/models/task';
+  import type { ReconcileReport, TaskStatus } from '$lib/api/models/task';
 
   const threadId = $derived($page.params.id as string);
 
   let selectedId = $state<string | null>(null);
   let createOpen = $state(false);
   let view = $state<'table' | 'graph'>('table');
+  let reconcileReport = $state<ReconcileReport | null>(null);
+  let reconcileLoading = $state(false);
+  let reconcileError = $state<string | null>(null);
 
   let statusFilter = $state<TaskStatus | ''>('');
   let labelFilter = $state('');
@@ -43,6 +49,12 @@
   const selected = $derived(selectedId ? tasksState.byId(selectedId) : null);
   const budgetEntry = $derived(budgetStore.get(threadId));
   const budgetView = $derived(budgetEntry.view);
+  const reconcileErrors = $derived(
+    reconcileReport?.issues.filter((issue) => issue.severity === 'error').length ?? 0
+  );
+  const reconcileWarnings = $derived(
+    reconcileReport?.issues.filter((issue) => issue.severity === 'warning').length ?? 0
+  );
   const taskCostById = $derived.by(() => {
     const out = new Map<string, { spent: number; sessions: number }>();
     for (const cost of budgetView?.tasks ?? []) {
@@ -58,6 +70,7 @@
 
   onMount(() => {
     tasksState.start(threadId);
+    void loadReconcile();
   });
 
   onDestroy(() => {
@@ -66,8 +79,30 @@
 
   // When the thread id in the URL changes, re-bind the store.
   $effect(() => {
-    if (threadId) tasksState.start(threadId);
+    if (threadId) {
+      tasksState.start(threadId);
+      void loadReconcile();
+    }
   });
+
+  async function loadReconcile() {
+    if (!threadId) return;
+    reconcileLoading = true;
+    reconcileError = null;
+    try {
+      const res = await apiRequest<ReconcileReport>(`/threads/${threadId}/reconcile`);
+      reconcileReport = res.data;
+    } catch (err) {
+      reconcileError = err instanceof Error ? err.message : String(err);
+    } finally {
+      reconcileLoading = false;
+    }
+  }
+
+  function refreshAll() {
+    tasksState.refresh();
+    void loadReconcile();
+  }
 
   function applyFilters() {
     tasksState.setFilters({
@@ -177,9 +212,17 @@
       {#if statusFilter || labelFilter}
         <Button size="sm" variant="ghost" onclick={clearFilters}>clear</Button>
       {/if}
-      <Button size="sm" variant="outline" onclick={() => tasksState.refresh()}>
+      <Button size="sm" variant="outline" onclick={refreshAll}>
         <RefreshCw class="h-3.5 w-3.5" />
       </Button>
+      <a
+        href={`/threads/${threadId}/timeline`}
+        class="inline-flex h-8 w-8 items-center justify-center rounded-md border"
+        style="border-color: var(--border-input); color: var(--fg-muted);"
+        title="Timeline"
+      >
+        <History class="h-3.5 w-3.5" />
+      </a>
       <Button size="sm" onclick={() => (createOpen = true)}>
         <Plus class="h-3.5 w-3.5" /> New task
       </Button>
@@ -203,6 +246,42 @@
     <div class="mt-2">
       <AgentCostBreakdown view={budgetView} />
     </div>
+  </div>
+
+  <div
+    class="flex flex-wrap items-center gap-2 border-b px-4 py-1.5 text-xs"
+    style="background: var(--surface-window); border-color: var(--border-subtle); color: var(--fg-muted);"
+  >
+    {#if reconcileLoading && !reconcileReport}
+      <Loader2 class="h-3.5 w-3.5 animate-spin" />
+      <span>Checking state consistency…</span>
+    {:else if reconcileError}
+      <CircleAlert class="h-3.5 w-3.5" style="color: var(--dot-danger);" />
+      <span style="color: var(--dot-danger);">Reconcile check failed</span>
+      <span class="truncate">{reconcileError}</span>
+    {:else if reconcileReport && reconcileReport.issues.length === 0}
+      <CircleCheck class="h-3.5 w-3.5" style="color: var(--dot-success);" />
+      <span>State consistent</span>
+      <span>{reconcileReport.task_count} tasks</span>
+      <span>{reconcileReport.session_count} sessions</span>
+      <span>{reconcileReport.artifact_count} artifacts</span>
+    {:else if reconcileReport}
+      <AlertTriangle class="h-3.5 w-3.5" style="color: var(--dot-warn);" />
+      <span style="color: var(--dot-warn);">
+        {reconcileReport.issues.length} consistency issue{reconcileReport.issues.length === 1
+          ? ''
+          : 's'}
+      </span>
+      {#if reconcileErrors > 0}
+        <span>{reconcileErrors} error{reconcileErrors === 1 ? '' : 's'}</span>
+      {/if}
+      {#if reconcileWarnings > 0}
+        <span>{reconcileWarnings} warning{reconcileWarnings === 1 ? '' : 's'}</span>
+      {/if}
+      <span class="truncate" title={reconcileReport.issues[0]?.message}>
+        {reconcileReport.issues[0]?.message}
+      </span>
+    {/if}
   </div>
 
   <!-- Body — two panes -->

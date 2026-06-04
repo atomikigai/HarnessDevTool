@@ -8,7 +8,7 @@ use serde::de::DeserializeOwned;
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::events::Event;
+use crate::events::{Event, TimelineItem, TimelineReport};
 use crate::threads::{AutonomyProfile, ExecutionMode, Handoff, ReadinessReport, Thread};
 use crate::{validate_profile_id, validate_task_id, validate_thread_id};
 
@@ -247,6 +247,19 @@ impl Store {
         let f = File::open(&path)?;
         read_jsonl_lossy(BufReader::new(f), &path)
     }
+
+    pub fn read_timeline(&self, thread_id: &str) -> Result<TimelineReport, StoreError> {
+        self.get_thread(thread_id)?;
+        let mut events = self.read_events(thread_id)?;
+        events.sort_by_key(|event| event.seq);
+        let items: Vec<TimelineItem> = events.into_iter().map(TimelineItem::from_event).collect();
+        Ok(TimelineReport {
+            thread_id: thread_id.to_string(),
+            generated_at: Utc::now().timestamp_millis(),
+            event_count: items.len(),
+            items,
+        })
+    }
 }
 
 fn count_jsonl_records(path: &Path) -> Result<u64, StoreError> {
@@ -473,6 +486,49 @@ mod tests {
                 (3, "task.ready"),
             ]
         );
+    }
+
+    #[test]
+    fn read_timeline_returns_ordered_summaries() {
+        let home = tmp_home();
+        let store = Store::new(home.path()).unwrap();
+        let t = store.create_thread(None).unwrap();
+        for (event_type, payload) in [
+            (
+                "task.created",
+                serde_json::json!({ "type": "task.created", "task_id": "T-0001" }),
+            ),
+            (
+                "task.updated",
+                serde_json::json!({
+                    "type": "task.updated",
+                    "task_id": "T-0001",
+                    "fields": ["status"]
+                }),
+            ),
+        ] {
+            store
+                .append_event(
+                    &t.id,
+                    &Event {
+                        seq: 999,
+                        at: 123,
+                        event_type: event_type.into(),
+                        items: vec![],
+                        thread_id: Some(t.id.clone()),
+                        actor: Some("test".into()),
+                        payload: Some(payload),
+                    },
+                )
+                .unwrap();
+        }
+
+        let report = store.read_timeline(&t.id).unwrap();
+        assert_eq!(report.event_count, 2);
+        assert_eq!(report.items[0].seq, 0);
+        assert_eq!(report.items[0].summary, "Created task T-0001");
+        assert_eq!(report.items[1].seq, 1);
+        assert_eq!(report.items[1].summary, "Updated task T-0001: status");
     }
 
     #[test]

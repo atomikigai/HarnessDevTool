@@ -17,8 +17,10 @@ use super::ids::next_id;
 use super::index::Index;
 use super::model::{
     AcceptanceBlock, Artifact, ArtifactKind, Artifacts, ClaimResult, HistoryBlock, HistoryEvent,
-    Lease, ListFilters, Notes, SchedulerExplanation, Task, TaskDraft, TaskPatch, TaskStatus,
+    Lease, ListFilters, Notes, ReconcileReport, ReconcileSessionRef, SchedulerExplanation, Task,
+    TaskDraft, TaskPatch, TaskStatus,
 };
+use super::reconcile::reconcile_tasks;
 use super::state_machine::validate_transition;
 use crate::Store;
 use crate::{validate_profile_id, validate_task_id, validate_thread_id, Error};
@@ -662,6 +664,18 @@ impl TaskStore {
             }
         }
         Ok(out)
+    }
+
+    /// Build a read-only consistency report for one thread. The caller passes
+    /// session metadata because session ownership lives in `harness-session`,
+    /// not in the core task store.
+    pub fn reconcile(
+        &self,
+        tid: &str,
+        sessions: Vec<ReconcileSessionRef>,
+    ) -> Result<ReconcileReport, Error> {
+        let tasks = self.list(tid, ListFilters::default())?;
+        Ok(reconcile_tasks(tid, &tasks, &sessions))
     }
 
     /// Internal: mutate raw for scheduler tasks like lease expiration.

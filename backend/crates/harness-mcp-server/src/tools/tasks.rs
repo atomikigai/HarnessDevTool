@@ -220,6 +220,58 @@ fn draft_from_args(args: &Value, agent_id: &str) -> Result<TaskDraft, String> {
     })
 }
 
+enum PostTaskError {
+    Http(ureq::Error),
+    Decode(String),
+}
+
+impl std::fmt::Display for PostTaskError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Http(e) => write!(f, "{e}"),
+            Self::Decode(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+fn post_task_to_server(
+    base: &str,
+    thread_id: &str,
+    agent_id: &str,
+    api_token: Option<&str>,
+    draft: &TaskDraft,
+    status: Option<TaskStatus>,
+) -> Result<Value, PostTaskError> {
+    let url = format!(
+        "{}/api/threads/{}/tasks",
+        base.trim_end_matches('/'),
+        thread_id
+    );
+    let mut body = json!({
+        "title": &draft.title,
+        "parent": &draft.parent,
+        "depends_on": &draft.depends_on,
+        "labels": &draft.labels,
+        "brief": &draft.brief,
+        "acceptance": { "checks": draft.acceptance.iter().map(|c| json!({
+            "id": c.id,
+            "text": c.text,
+        })).collect::<Vec<_>>() },
+        "created_by": agent_id,
+    });
+    if let Some(status) = status {
+        body["status"] = json!(status.as_str());
+    }
+
+    let mut req = ureq::post(&url).timeout(Duration::from_secs(5));
+    if let Some(token) = api_token {
+        req = req.set("Authorization", &format!("Bearer {token}"));
+    }
+    let resp = req.send_json(&body).map_err(PostTaskError::Http)?;
+    resp.into_json()
+        .map_err(|e| PostTaskError::Decode(e.to_string()))
+}
+
 /// `task_create` — primary path: delegate to the harness-server REST endpoint
 /// so the in-process `TaskStore` (the one the SSE stream subscribes to) does
 /// the write. That guarantees the right panel updates without a refresh.
@@ -242,36 +294,13 @@ pub fn create(
     if let Some(base) = server_url {
         // Delegate to harness-server so the in-process broadcast bus emits
         // `task.created` and SSE subscribers see the new task immediately.
-        let url = format!(
-            "{}/api/threads/{}/tasks",
-            base.trim_end_matches('/'),
-            thread_id
-        );
-        let body = json!({
-            "title": &draft.title,
-            "parent": &draft.parent,
-            "depends_on": &draft.depends_on,
-            "labels": &draft.labels,
-            "brief": &draft.brief,
-            "acceptance": { "checks": draft.acceptance.iter().map(|c| json!({
-                "id": c.id,
-                "text": c.text,
-            })).collect::<Vec<_>>() },
-            "created_by": agent_id,
-        });
-        let mut req = ureq::post(&url).timeout(Duration::from_secs(5));
-        if let Some(token) = api_token {
-            req = req.set("Authorization", &format!("Bearer {token}"));
-        }
-        match req.send_json(&body) {
-            Ok(resp) => {
-                let value: Value = resp.into_json().map_err(|e| e.to_string())?;
-                return Ok(value);
-            }
-            Err(e) => {
+        match post_task_to_server(base, &thread_id, agent_id, api_token, &draft, None) {
+            Ok(value) => return Ok(value),
+            Err(PostTaskError::Http(ureq::Error::Transport(e))) => {
                 tracing::warn!(error = %e, "task_create: HTTP delegation failed, falling back to local store");
                 // fall through to local-store path
             }
+            Err(e) => return Err(format!("task_create: HTTP delegation failed: {e}")),
         }
     }
 
@@ -283,10 +312,30 @@ pub fn propose(
     store: &TaskStore,
     default_thread: &str,
     agent_id: &str,
+    server_url: Option<&str>,
+    api_token: Option<&str>,
     args: &Value,
 ) -> Result<Value, String> {
     let thread_id = valid_thread_or_default(args, default_thread)?.to_string();
     let draft = draft_from_args(args, agent_id)?;
+
+    if let Some(base) = server_url {
+        match post_task_to_server(
+            base,
+            &thread_id,
+            agent_id,
+            api_token,
+            &draft,
+            Some(TaskStatus::Proposed),
+        ) {
+            Ok(value) => return Ok(value),
+            Err(PostTaskError::Http(ureq::Error::Transport(e))) => {
+                tracing::warn!(error = %e, "task_propose: HTTP delegation failed, falling back to local store");
+            }
+            Err(e) => return Err(format!("task_propose: HTTP delegation failed: {e}")),
+        }
+    }
+
     let task = store.propose(&thread_id, draft).map_err(map_err)?;
     Ok(json!(task))
 }

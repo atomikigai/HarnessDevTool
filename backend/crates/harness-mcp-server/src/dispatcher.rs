@@ -15,7 +15,7 @@ use crate::tools::{
     spec, tasks, wrap_error, wrap_text,
 };
 use harness_core::TaskStore;
-use harness_policy::{capability_default, Decision};
+use harness_policy::{capability_default, is_sensitive_tool, Decision};
 use module_db::Manager as DbManager;
 
 pub struct Dispatcher {
@@ -31,7 +31,7 @@ pub struct Dispatcher {
     /// `None` for legacy callers that pre-date the `--session-id` flag.
     session_id: Option<String>,
     /// Base URL of the harness-server (e.g. `http://127.0.0.1:8787`). When
-    /// `Some`, `task_create` delegates to the REST endpoint so the in-process
+    /// `Some`, task creation/proposal delegates to REST so the in-process
     /// broadcast bus emits `task.created` and the SSE stream pushes the new
     /// task into the right panel without the user having to refresh.
     server_url: Option<String>,
@@ -150,7 +150,14 @@ impl Dispatcher {
                 self.api_token.as_deref(),
                 &args,
             ),
-            "task_propose" => tasks::propose(&self.store, &self.thread_id, &self.agent_id, &args),
+            "task_propose" => tasks::propose(
+                &self.store,
+                &self.thread_id,
+                &self.agent_id,
+                self.server_url.as_deref(),
+                self.api_token.as_deref(),
+                &args,
+            ),
             "task_list" => tasks::list(&self.store, &self.thread_id, &args),
             "task_get" => tasks::get(&self.store, &self.thread_id, &args),
             "task_claim" => tasks::claim(&self.store, &self.thread_id, &args),
@@ -238,6 +245,9 @@ impl Dispatcher {
         let Some(server_url) = self.server_url.as_deref() else {
             return match capability_default(tool_name, self.role.as_deref()) {
                 Some(Decision::Deny) => Some(policy_denied_message(tool_name)),
+                None if self.offline_role_is_untrusted() && is_sensitive_tool(tool_name) => {
+                    Some(policy_denied_message(tool_name))
+                }
                 // capability_default only produces None or Deny; anything else is unrestricted.
                 _ => None,
             };
@@ -282,6 +292,13 @@ impl Dispatcher {
                 ))
             }
         }
+    }
+
+    fn offline_role_is_untrusted(&self) -> bool {
+        !matches!(
+            self.role.as_deref(),
+            Some("planner" | "orchestrator" | "worker" | "generator" | "evaluator")
+        )
     }
 }
 
@@ -409,7 +426,7 @@ mod tests {
 
     #[test]
     fn task_create_with_brief_persists_worker_contract() {
-        let (d, _home) = mk("t-brief", "agent:planner");
+        let (d, _home) = mk_with_role("t-brief", "agent:planner", Some("planner"));
         let create_line = r#"{
             "jsonrpc":"2.0",
             "id":31,
@@ -464,7 +481,7 @@ mod tests {
 
     #[test]
     fn task_create_rejects_incomplete_structured_brief() {
-        let (d, _home) = mk("t-brief-invalid", "agent:planner");
+        let (d, _home) = mk_with_role("t-brief-invalid", "agent:planner", Some("planner"));
         let create_line = r#"{
             "jsonrpc":"2.0",
             "id":33,
@@ -494,7 +511,7 @@ mod tests {
 
     #[test]
     fn task_create_accepts_legacy_string_brief() {
-        let (d, _home) = mk("t-brief-string", "agent:planner");
+        let (d, _home) = mk_with_role("t-brief-string", "agent:planner", Some("planner"));
         let create_line = r#"{
             "jsonrpc":"2.0",
             "id":34,
@@ -598,7 +615,7 @@ mod tests {
     }
 
     #[test]
-    fn task_create_allows_unknown_roles_by_default_matrix() {
+    fn offline_capability_matrix_rejects_unknown_roles_for_sensitive_tools() {
         for role in ["super-planner-worker", "planner-worker", "not-orchestrator"] {
             let (d, _home) = mk_with_role("t-stuffed", "agent:worker", Some(role));
             let line = r#"{
@@ -611,21 +628,19 @@ mod tests {
                 }
             }"#;
             let resp = d.handle(parse_request(line).unwrap()).unwrap();
-            assert_ne!(resp["result"]["isError"], true);
+            assert_eq!(resp["result"]["isError"], true);
             let text = resp["result"]["content"][0]["text"].as_str().unwrap();
-            let created: serde_json::Value = serde_json::from_str(text).unwrap();
-            assert_eq!(created["status"], "queued", "role `{role}` is unknown");
+            assert_eq!(
+                text,
+                "error: tool call denied by policy: task_create; usa task_propose"
+            );
         }
     }
 
     #[test]
-    fn task_create_allows_planner_and_legacy_none_role() {
-        for (role, thread) in [
-            (Some("planner"), "t-planner-create"),
-            (None, "t-none-create"),
-        ] {
-            let (d, _home) = mk_with_role(thread, "agent:planner", role);
-            let line = r#"{
+    fn task_create_allows_planner_role() {
+        let (d, _home) = mk_with_role("t-planner-create", "agent:planner", Some("planner"));
+        let line = r#"{
                 "jsonrpc":"2.0",
                 "id":37,
                 "method":"tools/call",
@@ -634,12 +649,48 @@ mod tests {
                     "arguments":{"title":"Allowed create"}
                 }
             }"#;
-            let resp = d.handle(parse_request(line).unwrap()).unwrap();
-            assert_ne!(resp["result"]["isError"], true);
-            let text = resp["result"]["content"][0]["text"].as_str().unwrap();
-            let created: serde_json::Value = serde_json::from_str(text).unwrap();
-            assert_eq!(created["status"], "queued");
-        }
+        let resp = d.handle(parse_request(line).unwrap()).unwrap();
+        assert_ne!(resp["result"]["isError"], true);
+        let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+        let created: serde_json::Value = serde_json::from_str(text).unwrap();
+        assert_eq!(created["status"], "queued");
+    }
+
+    #[test]
+    fn offline_capability_matrix_rejects_missing_role_for_sensitive_tools() {
+        let (d, _home) = mk_with_role("t-none-create", "agent:legacy", None);
+        let line = r#"{
+            "jsonrpc":"2.0",
+            "id":41,
+            "method":"tools/call",
+            "params":{
+                "name":"task_create",
+                "arguments":{"title":"Missing role create"}
+            }
+        }"#;
+        let resp = d.handle(parse_request(line).unwrap()).unwrap();
+        assert_eq!(resp["result"]["isError"], true);
+        let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+        assert_eq!(
+            text,
+            "error: tool call denied by policy: task_create; usa task_propose"
+        );
+    }
+
+    #[test]
+    fn offline_capability_matrix_allows_missing_role_for_read_only_tools() {
+        let (d, _home) = mk_with_role("t-none-list", "agent:legacy", None);
+        let line = r#"{
+            "jsonrpc":"2.0",
+            "id":42,
+            "method":"tools/call",
+            "params":{
+                "name":"task_list",
+                "arguments":{}
+            }
+        }"#;
+        let resp = d.handle(parse_request(line).unwrap()).unwrap();
+        assert_ne!(resp["result"]["isError"], true);
     }
 
     #[test]
@@ -670,7 +721,7 @@ mod tests {
 
     #[test]
     fn spec_write_then_spec_read_returns_written_content() {
-        let (d, _) = mk("t1", "agent:1");
+        let (d, _) = mk_with_role("t1", "agent:planner", Some("planner"));
         let write_line = r##"{"jsonrpc":"2.0","id":12,"method":"tools/call","params":{"name":"spec_write","arguments":{"thread_id":"t1","content":"# Spec\nBody"}}}"##;
         let resp = d.handle(parse_request(write_line).unwrap()).unwrap();
         let text = resp["result"]["content"][0]["text"].as_str().unwrap();

@@ -5,6 +5,7 @@
  */
 
 export type TaskStatus =
+  | 'proposed'
   | 'queued'
   | 'in_progress'
   | 'pending_verify'
@@ -78,6 +79,7 @@ export interface Task {
 
 export interface CreateTaskRequest {
   title: string;
+  status?: 'queued' | 'proposed';
   parent?: string;
   depends_on?: string[];
   brief?: TaskBrief;
@@ -118,6 +120,8 @@ export interface CreateAgentRequest {
 /** Convenience: status → tone (color category) for badges. */
 export function statusTone(s: TaskStatus): 'neutral' | 'accent' | 'warn' | 'success' | 'danger' {
   switch (s) {
+    case 'proposed':
+      return 'neutral';
     case 'queued':
       return 'neutral';
     case 'in_progress':

@@ -170,7 +170,7 @@ fn fallback_decision(tool: &str, default: &Decision) -> Decision {
     }
 }
 
-fn is_sensitive_tool(tool: &str) -> bool {
+pub fn is_sensitive_tool(tool: &str) -> bool {
     matches!(
         tool,
         "task_create"

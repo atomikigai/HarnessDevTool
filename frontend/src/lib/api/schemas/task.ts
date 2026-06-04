@@ -5,6 +5,7 @@
 import * as v from 'valibot';
 
 export const taskStatusSchema = v.picklist([
+  'proposed',
   'queued',
   'in_progress',
   'pending_verify',
@@ -35,6 +36,7 @@ export const createTaskSchema = v.object({
     v.minLength(3, 'Title must be at least 3 characters'),
     v.maxLength(200, 'Title is too long')
   ),
+  status: v.optional(v.picklist(['queued', 'proposed'])),
   parent: v.optional(v.string()),
   depends_on: v.optional(v.array(v.string())),
   brief: v.optional(taskBriefSchema),

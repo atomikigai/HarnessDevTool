@@ -361,6 +361,12 @@ impl TaskStore {
                     task.status.as_str()
                 )));
             }
+            if !task.blocked_by.is_empty() {
+                return Err(Error::Validation(format!(
+                    "queued task {} still has unresolved dependencies",
+                    task.id
+                )));
+            }
             if let Some(l) = &task.claim_lease {
                 if l.until > now && l.holder != agent_id {
                     return Ok::<_, Error>(ClaimResult::Busy {
@@ -849,6 +855,38 @@ mod tests {
         assert!(s.renew("thr-1", "T-0001", "agent:b").is_err());
 
         s.release("thr-1", "T-0001", "agent:a").unwrap();
+    }
+
+    #[test]
+    fn queued_with_blockers_is_not_claimable() {
+        let (_dir, s) = store();
+        s.create(
+            "thr-1",
+            TaskDraft {
+                title: "blocked".into(),
+                parent: None,
+                depends_on: vec!["T-9999".into()],
+                brief: None,
+                acceptance: vec![],
+                labels: vec![],
+                created_by: "human".into(),
+            },
+        )
+        .unwrap();
+        s.patch(
+            "thr-1",
+            "T-0001",
+            TaskPatch {
+                status: Some(TaskStatus::Queued),
+                ..Default::default()
+            },
+            "human",
+        )
+        .unwrap();
+        let err = s
+            .claim("thr-1", "T-0001", "agent:a", Duration::from_secs(60))
+            .expect_err("blocked dependencies should prevent claim");
+        assert!(matches!(err, Error::Validation(_)), "got {err:?}");
     }
 
     fn mk_draft(title: &str) -> TaskDraft {

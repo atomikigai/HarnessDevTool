@@ -81,6 +81,7 @@ async fn check(
                     body.thread_id,
                     body.session_id,
                     body.agent_id,
+                    body.role,
                     &state.tick_tx,
                     timeout,
                 )
@@ -198,7 +199,7 @@ fn remembered_rule(
     };
     Rule {
         tool: summary.tool.clone(),
-        role: None,
+        role: summary.role.clone(),
         args_match,
         decision,
     }
@@ -280,5 +281,30 @@ mod tests {
         assert_eq!(payload["role"], "worker");
         assert_eq!(payload["decision"], "deny");
         assert_eq!(payload["agent_id"], "agent:worker");
+    }
+
+    #[test]
+    fn remembered_rule_preserves_approval_role() {
+        let summary = ApprovalSummary {
+            id: "approval-1".to_string(),
+            tool: "db_query".to_string(),
+            args: json!({ "sql": "select * from users", "limit": 10 }),
+            thread_id: Some("thread-1".to_string()),
+            session_id: Some("session-1".to_string()),
+            agent_id: Some("agent:worker".to_string()),
+            role: Some("worker".to_string()),
+            created_at: Utc::now(),
+        };
+
+        let rule = remembered_rule(&summary, Decision::Allow, RememberScope::ToolAndArgs);
+
+        assert_eq!(rule.tool, "db_query");
+        assert_eq!(rule.role.as_deref(), Some("worker"));
+        assert_eq!(
+            rule.args_match.get("sql").map(String::as_str),
+            Some("select * from users")
+        );
+        assert!(!rule.args_match.contains_key("limit"));
+        assert_eq!(rule.decision, Decision::Allow);
     }
 }

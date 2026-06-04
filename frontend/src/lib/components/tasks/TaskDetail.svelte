@@ -134,6 +134,11 @@
     void patch({ status: 'queued', by: 'human' }, `${task.id} resumed`);
   }
 
+  function promote() {
+    const status = task.blocked_by.length > 0 ? 'blocked' : 'queued';
+    void patch({ status, by: 'human' }, `${task.id} ${status}`);
+  }
+
   function openRaw() {
     rawDraft = serializeForEdit(task);
     editingRaw = true;
@@ -208,7 +213,11 @@
   <div class="min-h-0 flex-1 overflow-y-auto px-4 py-4">
     <!-- Transitions row -->
     <div class="mb-4 flex flex-wrap gap-2">
-      {#if task.status === 'queued'}
+      {#if task.status === 'proposed'}
+        <Button size="sm" onclick={promote} disabled={busy}>
+          <Play class="h-3.5 w-3.5" /> Promote
+        </Button>
+      {:else if task.status === 'queued'}
         <Button variant="outline" size="sm" disabled title="Agent-only in F2">
           Claim (agent only)
         </Button>

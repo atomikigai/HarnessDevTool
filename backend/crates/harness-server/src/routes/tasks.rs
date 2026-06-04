@@ -58,6 +58,8 @@ async fn list(
 pub struct CreateBody {
     pub title: String,
     #[serde(default)]
+    pub status: Option<TaskStatus>,
+    #[serde(default)]
     pub parent: Option<String>,
     #[serde(default)]
     pub depends_on: Vec<String>,
@@ -111,10 +113,21 @@ async fn create(
         labels: body.labels,
         created_by: body.created_by,
     };
-    let task = s.tasks.create(&tid, draft)?;
+    let requested_status = body.status.unwrap_or(TaskStatus::Queued);
+    let task = match requested_status {
+        TaskStatus::Queued => s.tasks.create(&tid, draft)?,
+        TaskStatus::Proposed => s.tasks.propose(&tid, draft)?,
+        other => {
+            return Err(ApiError::BadRequest(format!(
+                "create status must be queued or proposed, got {}",
+                other.as_str()
+            )));
+        }
+    };
     tracing::info!(
         thread_id = %tid,
         task_id = %task.id,
+        status = %task.status.as_str(),
         title = %task.title,
         created_by = %task.created_by,
         "task created via REST (will emit task.created on broadcast)"

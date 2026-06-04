@@ -27,6 +27,7 @@ pub fn validate_transition(task: &Task, to: TaskStatus, by: &str) -> Result<(), 
     let ok = matches!(
         (from, to),
         (Proposed, Queued)
+            | (Proposed, Blocked)
             | (Queued, InProgress)
             | (Queued, Blocked)
             | (Queued, Paused)
@@ -171,6 +172,9 @@ mod tests {
     fn proposed_can_only_promote_to_queued() {
         let t = base(TaskStatus::Proposed);
         assert!(validate_transition(&t, TaskStatus::Queued, "agent:planner").is_ok());
+        let mut blocked = t.clone();
+        blocked.blocked_by = vec!["T-0000".into()];
+        assert!(validate_transition(&blocked, TaskStatus::Blocked, "agent:planner").is_ok());
         assert!(matches!(
             validate_transition(&t, TaskStatus::InProgress, "agent:planner"),
             Err(Error::InvalidTransition { .. })

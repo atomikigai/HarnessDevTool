@@ -21,6 +21,13 @@ class TasksState {
     return this.items.find((t) => t.id === id);
   }
 
+  #matchesFilters(task: Task): boolean {
+    if (this.filters.status && task.status !== this.filters.status) return false;
+    if (this.filters.assignee && task.assignee !== this.filters.assignee) return false;
+    if (this.filters.label && !task.labels.includes(this.filters.label)) return false;
+    return true;
+  }
+
   async refresh(): Promise<void> {
     if (!this.threadId) return;
     this.#controller?.abort();
@@ -43,6 +50,14 @@ class TasksState {
     try {
       const res = await api.tasks.get(this.threadId, taskId);
       const idx = this.items.findIndex((t) => t.id === taskId);
+      if (!this.#matchesFilters(res.data)) {
+        if (idx >= 0) {
+          const next = [...this.items];
+          next.splice(idx, 1);
+          this.items = next;
+        }
+        return;
+      }
       if (idx >= 0) {
         const next = [...this.items];
         next[idx] = res.data;

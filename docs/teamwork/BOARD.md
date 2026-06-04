@@ -2,19 +2,27 @@
 
 Canal común entre Planner (Claude), Backend Rust (Codex), Frontend (Cursor) y los evaluadores
 (Sonnet). Plantilla **estricta por campos**, no prosa libre. Ver `CLAUDE.md` §4.
+Modelo operativo: ver [`docs/teamwork/OPERATING_MODEL.md`](./OPERATING_MODEL.md).
 
 > **Límite conocido:** una sola tarea "En curso" a la vez, sin locking real. El Planner es el único
 > que abre/cierra; los ejecutores anotan en su bloque de Handoff. Revisor/QA reportan por la Agent
 > tool (no escriben aquí).
+>
+> **Balance velocidad/calidad:** subagentes internos de Codex pueden acelerar self-review, pero no
+> sustituyen reviewer/QA oficial lanzado por Claude/Planner desde el harness.
 
 ---
 
 ## En curso
 
+_Ninguna. T4 quedó cerrada el 2026-06-04 con smoke real, `just test` verde y verificación de rehidratación._
+
+## Última cerrada — T4
+
 | Campo | Valor |
 |---|---|
 | **Tarea** | T4 — Rehidratación de sesiones tras reinicio (**gate de dogfooding**) |
-| **Estado** | ⏸️ `PENDIENTE (PARADO)` — **Frontend HECHO** (`+page.svelte`, carrera de selección, vía Cursor); **Backend NO iniciado** (Codex se detuvo antes de escribir `manager.rs`/`load_existing`/`list_metas`/mapa `detached`). Retomar el backend en la próxima sesión: el contrato de abajo sigue válido. Único gate restante de dogfooding. |
+| **Estado** | ✅ `DONE` — **Frontend HECHO** (`+page.svelte`, carrera de selección, commit `2226794`); **Backend IMPLEMENTADO** (Codex, 2026-06-04): rehidratación detached en `Manager`, boot hook en `AppState`, `/api/threads` consume `list_metas()`. Task 30 cerrada: `ReadinessReport.facts` exporta `unknown`, outputs crate-locales ignorados, `pnpm check` verde. Smoke real y `just test` verde. |
 | **Objetivo** | Que las sesiones sobrevivan al reinicio del server: hoy `Manager::new` arranca con `DashMap` vacío y nada rehidrata desde disco, aunque `meta.json`+`output.log` persisten. + arreglar la carrera de auto-selección del frontend que pisa la selección restaurada. |
 | **Alcance / archivos** | Backend: `harness-session/src/manager.rs` (+ `meta.rs`/`session.rs` si hace falta), `harness-server/src/{state.rs,routes/threads.rs}`. Frontend: `frontend/src/routes/+page.svelte`. Write scopes separados. |
 | **Responsables** | Planner (audit+contrato+verify, par-revisión cercana de `harness-session`), Backend/Codex, Frontend/Cursor, Sonnet (review+QA) |
@@ -66,10 +74,58 @@ Canal común entre Planner (Claude), Backend Rust (Codex), Frontend (Cursor) y l
 **Tipos:** `SessionMeta`/`SessionStatus` ya exportados por ts-rs; no se esperan cambios de tipo
 (verificar). Contrato REST `/api/threads` sin cambios de forma (la lista ahora incluye más sesiones).
 
-### Preguntas al Planner
-_(ninguna — listo para EXECUTE)_
+### Handoff Backend — Codex 2026-06-04
+
+**Archivos tocados:**
+- `backend/crates/harness-session/src/manager.rs`
+- `backend/crates/harness-session/src/session.rs`
+- `backend/crates/harness-server/src/state.rs`
+- `backend/crates/harness-server/src/routes/threads.rs`
+
+**Implementado:**
+- `Manager` mantiene `detached: DashMap<String, SessionMeta>` paralelo al mapa vivo.
+- `Manager::load_existing()` escanea `sessions_root`, salta `meta.json` corruptos con warn, normaliza
+  `root_session_id` vacío y reconcilia `Running` huérfano a `Exited` persistiendo `meta.json`.
+- Caso especial: `pid == 0` se marca `Exited` sin llamar `pid_alive(0)`.
+- `Manager::list_metas().await` mergea vivas + detached, con vivas ganando por id.
+- `spawn_with_opts()` elimina cualquier detached con el mismo id antes de insertar la sesión viva.
+- `AppState::new()` llama `manager.load_existing()?` inmediatamente tras `Manager::new`.
+- `routes/threads.rs:list_threads` usa `list_metas()`; `Manager::all()` conserva semántica de solo vivas.
+
+**Tests corridos:**
+- `cargo test -p harness-session` ✅ 20/20
+- `cargo test -p harness-server` ✅ 20/20
+- backend dentro de `just test` ✅
+- `just gen-types` ✅ (sin cambios de tipos esperados para T4)
+- Smoke manual backend ✅: con `HARNESS_HOME` temporal y `HARNESS_BIND=127.0.0.1:7797`, crear thread +
+  sesión `cursor`, reiniciar server con el mismo home y validar:
+  `/api/threads` lista la sesión rehidratada bajo el mismo `thread_id`, `/api/sessions/:sid` lee
+  `meta.json`, `/api/events?session=:sid` entrega catch-up desde `output.log`, y
+  `/api/sessions/:sid/input` responde 404 para detached.
+
+**Verify completo:**
+- `ReadinessReport.facts` usa el patrón existente `#[cfg_attr(feature = "ts-export", ts(type = "unknown"))]`
+  para `serde_json::Value`; `just gen-types` regenera un TS consumible sin importar `JsonValue`.
+- `.gitignore` ignora `backend/crates/*/bindings/` y `frontend/src/lib/api/crates/`, ambos outputs generados.
+- `frontend/package.json` define `test: pnpm check`, y `Justfile:test` ejecuta `pnpm check` para que el gate
+  frontend exista.
+- `pnpm check` ✅ 0 errores / 0 warnings.
+- `just test` ✅.
+
+### Cierre
+T4 cerrada. No queda trabajo activo en esta tarea; cualquier mejora posterior debe abrirse como task nueva.
 
 ## Historial (cerradas)
+
+- **T4 — Rehidratación de sesiones tras reinicio** — DONE ✅.
+  `Manager::load_existing()` rehidrata sesiones desde disco, reconcilia `Running` huérfanas,
+  `/api/threads` lista metas vivas + detached, transcripts siguen disponibles desde `output.log`.
+  Smoke real de reinicio + `just test` verdes.
+
+- **Task 27 — Broadcast SSE + UI de propuestas** — VERIFY ✅.
+  `task_propose` ahora delega al REST cuando hay `server_url`, `POST /tasks` acepta `status=proposed`
+  y la propuesta entra por el `TaskStore` del server para emitir `task.created`/SSE. UI: tipo/schema/filtro
+  incluyen `proposed` y el drawer permite promover a `queued` o `blocked` según dependencias.
 
 - **Task 15 — Eventos append-only unificados** (slice incremental backend-only) — VERIFY ✅.
   `Event` evolucionado a envelope aditivo (`thread_id`/`actor`/`payload`, records viejos deserializan);
@@ -87,9 +143,9 @@ _(ninguna — listo para EXECUTE)_
   `capability.decided` (deny/ask) en `/api/approvals/check`. QA PASS 7/7, 65 tests verdes, clippy limpio,
   `Rule.ts` regenerado. **Trade-offs aceptados (decisión del usuario):** rol desconocido→permisivo
   reabre role-stuffing (mitigado: `role` lo fija la infra de spawn `--role`, no el modelo). **Follow-ups:**
-  Task 28 (race de `seq` en `append_event`, sistémico → Task 15), Task 29 (hardening: validar `--role`,
-  `remembered_rule` con rol, asimetría online/offline `role=None`), Task 30 (gitignore de
-  `backend/crates/*/bindings/`).
+  Task 28 (race de `seq` en `append_event`, sistémico → Task 15), Task 29 ejecutada 2026-06-04
+  (root spawn valida roles, `remembered_rule` preserva rol, offline sin rol/desconocido niega tools
+  sensibles), Task 30 ejecutada 2026-06-04.
 - **Task 13 — Separar `task.create` y `task.propose`** — VERIFY ✅. `TaskStatus::Proposed`,
   `task_propose` (cualquier rol) crea en `proposed`, `task_create` con gate de rol exacto fail-closed
   en el dispatcher (deny FUERA de `harness-policy`). `Proposed→Queued` vía `task_update`; no

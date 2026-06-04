@@ -70,10 +70,9 @@ async fn list_threads(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<Vec<ThreadWithSessions>>, ApiError> {
     let threads = state.store.list_threads()?;
-    // Group live session handles by thread_id.
+    // Group live + detached session metadata by thread_id.
     let mut by_thread: HashMap<String, Vec<SessionMeta>> = HashMap::new();
-    for s in state.manager.all() {
-        let meta = s.meta().await;
+    for meta in state.manager.list_metas().await {
         by_thread
             .entry(meta.thread_id.clone())
             .or_default()

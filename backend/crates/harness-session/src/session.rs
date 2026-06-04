@@ -438,14 +438,14 @@ impl AgentSession {
 }
 
 #[cfg(unix)]
-fn pid_alive(pid: i32) -> bool {
+pub(crate) fn pid_alive(pid: i32) -> bool {
     // kill(pid, 0) returns 0 if process exists and we have permission,
     // -1 with ESRCH if it doesn't exist.
     unsafe { libc::kill(pid, 0) == 0 }
 }
 
 #[cfg(not(unix))]
-fn pid_alive(_pid: i32) -> bool {
+pub(crate) fn pid_alive(_pid: i32) -> bool {
     true
 }
 
@@ -489,7 +489,7 @@ fn flush_chunk(
     });
 }
 
-fn persist_meta(dir: &std::path::Path, meta: &SessionMeta) -> Result<(), SessionError> {
+pub(crate) fn persist_meta(dir: &std::path::Path, meta: &SessionMeta) -> Result<(), SessionError> {
     let path = dir.join("meta.json");
     let tmp = dir.join("meta.json.tmp");
     let bytes = serde_json::to_vec_pretty(meta)?;

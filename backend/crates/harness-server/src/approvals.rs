@@ -24,6 +24,7 @@ struct PendingApproval {
     thread_id: Option<String>,
     session_id: Option<String>,
     agent_id: Option<String>,
+    role: Option<String>,
     tx: oneshot::Sender<Decision>,
     created_at: DateTime<Utc>,
 }
@@ -39,6 +40,7 @@ pub struct ApprovalSummary {
     pub thread_id: Option<String>,
     pub session_id: Option<String>,
     pub agent_id: Option<String>,
+    pub role: Option<String>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -57,6 +59,7 @@ impl ApprovalStore {
         thread_id: Option<String>,
         session_id: Option<String>,
         agent_id: Option<String>,
+        role: Option<String>,
         tick_tx: &broadcast::Sender<String>,
         timeout: Duration,
     ) -> Decision {
@@ -70,6 +73,7 @@ impl ApprovalStore {
             thread_id,
             session_id,
             agent_id,
+            role,
             tx,
             created_at,
         };
@@ -141,6 +145,7 @@ impl PendingApproval {
             thread_id: self.thread_id.clone(),
             session_id: self.session_id.clone(),
             agent_id: self.agent_id.clone(),
+            role: self.role.clone(),
             created_at: self.created_at,
         }
     }
@@ -165,6 +170,7 @@ mod tests {
                 .request(
                     "db_query".to_string(),
                     json!({ "sql": "select 1" }),
+                    None,
                     None,
                     None,
                     None,
@@ -194,6 +200,7 @@ mod tests {
             .request(
                 "db_query".to_string(),
                 json!({ "sql": "select 1" }),
+                None,
                 None,
                 None,
                 None,

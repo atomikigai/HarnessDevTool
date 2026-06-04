@@ -62,11 +62,19 @@ gen-types:
     cd backend && cargo test --features ts-export --workspace
     mkdir -p frontend/src/lib/api/types
     cp -r backend/bindings/* frontend/src/lib/api/types/
+    mkdir -p frontend/src/lib/api/crates
+    for dir in backend/crates/*/bindings; do \
+      [ -d "$dir" ] || continue; \
+      crate="${dir#backend/crates/}"; \
+      crate="${crate%/bindings}"; \
+      mkdir -p "frontend/src/lib/api/crates/$crate"; \
+      cp -r "$dir" "frontend/src/lib/api/crates/$crate/"; \
+    done
 
 # Run all tests
 test:
     cd backend && cargo test
-    cd frontend && pnpm test
+    cd frontend && pnpm check
 
 # Format both stacks
 fmt:

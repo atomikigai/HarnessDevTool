@@ -7,8 +7,9 @@ use tokio::sync::broadcast;
 
 use crate::errors::SessionError;
 use crate::kind::AgentKind;
+use crate::meta::{SessionMeta, SessionStatus};
 use crate::output::OutputWriter;
-use crate::session::AgentSession;
+use crate::session::{persist_meta, pid_alive, AgentSession};
 
 const DEFAULT_CLAUDE_MODEL: &str = "claude-opus-4-7";
 const DEFAULT_CLAUDE_EFFORT: &str = "medium";
@@ -69,6 +70,7 @@ impl SessionEvent {
 pub struct Manager {
     sessions_root: PathBuf,
     sessions: DashMap<String, Arc<AgentSession>>,
+    detached: DashMap<String, SessionMeta>,
     bus: broadcast::Sender<SessionEvent>,
 }
 
@@ -77,6 +79,7 @@ impl std::fmt::Debug for Manager {
         f.debug_struct("Manager")
             .field("sessions_root", &self.sessions_root)
             .field("live_sessions", &self.sessions.len())
+            .field("detached_sessions", &self.detached.len())
             .finish()
     }
 }
@@ -90,6 +93,7 @@ impl Manager {
         Ok(Self {
             sessions_root,
             sessions: DashMap::new(),
+            detached: DashMap::new(),
             bus,
         })
     }
@@ -110,9 +114,93 @@ impl Manager {
         self.sessions.get(sid).map(|e| e.value().clone())
     }
 
+    /// Load persisted session metadata from disk as read-only detached
+    /// sessions. Live handles always win; detached entries exist only so
+    /// list/read-only views can survive a server restart.
+    pub fn load_existing(&self) -> Result<(), SessionError> {
+        if !self.sessions_root.exists() {
+            return Ok(());
+        }
+
+        for entry in std::fs::read_dir(&self.sessions_root)? {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to read session directory entry");
+                    continue;
+                }
+            };
+            let dir = entry.path();
+            if !dir.is_dir() {
+                continue;
+            }
+            let meta_path = dir.join("meta.json");
+            if !meta_path.exists() {
+                continue;
+            }
+
+            let raw = match std::fs::read(&meta_path) {
+                Ok(raw) => raw,
+                Err(e) => {
+                    tracing::warn!(path = %meta_path.display(), error = %e, "failed to read session meta");
+                    continue;
+                }
+            };
+            let mut meta: SessionMeta = match serde_json::from_slice(&raw) {
+                Ok(meta) => meta,
+                Err(e) => {
+                    tracing::warn!(path = %meta_path.display(), error = %e, "failed to parse session meta");
+                    continue;
+                }
+            };
+
+            if meta.root_session_id.is_empty() {
+                meta.root_session_id = meta.id.clone();
+            }
+            if meta.status == SessionStatus::Running
+                && (meta.pid == 0 || !pid_alive(meta.pid as i32))
+            {
+                meta.status = SessionStatus::Exited;
+                if let Err(e) = persist_meta(&dir, &meta) {
+                    tracing::warn!(
+                        session_id = %meta.id,
+                        path = %meta_path.display(),
+                        error = %e,
+                        "failed to persist reconciled detached session meta"
+                    );
+                }
+            }
+
+            if self.sessions.contains_key(&meta.id) {
+                continue;
+            }
+            self.detached.insert(meta.id.clone(), meta);
+        }
+
+        Ok(())
+    }
+
     /// Snapshot of all currently-tracked session handles.
     pub fn all(&self) -> Vec<Arc<AgentSession>> {
         self.sessions.iter().map(|e| e.value().clone()).collect()
+    }
+
+    /// Snapshot of all session metadata known to the manager. Includes live
+    /// sessions plus detached read-only metadata loaded from disk.
+    pub async fn list_metas(&self) -> Vec<SessionMeta> {
+        let mut out = Vec::new();
+        let mut live_ids = std::collections::HashSet::new();
+        for entry in self.sessions.iter() {
+            let session = entry.value().clone();
+            live_ids.insert(entry.key().clone());
+            out.push(session.meta().await);
+        }
+        for entry in self.detached.iter() {
+            if !live_ids.contains(entry.key()) {
+                out.push(entry.value().clone());
+            }
+        }
+        out
     }
 
     /// Read the active `output.log` for a session straight from disk (used for
@@ -182,6 +270,7 @@ impl Manager {
             opts.initial_size,
             self.bus.clone(),
         )?;
+        self.detached.remove(&id);
         self.sessions.insert(id, session.clone());
 
         // `auto_intro` is passed to claude as `--append-system-prompt` (CLI
@@ -521,14 +610,42 @@ fn sanitize_pty_prompt(prompt: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::meta::{SessionMeta, SessionStatus};
     use std::path::PathBuf;
 
-    #[cfg(unix)]
     fn temp_test_dir(name: &str) -> PathBuf {
         let dir =
             std::env::temp_dir().join(format!("harness-session-{name}-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).expect("create temp test dir");
         dir
+    }
+
+    fn test_meta(id: &str, thread_id: &str, status: SessionStatus, pid: u32) -> SessionMeta {
+        SessionMeta {
+            id: id.to_string(),
+            kind: AgentKind::Cursor,
+            thread_id: thread_id.to_string(),
+            cwd: "/tmp".to_string(),
+            pid,
+            status,
+            started_at: 1_700_000_000_000,
+            exit_code: None,
+            role: None,
+            parent_session_id: None,
+            root_session_id: id.to_string(),
+            detected_state: None,
+            has_transcript: false,
+        }
+    }
+
+    fn write_meta(root: &std::path::Path, meta: &SessionMeta) {
+        let dir = root.join(&meta.id);
+        std::fs::create_dir_all(&dir).expect("create session dir");
+        std::fs::write(
+            dir.join("meta.json"),
+            serde_json::to_vec_pretty(meta).expect("serialize meta"),
+        )
+        .expect("write meta");
     }
 
     #[test]
@@ -771,6 +888,159 @@ mod tests {
 
         let _ = active_child.kill().await;
         let _ = parent.kill().await;
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn load_existing_rehydrates_exited_session_from_disk() {
+        let root = temp_test_dir("rehydrate-exited");
+        let sessions_root = root.join("sessions");
+        let meta = test_meta("detached-1", "thread-1", SessionStatus::Exited, 123);
+        write_meta(&sessions_root, &meta);
+        std::fs::write(
+            sessions_root.join("detached-1").join("output.log"),
+            b"hello",
+        )
+        .expect("write output");
+
+        let manager = Manager::new(&sessions_root).expect("manager");
+        manager.load_existing().expect("load existing");
+
+        assert!(manager.get("detached-1").is_none());
+        let metas = manager.list_metas().await;
+        assert_eq!(metas.len(), 1);
+        assert_eq!(metas[0].id, "detached-1");
+        assert_eq!(metas[0].status, SessionStatus::Exited);
+        assert_eq!(manager.read_output("detached-1").expect("output"), b"hello");
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn load_existing_reconciles_orphan_running_to_exited() {
+        let root = temp_test_dir("rehydrate-orphan");
+        let sessions_root = root.join("sessions");
+        let meta = test_meta("orphan-1", "thread-1", SessionStatus::Running, 0);
+        write_meta(&sessions_root, &meta);
+
+        let manager = Manager::new(&sessions_root).expect("manager");
+        manager.load_existing().expect("load existing");
+
+        let metas = manager.list_metas().await;
+        assert_eq!(metas.len(), 1);
+        assert_eq!(metas[0].status, SessionStatus::Exited);
+
+        let persisted: SessionMeta = serde_json::from_slice(
+            &std::fs::read(sessions_root.join("orphan-1").join("meta.json"))
+                .expect("read persisted meta"),
+        )
+        .expect("parse persisted meta");
+        assert_eq!(persisted.status, SessionStatus::Exited);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn list_metas_merges_live_and_detached_without_duplicates() {
+        let root = temp_test_dir("list-metas");
+        let sessions_root = root.join("sessions");
+        let cwd = root.join("workspace");
+        std::fs::create_dir_all(&cwd).expect("create cwd");
+        write_meta(
+            &sessions_root,
+            &test_meta("detached-1", "thread-1", SessionStatus::Exited, 123),
+        );
+
+        let manager = Manager::new(&sessions_root).expect("manager");
+        manager.load_existing().expect("load existing");
+        let live = manager
+            .spawn_with_opts(
+                AgentKind::Cursor,
+                PathBuf::from("/bin/sh"),
+                "thread-1".to_string(),
+                cwd,
+                SpawnOpts {
+                    session_id_override: Some("live-1".to_string()),
+                    ..SpawnOpts::default()
+                },
+            )
+            .expect("spawn live");
+
+        let ids: std::collections::HashSet<String> = manager
+            .list_metas()
+            .await
+            .into_iter()
+            .map(|m| m.id)
+            .collect();
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains("detached-1"));
+        assert!(ids.contains("live-1"));
+
+        let _ = live.kill().await;
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn live_session_shadows_detached_same_id() {
+        let root = temp_test_dir("shadow-detached");
+        let sessions_root = root.join("sessions");
+        let cwd = root.join("workspace");
+        std::fs::create_dir_all(&cwd).expect("create cwd");
+        write_meta(
+            &sessions_root,
+            &test_meta("same-id", "old-thread", SessionStatus::Exited, 123),
+        );
+
+        let manager = Manager::new(&sessions_root).expect("manager");
+        manager.load_existing().expect("load existing");
+        let live = manager
+            .spawn_with_opts(
+                AgentKind::Cursor,
+                PathBuf::from("/bin/sh"),
+                "new-thread".to_string(),
+                cwd,
+                SpawnOpts {
+                    session_id_override: Some("same-id".to_string()),
+                    ..SpawnOpts::default()
+                },
+            )
+            .expect("spawn live");
+
+        let metas: Vec<SessionMeta> = manager
+            .list_metas()
+            .await
+            .into_iter()
+            .filter(|m| m.id == "same-id")
+            .collect();
+        assert_eq!(metas.len(), 1);
+        assert_eq!(metas[0].thread_id, "new-thread");
+        assert_eq!(metas[0].status, SessionStatus::Running);
+
+        let _ = live.kill().await;
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn load_existing_skips_bad_meta_without_failing() {
+        let root = temp_test_dir("bad-meta");
+        let sessions_root = root.join("sessions");
+        write_meta(
+            &sessions_root,
+            &test_meta("valid", "thread-1", SessionStatus::Exited, 123),
+        );
+        let bad_dir = sessions_root.join("bad");
+        std::fs::create_dir_all(&bad_dir).expect("create bad dir");
+        std::fs::write(bad_dir.join("meta.json"), b"{not json").expect("write bad meta");
+
+        let manager = Manager::new(&sessions_root).expect("manager");
+        manager.load_existing().expect("load existing");
+
+        let metas = manager.list_metas().await;
+        assert_eq!(metas.len(), 1);
+        assert_eq!(metas[0].id, "valid");
+
         let _ = std::fs::remove_dir_all(root);
     }
 }

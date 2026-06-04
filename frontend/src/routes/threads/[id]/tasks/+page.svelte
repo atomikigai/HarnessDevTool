@@ -79,6 +79,7 @@
   }
 
   const statuses: TaskStatus[] = [
+    'proposed',
     'queued',
     'in_progress',
     'pending_verify',

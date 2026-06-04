@@ -96,6 +96,7 @@ pub struct ReadinessReport {
     #[serde(default)]
     pub warnings: Vec<ReadinessIssue>,
     #[serde(default)]
+    #[cfg_attr(feature = "ts-export", ts(type = "unknown"))]
     pub facts: serde_json::Value,
     pub suggested_execution_mode: ExecutionMode,
 }

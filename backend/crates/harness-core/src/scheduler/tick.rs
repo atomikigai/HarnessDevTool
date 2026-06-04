@@ -540,6 +540,14 @@ fn run_assign_pass(
     let mut next_snapshot: StatusSnapshot = HashMap::new();
 
     for tid in store.known_threads()? {
+        if pause.is_thread_paused(&tid) {
+            tracing::debug!(
+                target: "scheduling",
+                thread = %tid,
+                "scheduling.thread_paused"
+            );
+            continue;
+        }
         let tasks = store.list(&tid, ListFilters::default())?;
         let thread_max_concurrent = budget_store
             .and_then(|store| store.get(&tid).max_concurrent_workers)
@@ -1145,6 +1153,64 @@ mod tests {
         let explanation = t.scheduler_explanation.expect("scheduler explanation");
         assert_eq!(explanation.decision, SchedulerDecisionKind::Assigned);
         assert_eq!(explanation.agent_id.as_deref(), Some(gen.id.as_str()));
+    }
+
+    #[test]
+    fn assign_pass_skips_thread_scoped_pause() {
+        use crate::agents::{AgentDraft, AgentsRegistry};
+        use crate::pause::PauseFlag;
+        use crate::tasks::{TaskDraft, TaskStore};
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let store = TaskStore::new(dir.path()).unwrap();
+        let agents = AgentsRegistry::new(dir.path()).unwrap();
+        let pause = PauseFlag::load(dir.path()).unwrap();
+        agents
+            .create(AgentDraft {
+                kind: AgentKind::Claude,
+                label: "g".into(),
+                role: Some("generator".into()),
+            })
+            .unwrap();
+
+        store
+            .create(
+                "thr-paused",
+                TaskDraft {
+                    title: "t".into(),
+                    parent: None,
+                    depends_on: vec![],
+                    brief: None,
+                    acceptance: vec![],
+                    labels: vec![],
+                    spec_refs: vec![],
+                    write_paths: vec![],
+                    forbidden_paths: vec![],
+                    created_by: "human".into(),
+                },
+            )
+            .unwrap();
+        pause.set_thread("thr-paused", true).unwrap();
+
+        let mut prev = StatusSnapshot::new();
+        let cd = Mutex::new(HashMap::new());
+        run_assign_pass(
+            &store,
+            &agents,
+            &pause,
+            3,
+            None,
+            &mut prev,
+            &cd,
+            &NoopSpawner,
+        )
+        .unwrap();
+
+        let t = store.get("thr-paused", "T-0001").unwrap();
+        assert_eq!(t.status, TaskStatus::Queued);
+        assert!(t.assignee.is_none());
+        assert!(t.scheduler_explanation.is_none());
     }
 
     #[test]

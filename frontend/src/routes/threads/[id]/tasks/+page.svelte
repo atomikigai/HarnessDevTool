@@ -21,7 +21,7 @@
   import { sessionsState } from '$lib/stores/session.svelte';
   import { specState } from '$lib/stores/spec.svelte';
   import { pauseAll } from '$lib/stores/pause-all.svelte';
-  import { apiRequest } from '$lib/api/client';
+  import { api, apiRequest } from '$lib/api/client';
   import { kindChip, uiStatus, statusColor, statusLabel } from '$lib/sessionDisplay';
   import {
     Plus,
@@ -52,6 +52,10 @@
   let reconcileLoading = $state(false);
   let reconcileError = $state<string | null>(null);
   let specPanelOpen = $state(true);
+  let threadPauseSupported = $state(false);
+  let threadPaused = $state(false);
+  let threadPauseLoading = $state(false);
+  let threadPauseError = $state<string | null>(null);
 
   let statusFilter = $state<TaskStatus | ''>('');
   let labelFilter = $state('');
@@ -90,6 +94,7 @@
     tasksState.start(threadId);
     void loadReconcile();
     void pauseAll.refresh();
+    void loadThreadPause();
     void sessionsState.refresh();
     specState.start(threadId);
   });
@@ -104,6 +109,7 @@
     if (threadId) {
       tasksState.start(threadId);
       void loadReconcile();
+      void loadThreadPause();
       void sessionsState.refresh();
       specState.start(threadId);
     }
@@ -126,7 +132,38 @@
   function refreshAll() {
     tasksState.refresh();
     void loadReconcile();
+    void loadThreadPause();
     void sessionsState.refresh();
+  }
+
+  async function loadThreadPause() {
+    if (!threadId) return;
+    try {
+      const res = await api.threadPause.get(threadId);
+      threadPaused = !!res.data.paused;
+      threadPauseSupported = true;
+      threadPauseError = null;
+    } catch (err) {
+      threadPauseSupported = false;
+      threadPauseError = err instanceof Error ? err.message : String(err);
+    }
+  }
+
+  async function toggleThreadPause() {
+    if (!threadPauseSupported || threadPauseLoading) return;
+    threadPauseLoading = true;
+    try {
+      const res = threadPaused
+        ? await api.threadPause.resume(threadId)
+        : await api.threadPause.pause(threadId);
+      threadPaused = !!res.data.paused;
+      threadPauseError = null;
+    } catch (err) {
+      threadPauseError = err instanceof Error ? err.message : String(err);
+      await loadThreadPause();
+    } finally {
+      threadPauseLoading = false;
+    }
   }
 
   function applyFilters() {
@@ -268,6 +305,23 @@
             <Play class="h-3.5 w-3.5" /> Resume
           {:else}
             <Pause class="h-3.5 w-3.5" /> Pause
+          {/if}
+        </Button>
+      {/if}
+      {#if threadPauseSupported}
+        <Button
+          size="sm"
+          variant={threadPaused ? 'default' : 'outline'}
+          onclick={toggleThreadPause}
+          disabled={threadPauseLoading}
+          title={threadPaused ? 'Resume this thread scheduler work' : 'Pause this thread scheduler work'}
+          aria-label={threadPaused ? 'Resume this thread scheduler work' : 'Pause this thread scheduler work'}
+          aria-pressed={threadPaused}
+        >
+          {#if threadPaused}
+            <Play class="h-3.5 w-3.5" /> Thread
+          {:else}
+            <Pause class="h-3.5 w-3.5" /> Thread
           {/if}
         </Button>
       {/if}

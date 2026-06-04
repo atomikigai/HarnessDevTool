@@ -395,6 +395,11 @@ export interface ActivateProfileResponse {
   requires_restart: boolean;
 }
 
+export interface ThreadPauseState {
+  thread_id: string;
+  paused: boolean;
+}
+
 export const api = {
   health: (signal?: AbortSignal) => apiRequest<HealthResponse>('/health', { signal }),
   approvals: {
@@ -411,6 +416,14 @@ export const api = {
       apiRequest<PauseAllState>('/pause-all', { method: 'POST', signal }),
     resume: (signal?: AbortSignal) =>
       apiRequest<PauseAllState>('/resume-all', { method: 'POST', signal })
+  },
+  threadPause: {
+    get: (threadId: string, signal?: AbortSignal) =>
+      apiRequest<ThreadPauseState>(`/threads/${threadId}/pause`, { signal }),
+    pause: (threadId: string, signal?: AbortSignal) =>
+      apiRequest<ThreadPauseState>(`/threads/${threadId}/pause`, { method: 'POST', signal }),
+    resume: (threadId: string, signal?: AbortSignal) =>
+      apiRequest<ThreadPauseState>(`/threads/${threadId}/resume`, { method: 'POST', signal })
   },
   agents: {
     list: (signal?: AbortSignal) => apiRequest<Agent[]>('/agents', { signal }),

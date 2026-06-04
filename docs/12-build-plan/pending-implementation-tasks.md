@@ -647,8 +647,11 @@ Estado implementado:
 - El dispatcher MCP envuelve tools con `check_tool_policy`; online delega a
   `/api/approvals/check`, offline aplica la matriz local y niega tools
   sensibles cuando el rol falta o no es confiable.
-- El server persiste decisiones `deny`/`ask` como evento append-only
-  `capability.decided` y preserva el `role` al recordar approvals.
+- El server persiste decisiones como evento append-only `capability.decided`
+  y escribe audit bridge en `$HARNESS_HOME/.runtime/audit/bridge.jsonl` para
+  cada `allow`/`deny` resuelto por `/api/approvals/check`, con actor, rol,
+  tool, recurso, decisión, razón y hashes. Preserva el `role` al recordar
+  approvals.
 - Task 29 cerró los hardenings posteriores: root spawn valida roles conocidos,
   `remembered_rule` conserva rol y el modo offline sin rol/desconocido niega
   tools sensibles.

@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::approvals::ApprovalSummary;
+use crate::audit::{append_bridge_audit, BridgeAuditRecord};
 use crate::error::{ApiError, ApiResult};
 use crate::state::AppState;
 
@@ -50,22 +51,8 @@ async fn check(
     let policy_decision = state
         .policy
         .evaluate(&body.tool, &body.args, body.role.as_deref());
-    if matches!(policy_decision, Decision::Deny | Decision::Ask) {
-        if let Some(thread_id) = body.thread_id.as_deref() {
-            if let Err(e) = append_capability_decided_event(
-                &state,
-                thread_id,
-                &body.tool,
-                body.role.as_deref(),
-                &policy_decision,
-                body.agent_id.as_deref(),
-            ) {
-                tracing::warn!(thread_id, error = %e, "failed to append capability decision event");
-            }
-        }
-    }
-    let decision = policy_decision;
-    let decision = match decision {
+    let reason = decision_reason(&policy_decision, &state, body.thread_id.as_deref());
+    let decision = match policy_decision {
         Decision::Allow => Decision::Allow,
         Decision::Deny => Decision::Deny,
         Decision::Ask if should_auto_allow_for_thread(&state, body.thread_id.as_deref()) => {
@@ -76,19 +63,59 @@ async fn check(
             state
                 .approvals
                 .request(
-                    body.tool,
-                    body.args,
-                    body.thread_id,
-                    body.session_id,
-                    body.agent_id,
-                    body.role,
+                    body.tool.clone(),
+                    body.args.clone(),
+                    body.thread_id.clone(),
+                    body.session_id.clone(),
+                    body.agent_id.clone(),
+                    body.role.clone(),
                     &state.tick_tx,
                     timeout,
                 )
                 .await
         }
     };
+    if let Some(thread_id) = body.thread_id.as_deref() {
+        if let Err(e) = append_capability_decided_event(
+            &state,
+            thread_id,
+            &body.tool,
+            body.role.as_deref(),
+            &decision,
+            body.agent_id.as_deref(),
+        ) {
+            tracing::warn!(thread_id, error = %e, "failed to append capability decision event");
+        }
+    }
+    let audit = BridgeAuditRecord::capability_decision(
+        &body.tool,
+        &body.args,
+        body.thread_id.as_deref(),
+        body.session_id.as_deref(),
+        body.agent_id.as_deref(),
+        body.role.as_deref(),
+        decision.clone(),
+        reason,
+    );
+    if let Err(e) = append_bridge_audit(&state.harness_home, &audit) {
+        tracing::warn!(error = %e, "failed to append bridge audit record");
+    }
     Json(CheckResponse { decision })
+}
+
+fn decision_reason(
+    policy_decision: &Decision,
+    state: &AppState,
+    thread_id: Option<&str>,
+) -> &'static str {
+    match policy_decision {
+        Decision::Allow => "policy allow",
+        Decision::Deny => "policy deny",
+        Decision::Ask if should_auto_allow_for_thread(state, thread_id) => {
+            "policy ask auto-allowed by autonomy profile"
+        }
+        Decision::Ask => "policy ask resolved by approval flow",
+    }
 }
 
 fn append_capability_decided_event(
@@ -281,6 +308,59 @@ mod tests {
         assert_eq!(payload["role"], "worker");
         assert_eq!(payload["decision"], "deny");
         assert_eq!(payload["agent_id"], "agent:worker");
+
+        let audit_path = dir.path().join(".runtime/audit/bridge.jsonl");
+        let audit_text = std::fs::read_to_string(audit_path).unwrap();
+        let audit: serde_json::Value = serde_json::from_str(audit_text.trim()).unwrap();
+        assert_eq!(audit["tool"], "task_create");
+        assert_eq!(audit["actor_role"], "worker");
+        assert_eq!(audit["decision"], "deny");
+        assert_eq!(audit["reason"], "policy deny");
+        assert!(audit["input_hash"].as_str().unwrap().starts_with("sha256:"));
+        assert!(audit["result_hash"]
+            .as_str()
+            .unwrap()
+            .starts_with("sha256:"));
+    }
+
+    #[tokio::test]
+    async fn check_appends_bridge_audit_for_allow_decision() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = state(dir.path().to_path_buf());
+        let app = router().with_state(state.clone());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/approvals/check")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "tool": "task_list",
+                            "args": {},
+                            "agent_id": "agent:worker",
+                            "role": "worker",
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        assert_eq!(body["decision"], "allow");
+
+        let audit_path = dir.path().join(".runtime/audit/bridge.jsonl");
+        let audit_text = std::fs::read_to_string(audit_path).unwrap();
+        let audit: serde_json::Value = serde_json::from_str(audit_text.trim()).unwrap();
+        assert_eq!(audit["tool"], "task_list");
+        assert_eq!(audit["actor_role"], "worker");
+        assert_eq!(audit["decision"], "allow");
+        assert_eq!(audit["reason"], "policy allow");
     }
 
     #[test]

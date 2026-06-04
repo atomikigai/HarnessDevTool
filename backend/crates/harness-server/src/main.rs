@@ -1,5 +1,6 @@
 mod app;
 mod approvals;
+mod audit;
 mod auth;
 mod config;
 mod error;

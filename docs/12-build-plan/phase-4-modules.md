@@ -88,9 +88,9 @@ Habilitar **dos módulos verticales** que el usuario usa directamente desde la U
 
 - [x] Mecanismo base de [[harness-core/approval-flow]] §"Allow and remember" para approvals MCP sensibles.
 - [x] Persistencia en `~/.harness/profiles/<p>/policy.toml` con reglas `<tool, args-pattern> → allow/deny`.
-- [ ] UI: modal de approval con checkbox "Remember this decision for similar calls".
+- [x] UI: modal de approval con checkbox "Remember this decision for similar calls".
 - [x] Auditoría de decisiones: `/api/approvals/check` escribe `$HARNESS_HOME/.runtime/audit/bridge.jsonl` con actor, rol, tool, recurso, decisión y hashes.
-- [ ] Auditoría de reglas recordadas: cada regla guarda `created_at`, `created_by`, hash de args.
+- [x] Auditoría de reglas recordadas: cada regla guarda `created_at`, `created_by`, hash de args.
 
 ## Lo que NO está en F4
 - Migraciones DDL desde UI (solo SELECT + ejecución SQL libre).

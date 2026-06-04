@@ -17,6 +17,12 @@ pub struct Rule {
     #[serde(default)]
     pub args_match: BTreeMap<String, String>,
     pub decision: Decision,
+    #[serde(default)]
+    pub created_at: Option<String>,
+    #[serde(default)]
+    pub created_by: Option<String>,
+    #[serde(default)]
+    pub args_hash: Option<String>,
 }
 
 impl Rule {

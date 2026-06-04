@@ -166,7 +166,7 @@ fn set_private_file_permissions(path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-fn hash_json(value: &serde_json::Value) -> String {
+pub(crate) fn hash_json(value: &serde_json::Value) -> String {
     let bytes = serde_json::to_vec(value).unwrap_or_default();
     let digest = Sha256::digest(bytes);
     let mut out = String::with_capacity(digest.len() * 2);

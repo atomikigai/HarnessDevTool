@@ -142,6 +142,15 @@ impl PolicyEngine {
             Decision::Deny => "deny",
             Decision::Ask => "ask",
         });
+        if let Some(created_at) = rule.created_at {
+            table["created_at"] = value(created_at);
+        }
+        if let Some(created_by) = rule.created_by {
+            table["created_by"] = value(created_by);
+        }
+        if let Some(args_hash) = rule.args_hash {
+            table["args_hash"] = value(args_hash);
+        }
         if !rule.args_match.is_empty() {
             let mut args = Table::new();
             for (key, pattern) in rule.args_match {
@@ -371,6 +380,9 @@ path = "*secret*"
                 role: None,
                 args_match: BTreeMap::new(),
                 decision: Decision::Ask,
+                created_at: None,
+                created_by: None,
+                args_hash: None,
             })
             .unwrap();
         assert!(path.exists());
@@ -398,12 +410,17 @@ decision = "allow"
                 role: None,
                 args_match: BTreeMap::new(),
                 decision: Decision::Deny,
+                created_at: Some("2026-06-04T00:00:00Z".to_string()),
+                created_by: Some("human".to_string()),
+                args_hash: Some("sha256:test".to_string()),
             })
             .unwrap();
         let text = fs::read_to_string(&path).unwrap();
         assert!(text.contains("# keep this comment"));
         assert!(text.contains("tool = \"task_list\""));
         assert!(text.contains("tool = \"db_query\""));
+        assert!(text.contains("created_by = \"human\""));
+        assert!(text.contains("args_hash = \"sha256:test\""));
     }
 
     #[test]

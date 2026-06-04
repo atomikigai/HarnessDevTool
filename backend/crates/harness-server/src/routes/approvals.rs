@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::approvals::ApprovalSummary;
-use crate::audit::{append_bridge_audit, BridgeAuditRecord};
+use crate::audit::{append_bridge_audit, hash_json, BridgeAuditRecord};
 use crate::error::{ApiError, ApiResult};
 use crate::state::AppState;
 
@@ -229,6 +229,9 @@ fn remembered_rule(
         role: summary.role.clone(),
         args_match,
         decision,
+        created_at: Some(Utc::now().to_rfc3339()),
+        created_by: Some("human".to_string()),
+        args_hash: Some(hash_json(&summary.args)),
     }
 }
 
@@ -386,5 +389,11 @@ mod tests {
         );
         assert!(!rule.args_match.contains_key("limit"));
         assert_eq!(rule.decision, Decision::Allow);
+        chrono::DateTime::parse_from_rfc3339(rule.created_at.as_deref().unwrap()).unwrap();
+        assert_eq!(rule.created_by.as_deref(), Some("human"));
+        assert!(rule
+            .args_hash
+            .as_deref()
+            .is_some_and(|v| v.starts_with("sha256:")));
     }
 }

@@ -58,8 +58,10 @@ Audit rápido del 2026-05-27:
   logic/API/stores usa Codex/Claude.
 - [x] Selector con fallback a Claude cuando falta el binario del CLI primario (`reason: binary_missing`).
 - [ ] Selector con fallback a Claude para `quota_exceeded` / `runtime_error` clasificados por CLI.
+  - [x] Fallos inmediatos de spawn clasificados como `quota_exceeded` / `runtime_error` reintentan Claude.
 - [x] Audit log append-only para fallback `binary_missing` (`scheduler.spawn.fallback`).
 - [ ] Audit log para fallbacks `quota_exceeded` / `runtime_error`.
+  - [x] Audit append-only para fallbacks de fallos inmediatos de spawn clasificados.
 - [x] `POST /api/threads/:tid/sessions { kind: "zeus" }` deja de devolver 400 BadRequest y resuelve a Codex como CLI principal.
 - [ ] UI: tab carrusel principal "Zeus session" + sub-tabs por hija con `parent_session_id`.
 - [ ] Test de aceptación: dado un goal sintético, verificar que cada rol se delega al CLI esperado y que el fallback dispara cuando el primario está bloqueado.

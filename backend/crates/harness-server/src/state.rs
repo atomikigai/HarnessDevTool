@@ -487,6 +487,52 @@ impl ManagerSpawner {
         }
         None
     }
+
+    fn classify_spawn_failure(message: &str) -> Option<&'static str> {
+        let lower = message.to_ascii_lowercase();
+        if lower.contains("unknown role") || lower.contains("unknown kind") {
+            return None;
+        }
+        if lower.contains("quota")
+            || lower.contains("rate limit")
+            || lower.contains("rate_limit")
+            || lower.contains("429")
+            || lower.contains("too many requests")
+        {
+            return Some("quota_exceeded");
+        }
+        if lower.contains("panic")
+            || lower.contains("crash")
+            || lower.contains("runtime")
+            || lower.contains("pty error")
+            || lower.contains("spawn")
+            || lower.contains("exited")
+        {
+            return Some("runtime_error");
+        }
+        None
+    }
+
+    fn fallback_for_spawn_failure(
+        &self,
+        kind: AgentKind,
+        error: &str,
+    ) -> Option<(PathBuf, FallbackSelection)> {
+        if kind == AgentKind::Claude {
+            return None;
+        }
+        let reason = Self::classify_spawn_failure(error)?;
+        let binary = self.binaries.get(&AgentKind::Claude).cloned()?;
+        Some((
+            binary,
+            FallbackSelection {
+                from: kind,
+                to: AgentKind::Claude,
+                reason,
+                detail: format!("primary CLI spawn failed: {error}"),
+            },
+        ))
+    }
 }
 
 impl SessionSpawner for ManagerSpawner {
@@ -517,6 +563,7 @@ impl SessionSpawner for ManagerSpawner {
 
         let cwd = req
             .cwd
+            .clone()
             .or_else(dirs::home_dir)
             .unwrap_or_else(|| PathBuf::from("/"));
 
@@ -619,10 +666,14 @@ impl SessionSpawner for ManagerSpawner {
             }
         }
 
-        match self
-            .manager
-            .spawn_with_opts(kind, binary, req.thread_id, cwd, opts)
-        {
+        let primary = self.manager.spawn_with_opts(
+            kind,
+            binary,
+            req.thread_id.clone(),
+            cwd.clone(),
+            opts.clone(),
+        );
+        match primary {
             Ok(session) => {
                 let sid = session.id().to_string();
                 if let Some(p) = config_path {
@@ -630,7 +681,33 @@ impl SessionSpawner for ManagerSpawner {
                 }
                 SpawnResult::Launched { session_id: sid }
             }
-            Err(e) => SpawnResult::Failed(format!("manager.spawn: {e}")),
+            Err(e) => {
+                let error = format!("manager.spawn: {e}");
+                if let Some((fallback_binary, fallback)) =
+                    self.fallback_for_spawn_failure(kind, &error)
+                {
+                    self.append_spawn_fallback_event(&req, &fallback);
+                    return match self.manager.spawn_with_opts(
+                        AgentKind::Claude,
+                        fallback_binary,
+                        req.thread_id,
+                        cwd,
+                        opts,
+                    ) {
+                        Ok(session) => {
+                            let sid = session.id().to_string();
+                            if let Some(p) = config_path {
+                                self.mcp_configs.insert(sid.clone(), p);
+                            }
+                            SpawnResult::Launched { session_id: sid }
+                        }
+                        Err(fallback_err) => SpawnResult::Failed(format!(
+                            "{error}; fallback manager.spawn: {fallback_err}"
+                        )),
+                    };
+                }
+                SpawnResult::Failed(error)
+            }
         }
     }
 }
@@ -742,6 +819,38 @@ mod tests {
         assert_eq!(fallback.from, AgentKind::Codex);
         assert_eq!(fallback.to, AgentKind::Claude);
         assert_eq!(fallback.reason, "binary_missing");
+    }
+
+    #[test]
+    fn classifies_spawn_failures_for_fallback_audit() {
+        assert_eq!(
+            ManagerSpawner::classify_spawn_failure("manager.spawn: API quota exceeded"),
+            Some("quota_exceeded")
+        );
+        assert_eq!(
+            ManagerSpawner::classify_spawn_failure("manager.spawn: pty error: child exited"),
+            Some("runtime_error")
+        );
+        assert_eq!(
+            ManagerSpawner::classify_spawn_failure("manager.spawn: unknown role"),
+            None
+        );
+    }
+
+    #[test]
+    fn runtime_spawn_failure_selects_claude_fallback() {
+        let mut binaries = HashMap::new();
+        binaries.insert(AgentKind::Claude, PathBuf::from("/bin/claude"));
+        binaries.insert(AgentKind::Codex, PathBuf::from("/bin/codex"));
+        let (spawner, _dir) = test_spawner(binaries);
+
+        let (_binary, fallback) = spawner
+            .fallback_for_spawn_failure(AgentKind::Codex, "manager.spawn: pty error: crash")
+            .expect("fallback");
+
+        assert_eq!(fallback.from, AgentKind::Codex);
+        assert_eq!(fallback.to, AgentKind::Claude);
+        assert_eq!(fallback.reason, "runtime_error");
     }
 
     #[test]

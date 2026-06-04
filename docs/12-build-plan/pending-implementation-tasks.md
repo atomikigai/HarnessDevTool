@@ -62,6 +62,8 @@ Nota F3 2026-06-04:
   `reason=binary_missing`.
 - `budget.v1.json` agregado en `harness-core/schemas` y cubierto por test de
   smoke contra los campos persistidos.
+- Dashboard F3: `/threads/:id/tasks` expone control Pause/Resume conectado al
+  kill-switch global del scheduler.
 
 ## A1. Readiness check + execution mode
 

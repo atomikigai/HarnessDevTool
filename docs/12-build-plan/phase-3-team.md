@@ -122,7 +122,8 @@ Audit rápido del 2026-05-27:
   - [ ] Panel "Live cost" desglosado por agente.
   - [ ] Lista de sesiones activas con su rol.
 - [ ] `<SpecViewer>` lateral muestra `spec.md` con highlight de secciones referenciadas por tasks.
-- [ ] Botón "Pause thread" / "Resume thread".
+- [x] Botón "Pause/Resume" en dashboard de tasks conectado al kill-switch global del scheduler.
+- [ ] Pausa/resume scoped por thread (si se decide separar del kill-switch global).
 
 ## Test de aceptación — el "TODO app" challenge
 

@@ -17,6 +17,7 @@
   import { Button } from '$lib/components/ui/button';
   import { Input } from '$lib/components/ui/input';
   import { budgetStore } from '$lib/stores/budget.svelte';
+  import { pauseAll } from '$lib/stores/pause-all.svelte';
   import { apiRequest } from '$lib/api/client';
   import {
     Plus,
@@ -27,6 +28,8 @@
     History,
     ListChecks,
     Network,
+    Pause,
+    Play,
     RefreshCw,
     Settings,
     AlertTriangle
@@ -71,6 +74,7 @@
   onMount(() => {
     tasksState.start(threadId);
     void loadReconcile();
+    void pauseAll.refresh();
   });
 
   onDestroy(() => {
@@ -215,6 +219,23 @@
       <Button size="sm" variant="outline" onclick={refreshAll}>
         <RefreshCw class="h-3.5 w-3.5" />
       </Button>
+      {#if pauseAll.supported}
+        <Button
+          size="sm"
+          variant="outline"
+          onclick={() => pauseAll.toggle()}
+          disabled={pauseAll.loading}
+          title={pauseAll.paused ? 'Resume all scheduler work' : 'Pause all scheduler work'}
+          aria-label={pauseAll.paused ? 'Resume all scheduler work' : 'Pause all scheduler work'}
+          aria-pressed={pauseAll.paused}
+        >
+          {#if pauseAll.paused}
+            <Play class="h-3.5 w-3.5" /> Resume
+          {:else}
+            <Pause class="h-3.5 w-3.5" /> Pause
+          {/if}
+        </Button>
+      {/if}
       <a
         href={`/threads/${threadId}/timeline`}
         class="inline-flex h-8 w-8 items-center justify-center rounded-md border"

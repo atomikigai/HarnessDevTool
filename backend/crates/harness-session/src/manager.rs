@@ -278,15 +278,16 @@ impl Manager {
         self.detached.remove(&id);
         self.sessions.insert(id, session.clone());
 
-        // `auto_intro` is passed to claude as `--append-system-prompt` (CLI
-        // flag, baked at spawn) so it never appears as user-typed input.
+        // `auto_intro` is passed to claude as `--append-system-prompt` and
+        // to codex as `developer_instructions` (CLI config override), so it
+        // never appears as user-typed input.
         // `role_prompt` IS user-typed: it's the "begin your role" kick that
         // tells the agent to start working, so it must appear in the
         // conversation.
         //
         // CLI-specific delivery:
-        //   - **Codex**: prompt is passed as the positional `[PROMPT]` arg
-        //     in `build_extra_args` — Codex submits it before its Ink TUI
+        //   - **Codex**: role_prompt is passed as the positional `[PROMPT]`
+        //     arg in `build_extra_args` — Codex submits it before its Ink TUI
         //     even mounts. Skip the PTY-injection task entirely.
         //   - **Claude/Cursor/Antigravity**: still go through the PTY using
         //     bracketed paste + delayed CR (`\r`). Claude's TUI accepts that
@@ -519,21 +520,22 @@ fn build_extra_args(kind: AgentKind, opts: &SpawnOpts, session_id: &str) -> Vec<
                     toml_string_array(&server.args)
                 ));
             }
-            // Pass the role/initial prompt as Codex's positional `[PROMPT]`
-            // arg. That's how Codex's CLI accepts the first user turn —
-            // typing into its Ink TUI via bracketed paste is racey because
-            // the TUI takes ~1s to mount and Ink doesn't always honor the
-            // paste-end + CR sequence. As a positional arg it's submitted
-            // before the TUI even renders.
-            let mut prompt_parts = Vec::new();
             if let Some(intro) = opts.auto_intro.as_ref() {
-                prompt_parts.push(intro.as_str());
+                // Codex supports developer instructions through config
+                // overrides. Unlike the positional `[PROMPT]`, this is model
+                // instruction context and does not appear as the first user
+                // turn in the TUI/transcript.
+                out.push("-c".to_string());
+                out.push(format!("developer_instructions={}", toml_string(intro)));
             }
+            // Pass only the actual role/initial work prompt as Codex's
+            // positional `[PROMPT]` arg. That's how Codex's CLI accepts the
+            // first user turn — typing into its Ink TUI via bracketed paste is
+            // racey because the TUI takes ~1s to mount and Ink doesn't always
+            // honor the paste-end + CR sequence. As a positional arg it's
+            // submitted before the TUI even renders.
             if let Some(prompt) = opts.role_prompt.as_ref() {
-                prompt_parts.push(prompt.as_str());
-            }
-            if !prompt_parts.is_empty() {
-                out.push(prompt_parts.join("\n\n"));
+                out.push(prompt.clone());
             }
         }
         AgentKind::Cursor => {
@@ -754,7 +756,7 @@ mod tests {
     }
 
     #[test]
-    fn codex_gets_mcp_overrides_and_prompt() {
+    fn codex_gets_mcp_overrides_developer_instructions_and_prompt() {
         let opts = SpawnOpts {
             mcp_config_path: Some(PathBuf::from("/tmp/cfg.json")),
             mcp_server_command: Some("/tmp/harness-mcp-server".into()),
@@ -808,12 +810,34 @@ mod tests {
             a == "mcp_servers.crawl4ai.args=[\"-y\", \"mcp-remote\", \"http://localhost:11235/mcp/sse\"]"
         }));
         assert!(args
+            .iter()
+            .any(|a| a == "developer_instructions=\"Harness tools are available.\""));
+        assert!(args.last().unwrap().contains("Inspect the database."));
+        assert!(!args
             .last()
             .unwrap()
-            .contains("Harness tools are available.\n\nInspect the database."));
+            .contains("Harness tools are available."));
         assert!(
             !args.iter().any(|a| a == "--disallowed-tools"),
             "Todo tool disabling is Claude-only"
+        );
+    }
+
+    #[test]
+    fn codex_auto_intro_only_is_not_a_user_prompt() {
+        let opts = SpawnOpts {
+            auto_intro: Some("You are Zeus.".into()),
+            ..SpawnOpts::default()
+        };
+
+        let args = build_extra_args(AgentKind::Codex, &opts, "sid-c");
+
+        assert!(args
+            .iter()
+            .any(|a| a == "developer_instructions=\"You are Zeus.\""));
+        assert!(
+            !args.iter().any(|a| a == "You are Zeus."),
+            "auto_intro must not become Codex's positional user prompt"
         );
     }
 

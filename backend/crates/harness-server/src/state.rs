@@ -891,4 +891,69 @@ mod tests {
         assert_eq!(payload["reason"], "binary_missing");
         assert_eq!(payload["task_id"], "T-0001");
     }
+
+    #[test]
+    fn synthetic_goal_routes_roles_to_expected_cli_and_audits_blocked_primary_fallback() {
+        let mut binaries = HashMap::new();
+        binaries.insert(AgentKind::Claude, PathBuf::from("/bin/claude"));
+        binaries.insert(AgentKind::Codex, PathBuf::from("/bin/codex"));
+        binaries.insert(AgentKind::Cursor, PathBuf::from("/bin/cursor-agent"));
+        let (spawner, _dir) = test_spawner(binaries);
+
+        let role_matrix = [
+            ("planner", AgentKind::Claude),
+            ("generator", AgentKind::Claude),
+            ("evaluator", AgentKind::Claude),
+            ("frontend-visual", AgentKind::Cursor),
+        ];
+        for (role_name, expected) in role_matrix {
+            let role = spawner.roles.get(role_name).expect("baseline role");
+            let selected = spawner
+                .select_kind_and_binary(role.cli, role_name, "codex")
+                .expect("role resolves to a launchable CLI");
+            assert_eq!(
+                selected.kind, expected,
+                "role {role_name} should route to {expected}"
+            );
+            assert!(
+                selected.fallback.is_none(),
+                "role {role_name} should not fallback while its primary binary is present"
+            );
+        }
+
+        let (fallback_binary, fallback) = spawner
+            .fallback_for_spawn_failure(
+                AgentKind::Codex,
+                "manager.spawn: API quota exceeded while booting synthetic worker",
+            )
+            .expect("blocked codex primary should fallback to Claude");
+        assert_eq!(fallback_binary, PathBuf::from("/bin/claude"));
+        assert_eq!(fallback.from, AgentKind::Codex);
+        assert_eq!(fallback.to, AgentKind::Claude);
+        assert_eq!(fallback.reason, "quota_exceeded");
+
+        let thread = spawner
+            .store
+            .create_thread(Some("synthetic TODO goal".to_string()))
+            .unwrap();
+        let req = SpawnRequest {
+            thread_id: thread.id.clone(),
+            agent_id: "agent:codex-1".to_string(),
+            kind: "codex".to_string(),
+            role: "generator".to_string(),
+            task_id: Some("T-0001".to_string()),
+            cwd: None,
+        };
+
+        spawner.append_spawn_fallback_event(&req, &fallback);
+
+        let events = spawner.store.read_events(&thread.id).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, "scheduler.spawn.fallback");
+        let payload = events[0].payload.as_ref().unwrap();
+        assert_eq!(payload["from"], "codex");
+        assert_eq!(payload["to"], "claude");
+        assert_eq!(payload["reason"], "quota_exceeded");
+        assert_eq!(payload["task_id"], "T-0001");
+    }
 }

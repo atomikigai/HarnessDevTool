@@ -64,7 +64,7 @@ Audit rápido del 2026-05-27:
   - [x] Audit append-only para fallbacks de fallos inmediatos de spawn clasificados.
 - [x] `POST /api/threads/:tid/sessions { kind: "zeus" }` deja de devolver 400 BadRequest y resuelve a Codex como CLI principal.
 - [x] UI: tab carrusel principal "Zeus session" + sub-tabs por hija con `parent_session_id`.
-- [ ] Test de aceptación: dado un goal sintético, verificar que cada rol se delega al CLI esperado y que el fallback dispara cuando el primario está bloqueado.
+- [x] Test de aceptación: dado un goal sintético, verificar que cada rol se delega al CLI esperado y que el fallback dispara cuando el primario está bloqueado.
 
 ### Backend — authorization (Q9 follow-ups)
 - [x] **Capability policy loader**: el dispatcher del `harness-mcp-server` lee `~/.harness/profiles/<p>/policy.toml` al boot. Online delega al server; offline aplica reglas explícitas locales y falla cerrado si la policy está corrupta para tools sensibles.

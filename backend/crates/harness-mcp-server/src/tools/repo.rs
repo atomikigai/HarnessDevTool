@@ -8,7 +8,9 @@ use std::ffi::OsStr;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
+use gix;
 use serde_json::{json, Value};
+use tokei::{Config, Languages};
 
 const DEFAULT_SCAN_LIMIT: usize = 400;
 const DEFAULT_MAX_DEPTH: usize = 4;
@@ -54,6 +56,7 @@ pub fn analyze(root: &Path, args: &Value) -> Result<Value, String> {
         "git": git_summary(&dir),
         "codebase_memory": codebase_memory_status(&dir, &json!({}))?,
         "sample_files": relative_files.into_iter().take(80).collect::<Vec<_>>(),
+        "code_stats": code_stats(&dir),
     }))
 }
 
@@ -391,10 +394,52 @@ fn read_json_if_exists(path: &Path) -> Option<Value> {
 }
 
 fn git_summary(root: &Path) -> Value {
-    json!({
-        "is_repo": root.join(".git").exists(),
-        "status": run_git(root, &["status", "--short", "--branch"], 16 * 1024).ok(),
-    })
+    match gix::open(root) {
+        Err(_) => json!({ "is_repo": false }),
+        Ok(repo) => {
+            let branch = repo.head().ok().and_then(|h| {
+                h.referent_name().map(|n| {
+                    n.as_bstr()
+                        .to_string()
+                        .trim_start_matches("refs/heads/")
+                        .to_string()
+                })
+            });
+            let head = repo.head_id().ok().map(|id| id.to_hex_with_len(8).to_string());
+            let is_dirty = run_git(root, &["status", "--short"], 4096)
+                .map(|s| !s.trim().is_empty())
+                .unwrap_or(false);
+            json!({
+                "is_repo": true,
+                "branch": branch,
+                "head": head,
+                "is_dirty": is_dirty,
+            })
+        }
+    }
+}
+
+fn code_stats(root: &Path) -> Value {
+    let mut langs = Languages::new();
+    langs.get_statistics(&[root], &[], &Config::default());
+    let mut stats: Vec<(String, Value)> = langs
+        .iter()
+        .map(|(lang, ls)| {
+            (lang.to_string(), json!({
+                "files": ls.reports.len(),
+                "lines": ls.lines(),
+                "code": ls.code,
+                "comments": ls.comments,
+                "blanks": ls.blanks,
+            }))
+        })
+        .collect();
+    stats.sort_by(|a, b| {
+        b.1["code"].as_u64().unwrap_or(0)
+            .cmp(&a.1["code"].as_u64().unwrap_or(0))
+    });
+    let top10: serde_json::Map<String, Value> = stats.into_iter().take(10).collect();
+    Value::Object(top10)
 }
 
 fn run_git(root: &Path, args: &[&str], max_bytes: usize) -> Result<String, String> {

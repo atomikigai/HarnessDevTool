@@ -50,6 +50,8 @@ revisar, aprobar y ejecutar sin mezclar scopes.
 33. **Task 29: Hardening de capability policy** — ejecutada 2026-06-04: root spawn rechaza roles desconocidos contra `RolesRegistry`; `remembered_rule` persiste el rol de `ApprovalSummary`; offline sin rol o con rol desconocido niega tools sensibles y conserva read-only.
 34. **Task 30: gitignore de `backend/crates/*/bindings/`** — ejecutada 2026-06-04: `.gitignore` cubre outputs crate-locales de `ts-rs`, `ReadinessReport.facts` exporta `unknown` desde Rust en vez de importar `JsonValue`, y el gate frontend queda en `pnpm check`.
 35. **Task 31: Medición de eficiencia de tools por spawn** — benchmark de tokens, tool-calls y tasa de éxito por configuración de capacidades cargadas; identifica qué tools deben ser rails Rust o contexto pre-inyectado vs tools reales. Prerequisito: smart-loading implementado (spawn_hint / resolve_load).
+36. **Task 32: Reemplazar `pdftotext` por `pdf_oxide` embebido** — eliminar la dependencia del subprocess externo poppler/pdftotext en `harness-core/knowledge.rs`; embeber el crate `pdf_oxide` como extracción pure Rust (cero subprocess); agregar `pdf_oxide_mcp` como servicio MCP opcional en `docker-compose.mcp.yml` para que agentes lean PDFs directamente como tool.
+37. **Task 33: Capacidad `docs.build` con Starlight como backend default** — el doc-agent genera markdown; el harness compila un sitio navegable para el proyecto donde está desplegado. Backend Starlight (Astro) como default universal; arquitectura intercambiable para soporte futuro de mdBook/VitePress según stack detectado.
 
 ## A1. Readiness check + execution mode
 
@@ -1045,3 +1047,89 @@ en tasa de éxito. Al menos una tool promovida a rail Rust o a contexto
 pre-inyectado con evidencia de mejora.
 
 Estado: pendiente — blocked hasta que smart-loading (Task en F3) esté implementado.
+
+## Task 32: Reemplazar `pdftotext` por `pdf_oxide` embebido
+
+Objetivo:
+Eliminar la dependencia de sistema `pdftotext` (poppler-utils) en
+`harness-core/knowledge.rs` y reemplazarla con el crate `pdf_oxide` embebido
+directamente en Rust. Sin subprocess, sin dependencia externa del sistema.
+Como bonus, agregar `pdf_oxide_mcp` como MCP opcional para que los agentes
+puedan leer PDFs como tool.
+
+Contexto:
+`harness-core/src/knowledge.rs` usa `Command::new("pdftotext")` como subprocess.
+Poppler es una dependencia del sistema (no Rust) que falla silenciosamente si no
+está instalada. `pdf_oxide` (crates.io v0.3.60) es pure Rust, 0.8ms por PDF en
+promedio, 100% pass rate en 3.830 PDFs reales, 5× más rápido que `pdf-extract`.
+También existe `pdf_oxide_mcp` (v0.3.60) — MCP server que expone extracción de
+PDFs como tool para agentes.
+
+Tarea:
+1. Agregar `pdf_oxide = "0.3"` en `backend/crates/harness-core/Cargo.toml`.
+2. Reemplazar `extract_pdf_text` (y helpers `check_pdftotext`, `pdftotext_install_hint`)
+   en `knowledge.rs` usando la API oficial:
+   ```rust
+   use pdf_oxide::PdfDocument;
+   use pdf_oxide::converters::ConversionOptions;
+   let mut doc = PdfDocument::open(path)?;
+   let options = ConversionOptions { detect_headings: true, ..Default::default() };
+   let md = doc.to_markdown(page, &options)?;
+   ```
+   Iterar todas las páginas del doc (`doc.page_count()`) y concatenar el markdown.
+   Usar `to_markdown()` — agentes reciben markdown estructurado (headings, tablas,
+   columnas) en vez de texto plano.
+3. Eliminar la struct `PdfTextToolStatus` y su check de binario externo si queda
+   sin uso; actualizar el `ReadinessReport` para que `pdftotext` deje de ser un
+   check requerido.
+4. Agregar `pdf_oxide_mcp` como servicio opcional en `docker-compose.mcp.yml`
+   (misma estructura que `excalidraw-mcp`).
+5. Actualizar `scripts/dev-mcp.sh` para incluir `pdf_oxide_mcp` en los servicios
+   opcionales si el usuario lo activa.
+6. Actualizar `just setup` para quitar el warn de `pdftotext` (ya no es necesario).
+7. Correr `just test` para verificar que los tests de knowledge siguen verdes.
+
+Resultado esperado:
+`just setup` no menciona `pdftotext`. El knowledge base ingiere PDFs sin depender
+de ningún binario del sistema. `pdf_oxide_mcp` disponible como MCP opcional para
+agentes. `just test` verde.
+
+Estado: pendiente.
+
+## Task 33: Capacidad `docs.build` con Starlight como backend default
+
+Objetivo:
+Que el harness pueda generar documentación navegable para los proyectos donde
+está desplegado. El doc-agent ya produce markdown; este task añade el paso de
+compilar ese markdown en un sitio estático. Starlight (Astro) como backend
+default — funciona igual para proyectos Rust, Node, Python o mixtos.
+
+Contexto:
+El rail `repo.analyze` ya detecta el stack del proyecto (rust/node/python/svelte).
+El doc-agent escribe markdown en docs/**. La capacidad `docs.build` es el paso
+final: toma ese markdown y produce un sitio estático desplegable. El backend
+se elige según el stack detectado, con override manual posible.
+
+Backends planificados:
+- `starlight` (Astro) — default universal, TypeScript-friendly, sitio moderno
+- `mdbook` — proyectos Rust puros (encaja con ecosistema docs.rs)
+- `vitepress` — proyectos Vue/Vite
+
+Tarea:
+1. Definir `DocsBackend` enum en harness-core (starlight | mdbook | vitepress).
+2. Implementar rail `docs.build(backend, source_dir, output_dir)` en harness-mcp-server.
+3. Lógica de selección automática de backend en `infer_docs_backend(stack)`:
+   - stack contiene solo "rust" → mdbook
+   - default → starlight
+4. Scaffold mínimo de Starlight: `package.json` + `astro.config.mjs` + estructura
+   `src/content/docs/` donde el doc-agent deposita los archivos.
+5. Agregar `docs.build` como tool MCP expuesta al orchestrator y doc-agent.
+6. Agregar `starlight` y `mdbook` a la sección de CLIs opcionales en `just setup`.
+7. Documentar en `docs/10-recipes/` cómo activar docs para un proyecto nuevo.
+
+Resultado esperado:
+El orchestrator puede pedir `docs.build` y obtener un sitio estático en
+`<project>/docs-site/` listo para desplegar. `just setup` informa si Starlight
+(npx astro) está disponible.
+
+Estado: pendiente.

@@ -11,6 +11,7 @@ export const API_BASE: string = (import.meta.env.PUBLIC_API_BASE as string | und
 
 export const PROTOCOL_VERSION_HEADER = 'X-Protocol-Version';
 export const PROTOCOL_VERSION = '1.0';
+export const DEFAULT_API_TIMEOUT_MS = 30_000;
 
 const API_TOKEN: string =
   env.PUBLIC_HARNESS_API_TOKEN ??
@@ -60,6 +61,38 @@ export interface RequestOptions {
   body?: unknown;
   headers?: Record<string, string>;
   signal?: AbortSignal;
+  timeoutMs?: number;
+}
+
+export function requestSignal(
+  signal?: AbortSignal,
+  timeoutMs: number = DEFAULT_API_TIMEOUT_MS
+): { signal: AbortSignal; timedOut: () => boolean; cleanup: () => void } {
+  const controller = new AbortController();
+  let timeout: ReturnType<typeof setTimeout> | null = null;
+  let didTimeout = false;
+
+  const abort = () => controller.abort(signal?.reason);
+  if (signal?.aborted) {
+    abort();
+  } else {
+    signal?.addEventListener('abort', abort, { once: true });
+    if (timeoutMs > 0) {
+      timeout = setTimeout(() => {
+        didTimeout = true;
+        controller.abort(new DOMException('Request timeout', 'TimeoutError'));
+      }, timeoutMs);
+    }
+  }
+
+  return {
+    signal: controller.signal,
+    timedOut: () => didTimeout,
+    cleanup: () => {
+      if (timeout) clearTimeout(timeout);
+      signal?.removeEventListener('abort', abort);
+    }
+  };
 }
 
 function joinUrl(base: string, path: string): string {
@@ -81,34 +114,47 @@ export async function apiRequest<T>(
     body = typeof opts.body === 'string' ? opts.body : JSON.stringify(opts.body);
   }
 
-  const res = await fetch(url, {
-    method: opts.method ?? 'GET',
-    headers,
-    body,
-    signal: opts.signal
-  });
+  const timeout = requestSignal(opts.signal, opts.timeoutMs);
+  try {
+    const res = await fetch(url, {
+      method: opts.method ?? 'GET',
+      headers,
+      body,
+      signal: timeout.signal
+    });
 
-  const protocolVersion = res.headers.get(PROTOCOL_VERSION_HEADER);
+    const protocolVersion = res.headers.get(PROTOCOL_VERSION_HEADER);
 
-  let parsed: unknown = null;
-  const text = await res.text();
-  if (text.length > 0) {
-    try {
-      parsed = JSON.parse(text);
-    } catch {
-      parsed = text;
+    let parsed: unknown = null;
+    const text = await res.text();
+    if (text.length > 0) {
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        parsed = text;
+      }
     }
-  }
 
-  if (!res.ok) {
-    throw new ApiError(res.status, `Request failed: ${res.status} ${res.statusText}`, parsed);
-  }
+    if (!res.ok) {
+      throw new ApiError(res.status, `Request failed: ${res.status} ${res.statusText}`, parsed);
+    }
 
-  return {
-    data: parsed as T,
-    protocolVersion,
-    status: res.status
-  };
+    return {
+      data: parsed as T,
+      protocolVersion,
+      status: res.status
+    };
+  } catch (err) {
+    if (timeout.timedOut()) {
+      throw new ApiError(
+        408,
+        `Request timed out after ${opts.timeoutMs ?? DEFAULT_API_TIMEOUT_MS}ms`
+      );
+    }
+    throw err;
+  } finally {
+    timeout.cleanup();
+  }
 }
 
 // Typed helpers for the F0/F1 endpoints.
@@ -445,10 +491,12 @@ export const api = {
       apiRequest<{ content: string; etag: string; version?: number }>(`/threads/${tid}/spec`),
     put: async (tid: string, body: { content: string; etag?: string }) => {
       try {
-        return await apiRequest<{ etag: string; version?: number; bytes: number; created: boolean }>(
-          `/threads/${tid}/spec`,
-          { method: 'PUT', body }
-        );
+        return await apiRequest<{
+          etag: string;
+          version?: number;
+          bytes: number;
+          created: boolean;
+        }>(`/threads/${tid}/spec`, { method: 'PUT', body });
       } catch (err) {
         if (err instanceof ApiError && err.status === 409 && isEtagMismatch(err.body)) {
           throw new SpecEtagMismatchError(err.body);
@@ -487,12 +535,23 @@ export const api = {
     // input is sent as raw octet-stream; not typed via apiRequest because of binary body.
     input: async (sessionId: string, bytes: Uint8Array, signal?: AbortSignal) => {
       const url = `${API_BASE.endsWith('/') ? API_BASE.slice(0, -1) : API_BASE}/sessions/${sessionId}/input`;
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: apiHeaders({ 'Content-Type': 'application/octet-stream' }),
-        body: bytes as BodyInit,
-        signal
-      });
+      const timeout = requestSignal(signal);
+      let res: Response;
+      try {
+        res = await fetch(url, {
+          method: 'POST',
+          headers: apiHeaders({ 'Content-Type': 'application/octet-stream' }),
+          body: bytes as BodyInit,
+          signal: timeout.signal
+        });
+      } catch (err) {
+        if (timeout.timedOut()) {
+          throw new ApiError(408, `Request timed out after ${DEFAULT_API_TIMEOUT_MS}ms`);
+        }
+        throw err;
+      } finally {
+        timeout.cleanup();
+      }
       if (!res.ok) {
         const text = await res.text().catch(() => '');
         throw new ApiError(res.status, `input failed: ${res.status}`, text);
@@ -512,7 +571,23 @@ export const api = {
       const url = `${API_BASE.endsWith('/') ? API_BASE.slice(0, -1) : API_BASE}/sessions/${sessionId}/attach`;
       const form = new FormData();
       for (const f of files) form.append('file', f, f.name);
-      const res = await fetch(url, { method: 'POST', headers: apiHeaders(), body: form, signal });
+      const timeout = requestSignal(signal);
+      let res: Response;
+      try {
+        res = await fetch(url, {
+          method: 'POST',
+          headers: apiHeaders(),
+          body: form,
+          signal: timeout.signal
+        });
+      } catch (err) {
+        if (timeout.timedOut()) {
+          throw new ApiError(408, `Request timed out after ${DEFAULT_API_TIMEOUT_MS}ms`);
+        }
+        throw err;
+      } finally {
+        timeout.cleanup();
+      }
       if (!res.ok) {
         const text = await res.text().catch(() => '');
         throw new ApiError(res.status, `attach failed: ${res.status}`, text);

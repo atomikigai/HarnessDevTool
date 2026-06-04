@@ -13,7 +13,7 @@ use harness_session::SessionEvent;
 use serde::Deserialize;
 use serde_json::json;
 use std::sync::atomic::{AtomicU64, Ordering};
-use tokio_stream::wrappers::BroadcastStream;
+use tokio_stream::wrappers::{errors::BroadcastStreamRecvError, BroadcastStream};
 
 use crate::state::AppState;
 
@@ -45,7 +45,9 @@ async fn events(
                 let s = BroadcastStream::new(rx).filter_map(|res| async move {
                     match res {
                         Ok(payload) => Some(Ok(SseEvent::default().data(payload))),
-                        Err(_lag) => None,
+                        Err(BroadcastStreamRecvError::Lagged(skipped)) => {
+                            Some(Ok(lagged_event("tick", None, None, skipped)))
+                        }
                     }
                 });
                 Box::new(Box::pin(s))
@@ -66,14 +68,19 @@ fn thread_stream(
     tid: String,
 ) -> impl Stream<Item = Result<SseEvent, Infallible>> + Send {
     let rx = state.tasks.subscribe(&tid);
-    BroadcastStream::new(rx).filter_map(|res| async move {
-        let ev = match res {
-            Ok(ev) => ev,
-            Err(_lag) => return None,
-        };
-        let kind = task_event_sse_name(&ev);
-        let data = serde_json::to_string(&ev).unwrap_or_else(|_| "{}".into());
-        Some(Ok(SseEvent::default().event(kind).data(data)))
+    BroadcastStream::new(rx).filter_map(move |res| {
+        let tid = tid.clone();
+        async move {
+            let ev = match res {
+                Ok(ev) => ev,
+                Err(BroadcastStreamRecvError::Lagged(skipped)) => {
+                    return Some(Ok(lagged_event("thread", Some(&tid), None, skipped)));
+                }
+            };
+            let kind = task_event_sse_name(&ev);
+            let data = serde_json::to_string(&ev).unwrap_or_else(|_| "{}".into());
+            Some(Ok(SseEvent::default().event(kind).data(data)))
+        }
     })
 }
 
@@ -137,7 +144,14 @@ fn session_stream(
         async move {
             let ev = match res {
                 Ok(ev) => ev,
-                Err(_lag) => return None,
+                Err(BroadcastStreamRecvError::Lagged(skipped)) => {
+                    return Some(Ok(lagged_event(
+                        "session",
+                        None,
+                        Some(&sid_filter),
+                        skipped,
+                    )));
+                }
             };
             if ev.session_id() != sid_filter {
                 return None;
@@ -163,6 +177,29 @@ fn session_stream(
     });
 
     catchup_stream.chain(live)
+}
+
+fn lagged_event(
+    stream: &'static str,
+    thread_id: Option<&str>,
+    session_id: Option<&str>,
+    skipped: u64,
+) -> SseEvent {
+    let mut payload = json!({
+        "type": "lagged",
+        "stream": stream,
+        "skipped": skipped,
+        "resync": "reconnect",
+    });
+    if let Some(thread_id) = thread_id {
+        payload["thread_id"] = json!(thread_id);
+    }
+    if let Some(session_id) = session_id {
+        payload["session_id"] = json!(session_id);
+    }
+    SseEvent::default()
+        .event("lagged")
+        .data(payload.to_string())
 }
 
 #[cfg(test)]

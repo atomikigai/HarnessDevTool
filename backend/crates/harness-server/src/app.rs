@@ -1,11 +1,14 @@
 use std::sync::Arc;
+use std::time::Duration;
 
+use axum::extract::DefaultBodyLimit;
 use axum::http::{header, HeaderName, HeaderValue, Method, Uri};
 use axum::{middleware, Router};
 use tower::ServiceBuilder;
 use tower_http::compression::CompressionLayer;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::set_header::SetResponseHeaderLayer;
+use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 
 use crate::config::Config;
@@ -14,6 +17,8 @@ use crate::state::AppState;
 
 pub const PROTOCOL_VERSION: &str = "1.0";
 pub const PROTOCOL_VERSION_HEADER: HeaderName = HeaderName::from_static("x-protocol-version");
+const MAX_REQUEST_BODY_BYTES: usize = 110 * 1024 * 1024;
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 
 pub fn build_router(state: Arc<AppState>, cfg: &Config) -> Router {
     let configured_cors_origin = cfg.cors_origin.clone();
@@ -42,17 +47,18 @@ pub fn build_router(state: Arc<AppState>, cfg: &Config) -> Router {
         HeaderValue::from_static(PROTOCOL_VERSION),
     );
 
-    let middleware = ServiceBuilder::new()
+    let common_middleware = ServiceBuilder::new()
         .layer(TraceLayer::new_for_http())
         .layer(protocol_header_layer)
-        .layer(cors)
-        .layer(CompressionLayer::new());
+        .layer(cors);
+    let compression = ServiceBuilder::new().layer(CompressionLayer::new());
 
-    let protected = Router::new()
+    let api_timeout = ServiceBuilder::new().layer(TimeoutLayer::new(REQUEST_TIMEOUT));
+
+    let protected_api = Router::new()
         .merge(routes::knowledge::router())
         .merge(routes::threads::router())
         .merge(routes::sessions::router())
-        .merge(routes::events::router())
         .merge(routes::tasks::router())
         .merge(routes::spec::router())
         .merge(routes::agents::router())
@@ -61,7 +67,17 @@ pub fn build_router(state: Arc<AppState>, cfg: &Config) -> Router {
         .merge(routes::budget::router())
         .merge(routes::db::router())
         .merge(routes::profiles::router())
+        .layer(api_timeout)
+        .layer(compression);
+
+    let protected_sse = Router::new()
+        .merge(routes::events::router())
         .merge(routes::transcript::router())
+        .layer(DefaultBodyLimit::disable());
+
+    let protected = Router::new()
+        .merge(protected_api)
+        .merge(protected_sse)
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             crate::auth::require_api_token,
@@ -70,7 +86,8 @@ pub fn build_router(state: Arc<AppState>, cfg: &Config) -> Router {
     Router::new()
         .merge(routes::health::router())
         .merge(protected)
-        .layer(middleware)
+        .layer(DefaultBodyLimit::max(MAX_REQUEST_BODY_BYTES))
+        .layer(common_middleware)
         .with_state(state)
 }
 

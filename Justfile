@@ -48,6 +48,88 @@ dev-frontend:
 dev-mcp:
     ./scripts/dev-mcp.sh
 
+# Bootstrap: instala herramientas necesarias y valida el entorno
+setup:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; NC='\033[0m'
+    ok()   { echo -e "  ${GREEN}✓${NC} $1"; }
+    warn() { echo -e "  ${YELLOW}!${NC} $1"; }
+    fail() { echo -e "  ${RED}✗${NC} $1"; FAILED=1; }
+
+    FAILED=0
+    echo ""
+    echo "=== harness setup ==="
+    echo ""
+
+    # — Herramientas requeridas del sistema —
+    echo "Sistema:"
+    for tool in git cargo node pnpm; do
+      if command -v "$tool" &>/dev/null; then
+        ok "$tool $(${tool} --version 2>&1 | head -1)"
+      else
+        fail "$tool no encontrado — instálalo manualmente"
+      fi
+    done
+
+    # — Herramientas npm globales —
+    echo ""
+    echo "Herramientas npm globales:"
+    npm_global_install() {
+      local pkg="$1"
+      local bin="${2:-$1}"
+      if command -v "$bin" &>/dev/null; then
+        ok "$bin ($(${bin} --version 2>/dev/null | head -1 || echo 'instalado'))"
+      else
+        echo -e "  ${YELLOW}→${NC} Instalando $pkg..."
+        npm install -g "$pkg" 2>&1 | tail -1
+        ok "$bin instalado"
+      fi
+    }
+    npm_global_install "opensrc" "opensrc"
+
+    # — CLIs de agentes (opcionales, el harness funciona sin ellos) —
+    echo ""
+    echo "CLIs de agentes (opcionales):"
+    for tool in claude codex; do
+      if command -v "$tool" &>/dev/null; then
+        ok "$tool"
+      else
+        warn "$tool no encontrado — necesario para spawnar agentes"
+      fi
+    done
+
+    # — Dependencias frontend —
+    echo ""
+    echo "Frontend:"
+    if [ -d "frontend/node_modules" ]; then
+      ok "node_modules presente"
+    else
+      echo -e "  ${YELLOW}→${NC} Instalando dependencias frontend..."
+      (cd frontend && pnpm install --frozen-lockfile)
+      ok "pnpm install completado"
+    fi
+
+    # — Validación backend —
+    echo ""
+    echo "Backend:"
+    echo -e "  ${YELLOW}→${NC} cargo check..."
+    if (cd backend && cargo check --workspace -q 2>&1); then
+      ok "cargo check OK"
+    else
+      fail "cargo check falló — revisa errores de compilación"
+    fi
+
+    echo ""
+    if [ "$FAILED" -eq 0 ]; then
+      echo -e "${GREEN}Setup completo. Corre 'just dev' para iniciar.${NC}"
+    else
+      echo -e "${RED}Setup incompleto — resuelve los errores marcados con ✗.${NC}"
+      exit 1
+    fi
+    echo ""
+
 # Build release artifacts (rust + svelte)
 build:
     cd backend && cargo build --release

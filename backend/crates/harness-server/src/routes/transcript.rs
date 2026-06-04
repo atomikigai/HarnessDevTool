@@ -15,7 +15,8 @@ use axum::routing::get;
 use axum::Router;
 use futures::stream::{self, Stream, StreamExt};
 use serde::Deserialize;
-use tokio_stream::wrappers::BroadcastStream;
+use serde_json::json;
+use tokio_stream::wrappers::{errors::BroadcastStreamRecvError, BroadcastStream};
 
 use crate::state::AppState;
 use crate::transcript::{read_events_since_helper, TranscriptEvent};
@@ -66,10 +67,16 @@ async fn transcript_stream(
     let live: Box<dyn Stream<Item = Result<SseEvent, Infallible>> + Send + Unpin> =
         if let Some(slot) = state.transcripts.get(&sid) {
             let rx = slot.bus.subscribe();
+            let sid_filter = sid.clone();
             let s = BroadcastStream::new(rx).filter_map(move |res| {
-                let res = res.ok();
+                let sid = sid_filter.clone();
                 async move {
-                    let ev = res?;
+                    let ev = match res {
+                        Ok(ev) => ev,
+                        Err(BroadcastStreamRecvError::Lagged(skipped)) => {
+                            return Some(Ok(lagged_event(&sid, skipped)));
+                        }
+                    };
                     let payload = serde_json::to_string(&ev).unwrap_or_else(|_| "{}".into());
                     Some(Ok(SseEvent::default().event("transcript").data(payload)))
                 }
@@ -88,4 +95,17 @@ async fn transcript_stream(
             .interval(Duration::from_secs(15))
             .text("keep-alive"),
     )
+}
+
+fn lagged_event(session_id: &str, skipped: u64) -> SseEvent {
+    let payload = json!({
+        "type": "lagged",
+        "stream": "transcript",
+        "session_id": session_id,
+        "skipped": skipped,
+        "resync": "reconnect_with_since",
+    });
+    SseEvent::default()
+        .event("lagged")
+        .data(payload.to_string())
 }

@@ -77,7 +77,10 @@ class TasksState {
   }
 
   start(threadId: string): void {
-    if (this.threadId === threadId && this.#sse) return;
+    if (this.threadId === threadId && this.#sse) {
+      void this.refresh();
+      return;
+    }
     this.stop();
     this.threadId = threadId;
     void this.refresh();

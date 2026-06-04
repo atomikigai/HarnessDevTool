@@ -7,7 +7,14 @@
  * callers should `try { await ... } catch (e) { ... }`.
  */
 
-import { apiRequest, API_BASE, ApiError, apiHeaders } from './client';
+import {
+  apiRequest,
+  API_BASE,
+  ApiError,
+  apiHeaders,
+  DEFAULT_API_TIMEOUT_MS,
+  requestSignal
+} from './client';
 import type { SessionKind } from './client';
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -223,12 +230,23 @@ export const dbApi = {
   ): Promise<ExportResponse> => {
     const base = API_BASE.endsWith('/') ? API_BASE.slice(0, -1) : API_BASE;
     const url = `${base}/db/connections/${id}/export`;
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: apiHeaders({ 'Content-Type': 'application/json', Accept: '*/*' }),
-      body: JSON.stringify(body),
-      signal
-    });
+    const timeout = requestSignal(signal);
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        method: 'POST',
+        headers: apiHeaders({ 'Content-Type': 'application/json', Accept: '*/*' }),
+        body: JSON.stringify(body),
+        signal: timeout.signal
+      });
+    } catch (err) {
+      if (timeout.timedOut()) {
+        throw new ApiError(408, `Request timed out after ${DEFAULT_API_TIMEOUT_MS}ms`);
+      }
+      throw err;
+    } finally {
+      timeout.cleanup();
+    }
     if (!res.ok) {
       const t = await res.text().catch(() => '');
       throw new ApiError(res.status, t || res.statusText, t);

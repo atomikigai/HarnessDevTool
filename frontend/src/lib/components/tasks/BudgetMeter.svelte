@@ -1,6 +1,6 @@
 <!--
   BudgetMeter — USD spend gauge for a single thread.
-  Subscribes directly to `/api/events` (global, unfiltered) for
+  Subscribes directly to `/events` (global, unfiltered) for
   `budget.warning`: that event is fanned out on the default channel,
   not on the per-thread topic that tasks use (`/events?thread=`).
   Thresholds come from the server view; never hardcode them here.

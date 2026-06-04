@@ -2,7 +2,7 @@
   /threads/[id]/tasks — task board for a single thread.
   Left: filter bar + table (or graph). Right: optional drawer with TaskDetail.
   Wired to the tasksState rune store, which keeps an SSE connection live to
-  /api/events?thread=:tid for incremental updates.
+  /events?thread=:tid for incremental updates.
 -->
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';

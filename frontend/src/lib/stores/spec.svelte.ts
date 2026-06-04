@@ -63,7 +63,7 @@ class SpecState {
     this.threadId = tid;
     void this.refresh();
     this.#sse = subscribeSSE(
-      `/api/events?thread=${encodeURIComponent(tid)}`,
+      `/events?thread=${encodeURIComponent(tid)}`,
       () => {
         /* default channel ignored */
       },

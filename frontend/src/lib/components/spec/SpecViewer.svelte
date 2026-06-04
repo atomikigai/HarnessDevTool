@@ -4,11 +4,18 @@
   import { Button } from '$lib/components/ui/button';
   import { Edit3, RefreshCw, Save, X, RotateCcw } from '$lib/icons';
 
-  let { threadId }: { threadId: string } = $props();
+  let {
+    threadId,
+    highlightSections = []
+  }: { threadId: string; highlightSections?: string[] } = $props();
 
   let editing = $state(false);
   let draft = $state('');
 
+  const specLines = $derived((specState.content || 'No spec saved yet.').split('\n'));
+  const normalizedHighlights = $derived(
+    new Set(highlightSections.map((section) => section.trim().toLowerCase()).filter(Boolean))
+  );
   const etagShort = $derived(specState.etag ? specState.etag.slice(0, 8) : 'none');
   const updatedText = $derived(
     specState.updatedAt
@@ -34,6 +41,15 @@
   function reload() {
     specState.start(threadId);
     if (!editing) draft = specState.content;
+  }
+
+  function highlighted(line: string): boolean {
+    const text = line.trim().toLowerCase();
+    if (!text || normalizedHighlights.size === 0) return false;
+    for (const section of normalizedHighlights) {
+      if (text.includes(section)) return true;
+    }
+    return false;
   }
 </script>
 
@@ -86,8 +102,12 @@
       {:else}
         <pre
           class="h-full overflow-auto p-4 font-mono text-sm"
-          style="color: var(--fg-default); white-space: pre-wrap; word-wrap: break-word;">{specState.content ||
-            'No spec saved yet.'}</pre>
+          style="color: var(--fg-default); white-space: pre-wrap; word-wrap: break-word;"
+        >{#each specLines as line, i (`${i}:${line}`)}<span
+              class="block rounded px-1"
+              style={highlighted(line)
+                ? 'background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--fg-default);'
+                : ''}>{line}</span>{/each}</pre>
       {/if}
     </div>
 

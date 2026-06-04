@@ -121,7 +121,7 @@ Audit rápido del 2026-05-27:
   - [x] `<BudgetMeter>` con barra de progreso + soft/hard caps.
   - [x] Panel "Live cost" desglosado por agente.
   - [x] Lista de sesiones activas con su rol.
-- [ ] `<SpecViewer>` lateral muestra `spec.md` con highlight de secciones referenciadas por tasks.
+- [x] `<SpecViewer>` lateral muestra `spec.md` con highlight de secciones referenciadas por tasks.
 - [x] Botón "Pause/Resume" en dashboard de tasks conectado al kill-switch global del scheduler.
 - [ ] Pausa/resume scoped por thread (si se decide separar del kill-switch global).
 

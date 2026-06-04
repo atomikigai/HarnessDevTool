@@ -14,10 +14,12 @@
   import TaskGraph from '$lib/components/tasks/TaskGraph.svelte';
   import BudgetMeter from '$lib/components/tasks/BudgetMeter.svelte';
   import AgentCostBreakdown from '$lib/components/tasks/AgentCostBreakdown.svelte';
+  import SpecViewer from '$lib/components/spec/SpecViewer.svelte';
   import { Button } from '$lib/components/ui/button';
   import { Input } from '$lib/components/ui/input';
   import { budgetStore } from '$lib/stores/budget.svelte';
   import { sessionsState } from '$lib/stores/session.svelte';
+  import { specState } from '$lib/stores/spec.svelte';
   import { pauseAll } from '$lib/stores/pause-all.svelte';
   import { apiRequest } from '$lib/api/client';
   import { kindChip, uiStatus, statusColor, statusLabel } from '$lib/sessionDisplay';
@@ -33,6 +35,8 @@
     Pause,
     Play,
     RefreshCw,
+    PanelRightClose,
+    PanelRightOpen,
     Settings,
     AlertTriangle
   } from '$lib/icons';
@@ -47,6 +51,7 @@
   let reconcileReport = $state<ReconcileReport | null>(null);
   let reconcileLoading = $state(false);
   let reconcileError = $state<string | null>(null);
+  let specPanelOpen = $state(true);
 
   let statusFilter = $state<TaskStatus | ''>('');
   let labelFilter = $state('');
@@ -68,6 +73,7 @@
     return out;
   });
   const selectedCost = $derived(selected ? (taskCostById.get(selected.id) ?? null) : null);
+  const selectedSpecSections = $derived(selected?.spec_refs.map((ref) => ref.section) ?? []);
   const threadSessions = $derived(
     sessionsState.threads.find((thread) => thread.id === threadId)?.sessions ?? []
   );
@@ -85,10 +91,12 @@
     void loadReconcile();
     void pauseAll.refresh();
     void sessionsState.refresh();
+    specState.start(threadId);
   });
 
   onDestroy(() => {
     tasksState.stop();
+    specState.stop();
   });
 
   // When the thread id in the URL changes, re-bind the store.
@@ -97,6 +105,7 @@
       tasksState.start(threadId);
       void loadReconcile();
       void sessionsState.refresh();
+      specState.start(threadId);
     }
   });
 
@@ -230,6 +239,20 @@
       {/if}
       <Button size="sm" variant="outline" onclick={refreshAll}>
         <RefreshCw class="h-3.5 w-3.5" />
+      </Button>
+      <Button
+        size="sm"
+        variant={specPanelOpen ? 'default' : 'outline'}
+        onclick={() => (specPanelOpen = !specPanelOpen)}
+        title={specPanelOpen ? 'Hide spec panel' : 'Show spec panel'}
+        aria-label={specPanelOpen ? 'Hide spec panel' : 'Show spec panel'}
+        aria-pressed={specPanelOpen}
+      >
+        {#if specPanelOpen}
+          <PanelRightClose class="h-3.5 w-3.5" /> Spec
+        {:else}
+          <PanelRightOpen class="h-3.5 w-3.5" /> Spec
+        {/if}
       </Button>
       {#if pauseAll.supported}
         <Button
@@ -485,6 +508,12 @@
           onSelect={selectRow}
           onChange={() => tasksState.refreshOne(selected!.id)}
         />
+      </section>
+    {/if}
+
+    {#if specPanelOpen}
+      <section class="w-[420px] shrink-0 border-l" style="border-color: var(--border-subtle);">
+        <SpecViewer {threadId} highlightSections={selectedSpecSections} />
       </section>
     {/if}
   </div>

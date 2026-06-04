@@ -650,6 +650,10 @@ Estado implementado:
 - El MCP offline carga `~/.harness/profiles/<p>/policy.toml` al boot: reglas
   explícitas locales pueden permitir/denegar tools; `ask` falla cerrado sin
   server de approvals y policy corrupta bloquea tools sensibles.
+- Invariantes bridge ampliadas 2026-06-04: worker no `task_create`,
+  worker/generator no `spec_write`/`spec_set_section`, planner no
+  `task_claim`, evaluator niega tools sensibles, repo write exige scope/path y
+  policy local offline respeta allow/deny/ask.
 - El server persiste decisiones como evento append-only `capability.decided`
   y escribe audit bridge en `$HARNESS_HOME/.runtime/audit/bridge.jsonl` para
   cada `allow`/`deny` resuelto por `/api/approvals/check`, con actor, rol,

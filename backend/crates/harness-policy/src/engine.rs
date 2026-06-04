@@ -160,8 +160,11 @@ impl PolicyEngine {
 
 pub fn capability_default(tool: &str, role: Option<&str>) -> Option<Decision> {
     match role.map(|role| role.to_ascii_lowercase()).as_deref() {
+        Some("planner") if matches!(tool, "task_claim" | "task_release") => Some(Decision::Deny),
         Some("planner" | "orchestrator") => None,
-        Some("worker" | "generator") if matches!(tool, "task_create" | "spec_write") => {
+        Some("worker" | "generator")
+            if matches!(tool, "task_create" | "spec_write" | "spec_set_section") =>
+        {
             Some(Decision::Deny)
         }
         Some("worker" | "generator") => None,
@@ -190,6 +193,7 @@ pub fn is_sensitive_tool(tool: &str) -> bool {
             | "task_release"
             | "task_submit"
             | "spec_write"
+            | "spec_set_section"
             | "repo_write_file"
             | "knowledge_pdf_ingest"
             | "db_query"
@@ -406,6 +410,10 @@ decision = "allow"
     fn capability_default_applies_role_matrix() {
         assert_eq!(capability_default("task_create", Some("planner")), None);
         assert_eq!(
+            capability_default("task_claim", Some("planner")),
+            Some(Decision::Deny)
+        );
+        assert_eq!(
             capability_default("task_create", Some("orchestrator")),
             None
         );
@@ -415,6 +423,10 @@ decision = "allow"
         );
         assert_eq!(
             capability_default("spec_write", Some("generator")),
+            Some(Decision::Deny)
+        );
+        assert_eq!(
+            capability_default("spec_set_section", Some("generator")),
             Some(Decision::Deny)
         );
         assert_eq!(

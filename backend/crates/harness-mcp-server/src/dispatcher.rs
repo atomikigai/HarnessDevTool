@@ -788,6 +788,47 @@ mod tests {
     }
 
     #[test]
+    fn invariant_worker_cannot_set_spec_section() {
+        let (d, _home) = mk_with_role("t-worker-spec", "agent:worker", Some("worker"));
+        let line = r##"{
+            "jsonrpc":"2.0",
+            "id":139,
+            "method":"tools/call",
+            "params":{
+                "name":"spec_set_section",
+                "arguments":{
+                    "thread_id":"t-worker-spec",
+                    "section":"requirements",
+                    "content":"Should not write",
+                    "spec_version_required":0
+                }
+            }
+        }"##;
+        let resp = d.handle(parse_request(line).unwrap()).unwrap();
+        assert_eq!(resp["result"]["isError"], true);
+        let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+        assert_eq!(text, "error: tool call denied by policy: spec_set_section");
+    }
+
+    #[test]
+    fn invariant_planner_cannot_claim_task() {
+        let (d, _home) = mk_with_role("t-planner-claim", "agent:planner", Some("planner"));
+        let line = r#"{
+            "jsonrpc":"2.0",
+            "id":140,
+            "method":"tools/call",
+            "params":{
+                "name":"task_claim",
+                "arguments":{"task_id":"T-0001","agent_id":"agent:planner"}
+            }
+        }"#;
+        let resp = d.handle(parse_request(line).unwrap()).unwrap();
+        assert_eq!(resp["result"]["isError"], true);
+        let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+        assert_eq!(text, "error: tool call denied by policy: task_claim");
+    }
+
+    #[test]
     fn offline_capability_matrix_rejects_evaluator_sensitive_tool() {
         let (d, _home) = mk_with_role("t-evaluator-db", "agent:evaluator", Some("evaluator"));
         let line = r#"{

@@ -111,9 +111,9 @@ Audit rápido del 2026-05-27:
 - [ ] Importante: el `claude`/`codex` child **ya tiene su propio sandbox/approval**. Aquí sandbox-eamos los **child-of-child** que ellos ejecuten.
 
 ### Backend — file-based coordination
-- [ ] `spec.md` por thread: planner lo crea/mantiene; resto lo lee.
+- [x] `spec.md` por thread: planner lo crea/mantiene; resto lo lee.
 - [ ] `artifacts/` por task: workers escriben aquí (mounted al sandbox).
-- [ ] Eventos `spec.changed`, `artifact.added` → SSE → UI.
+- [x] Eventos `spec.changed`, `artifact.added` → SSE → UI.
 
 ### Frontend
 - [x] Dashboard del thread muestra:

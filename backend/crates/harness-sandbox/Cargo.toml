@@ -9,6 +9,8 @@ rust-version.workspace = true
 default = []
 
 [dependencies]
+libc = { workspace = true }
+seccompiler = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 thiserror = { workspace = true }
 tokio = { workspace = true }

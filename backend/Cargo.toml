@@ -45,3 +45,5 @@ once_cell = "1"
 gix = { version = "0.84", default-features = false, features = ["revision"] }
 gix-hash = { version = "0.25", default-features = false, features = ["sha1"] }
 tokei = { version = "14", default-features = false }
+libc = "0.2"
+seccompiler = "0.5"

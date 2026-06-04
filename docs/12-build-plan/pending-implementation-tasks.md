@@ -75,6 +75,10 @@ Nota F3 2026-06-04:
   padres de fallback `quota_exceeded`/`runtime_error` cerrados; la cobertura
   incluye clasificación, selección de Claude, evento append-only de runtime y
   acceptance sintético con audit de quota.
+- Handoff sandbox posterior: `harness-sandbox` ahora genera perfiles
+  `sandbox-exec` y `SandboxCommand` envuelve comandos en macOS; `module-ssh`
+  construye `ssh`/`scp` con `SandboxCommand`. Pendiente para F3: Linux
+  `seccompiler` + bind mounts sigue abierto.
 
 ## A1. Readiness check + execution mode
 

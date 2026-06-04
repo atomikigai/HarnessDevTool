@@ -3,7 +3,7 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use dashmap::DashMap;
-use harness_sandbox::{apply_to_tokio_command, SandboxProfile};
+use harness_sandbox::{SandboxCommand, SandboxProfile};
 use tokio::process::Command;
 use tokio::time;
 use uuid::Uuid;
@@ -264,7 +264,7 @@ impl Manager {
     ) -> SshResult<std::process::Output> {
         let askpass = Askpass::new(self.storage.root(), host.password.as_deref())?;
         let known_hosts = self.storage.openssh_known_hosts_path()?;
-        let mut command = Command::new("ssh");
+        let mut command = self.sandbox_command("ssh")?;
         command
             .arg("-p")
             .arg(host.port.to_string())
@@ -327,7 +327,6 @@ impl Manager {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
-        self.apply_sandbox(&mut command)?;
         let output = time::timeout(SSH_TIMEOUT, command.output())
             .await
             .map_err(|_| SshError::Timeout)??;
@@ -342,7 +341,7 @@ impl Manager {
     ) -> SshResult<std::process::Output> {
         let askpass = Askpass::new(self.storage.root(), host.password.as_deref())?;
         let known_hosts = self.storage.openssh_known_hosts_path()?;
-        let mut command = Command::new("scp");
+        let mut command = self.sandbox_command("scp")?;
         command
             .arg("-P")
             .arg(host.port.to_string())
@@ -400,7 +399,6 @@ impl Manager {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
-        self.apply_sandbox(&mut command)?;
         let output = time::timeout(TRANSFER_TIMEOUT, command.output())
             .await
             .map_err(|_| SshError::Timeout)??;
@@ -408,9 +406,11 @@ impl Manager {
         Ok(output)
     }
 
-    fn apply_sandbox(&self, command: &mut Command) -> SshResult<()> {
-        apply_to_tokio_command(command, &ssh_command_sandbox_profile(self.storage.root()))?;
-        Ok(())
+    fn sandbox_command(&self, program: &str) -> SshResult<Command> {
+        let (command, _plan) =
+            SandboxCommand::new(program, ssh_command_sandbox_profile(self.storage.root()))
+                .into_tokio_command()?;
+        Ok(command)
     }
 }
 

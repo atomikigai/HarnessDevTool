@@ -137,11 +137,17 @@ setup:
     # — Herramientas Go / sistema (mejor effort, sin sudo interactivo) —
     echo ""
     echo "Herramientas Go / sistema:"
+    tool_version() {
+      case "$1" in
+        dasel) "$1" version 2>/dev/null | head -1 ;;
+        *) "$1" --version 2>/dev/null | head -1 || echo 'instalado' ;;
+      esac
+    }
     go_install_if_missing() {
       local module="$1"
       local bin="$2"
       if command -v "$bin" &>/dev/null; then
-        ok "$bin ($(${bin} --version 2>/dev/null | head -1 || echo 'instalado'))"
+        ok "$bin ($(tool_version "$bin"))"
       elif command -v go &>/dev/null; then
         echo -e "  ${YELLOW}→${NC} Instalando $module..."
         if go install "$module" 2>&1 | tail -1; then
@@ -157,7 +163,7 @@ setup:
       local bin="$1"
       local pkg="${2:-$1}"
       if command -v "$bin" &>/dev/null; then
-        ok "$bin ($(${bin} --version 2>/dev/null | head -1 || echo 'instalado'))"
+        ok "$bin ($(tool_version "$bin"))"
       elif command -v brew &>/dev/null; then
         echo -e "  ${YELLOW}→${NC} Instalando $pkg con brew..."
         if brew install "$pkg" >/dev/null; then

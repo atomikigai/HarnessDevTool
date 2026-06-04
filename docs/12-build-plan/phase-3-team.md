@@ -108,10 +108,10 @@ Audit rápido del 2026-05-27:
 - [x] Crate **`harness-sandbox`**:
   - [x] Niveles: `none | workspace | workspace-net | strict`.
   - [ ] Linux: `seccompiler` + bind mounts.
-  - [ ] macOS: `Command` con `sandbox-exec` profile.
+  - [x] macOS: `Command` con `sandbox-exec` profile.
   - [x] Windows: stub (warning) en F3; implementación real en F6.
 - [x] Toda invocación directa de proceso desde el bridge/módulos que pueda mutar estado pasa por `harness-sandbox`.
-  - [x] `module-ssh` enruta comandos directos `ssh`/`scp` por un perfil `harness-sandbox`.
+  - [x] `module-ssh` enruta comandos directos `ssh`/`scp` por un perfil `harness-sandbox`; en macOS usa `sandbox-exec` via `SandboxCommand`.
 - [x] Importante: el `claude`/`codex`/`cursor`/`agy` child **ya tiene su propio sandbox/approval**. N3 fija que no duplicamos su `shell.exec`; `harness-sandbox` envuelve solo ejecuciones directas del bridge.
 
 ### Backend — file-based coordination

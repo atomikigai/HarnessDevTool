@@ -23,6 +23,8 @@ pub enum SandboxError {
     MissingWorkspace(SandboxLevel),
     #[error("sandbox path must be absolute: {0}")]
     NonAbsolutePath(String),
+    #[error("sandbox path is not valid UTF-8: {0}")]
+    NonUtf8Path(String),
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -169,7 +171,7 @@ impl SandboxCommand {
     }
 
     pub fn into_tokio_command(self) -> SandboxResult<(Command, SandboxPlan)> {
-        let mut command = Command::new(&self.program);
+        let mut command = sandboxed_command_for_program(&self.program, &self.profile)?;
         command.args(&self.args);
         command.stdin(Stdio::null());
         command.stdout(Stdio::piped());
@@ -177,6 +179,92 @@ impl SandboxCommand {
         let plan = apply_to_tokio_command(&mut command, &self.profile)?;
         Ok((command, plan))
     }
+}
+
+fn sandboxed_command_for_program(
+    program: &Path,
+    profile: &SandboxProfile,
+) -> SandboxResult<Command> {
+    #[cfg(target_os = "macos")]
+    {
+        if profile.level != SandboxLevel::None {
+            let mut command = Command::new("sandbox-exec");
+            command.arg("-p");
+            command.arg(sandbox_exec_profile(profile)?);
+            command.arg(program);
+            return Ok(command);
+        }
+    }
+    let _ = profile;
+    Ok(Command::new(program))
+}
+
+pub fn sandbox_exec_profile(profile: &SandboxProfile) -> SandboxResult<String> {
+    profile.validate()?;
+    let mut out = String::from("(version 1)\n");
+
+    match profile.level {
+        SandboxLevel::None => {
+            out.push_str("(allow default)\n");
+            return Ok(out);
+        }
+        SandboxLevel::Workspace | SandboxLevel::WorkspaceNet | SandboxLevel::Strict => {
+            out.push_str("(deny default)\n");
+            out.push_str("(allow process*)\n");
+            out.push_str("(allow sysctl-read)\n");
+            out.push_str("(allow mach-lookup)\n");
+            out.push_str("(allow file-read-metadata)\n");
+            out.push_str("(allow file-read*");
+            for path in macos_default_read_roots(profile) {
+                out.push_str(" (subpath ");
+                out.push_str(&sandbox_profile_quote_path(&path)?);
+                out.push(')');
+            }
+            out.push_str(")\n");
+
+            if !profile.writable_roots.is_empty() {
+                out.push_str("(allow file-write*");
+                for path in &profile.writable_roots {
+                    out.push_str(" (subpath ");
+                    out.push_str(&sandbox_profile_quote_path(path)?);
+                    out.push(')');
+                }
+                out.push_str(")\n");
+            }
+
+            if profile.level == SandboxLevel::WorkspaceNet {
+                out.push_str("(allow network*)\n");
+            }
+        }
+    }
+
+    Ok(out)
+}
+
+fn macos_default_read_roots(profile: &SandboxProfile) -> Vec<PathBuf> {
+    let mut roots = vec![
+        PathBuf::from("/bin"),
+        PathBuf::from("/sbin"),
+        PathBuf::from("/usr"),
+        PathBuf::from("/System"),
+        PathBuf::from("/Library"),
+        PathBuf::from("/private/etc"),
+    ];
+    if let Some(root) = profile.workspace_root.as_ref() {
+        roots.push(root.clone());
+    }
+    roots.extend(profile.readable_roots.iter().cloned());
+    roots
+}
+
+fn sandbox_profile_quote_path(path: &Path) -> SandboxResult<String> {
+    let raw = path
+        .to_str()
+        .ok_or_else(|| SandboxError::NonUtf8Path(path.display().to_string()))?;
+    Ok(format!(
+        "\"{}\"",
+        raw.replace('\\', "\\\\").replace('"', "\\\"")
+    ))
 }
 
 pub fn sandbox_level_str(level: SandboxLevel) -> &'static str {
@@ -281,7 +369,36 @@ mod tests {
             .unwrap();
 
         assert_eq!(plan.level, SandboxLevel::WorkspaceNet);
-        assert_eq!(command.as_std().get_program(), "echo");
+        if cfg!(target_os = "macos") {
+            assert_eq!(command.as_std().get_program(), "sandbox-exec");
+        } else {
+            assert_eq!(command.as_std().get_program(), "echo");
+        }
         assert_eq!(command.as_std().get_current_dir(), Some(root.as_path()));
+    }
+
+    #[test]
+    fn sandbox_exec_profile_limits_workspace_and_network() {
+        let root = std::env::temp_dir();
+        let profile = SandboxProfile::workspace_net(&root);
+        let profile_text = sandbox_exec_profile(&profile).unwrap();
+        let root = sandbox_profile_quote_path(&root).unwrap();
+
+        assert!(profile_text.contains("(version 1)"));
+        assert!(profile_text.contains("(deny default)"));
+        assert!(profile_text.contains("(allow process*)"));
+        assert!(profile_text.contains("(allow network*)"));
+        assert!(profile_text.contains(&format!("(subpath {root})")));
+    }
+
+    #[test]
+    fn strict_sandbox_exec_profile_does_not_allow_network_or_writes() {
+        let root = std::env::temp_dir();
+        let profile = SandboxProfile::strict(&root);
+        let profile_text = sandbox_exec_profile(&profile).unwrap();
+
+        assert!(profile_text.contains("(deny default)"));
+        assert!(!profile_text.contains("(allow network*)"));
+        assert!(!profile_text.contains("(allow file-write*"));
     }
 }

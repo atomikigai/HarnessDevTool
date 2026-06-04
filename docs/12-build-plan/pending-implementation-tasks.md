@@ -64,6 +64,17 @@ Nota F3 2026-06-04:
   smoke contra los campos persistidos.
 - Dashboard F3: `/threads/:id/tasks` expone control Pause/Resume conectado al
   kill-switch global del scheduler.
+- Handoff de cierre temporal: los commits hasta `2d56e64` quedaron subidos a
+  `main`. `harness-sandbox` existe con niveles `none|workspace|workspace-net|strict`
+  y warning best-effort; `module-ssh` usa ese perfil para comandos directos
+  `ssh`/`scp`. Verificado con `cargo test -p module-ssh`,
+  `cargo check --workspace` y `git diff --check`.
+- Al retomar F3, no implementar sandbox duplicado sobre `shell.exec` de los CLIs:
+  N3 dice confiar en el sandbox de `claude`/`codex`/`cursor`/`agy` y envolver solo
+  procesos directos del bridge. Siguiente slice recomendado: ajustar el checklist
+  F3 a N3 y cerrar los padres de fallback `quota_exceeded`/`runtime_error` con
+  una prueba de flujo que no dependa de un PTY real, o marcar explícitamente el
+  alcance ya cubierto por helpers y synthetic acceptance test.
 
 ## A1. Readiness check + execution mode
 
@@ -519,6 +530,8 @@ Pendiente:
 4. Sesión SSH interactiva.
 5. Reemplazar el cliente `ssh`/`scp` del sistema por implementación pure Rust
    `russh`/`russh-sftp` cuando los conflictos de compilación estén resueltos.
+6. Mantener las invocaciones directas SSH bajo `harness-sandbox`; desde `2d56e64`
+   `module-ssh` ya aplica perfil `workspace` antes de ejecutar `ssh`/`scp`.
 
 Reglas:
 - No romper.

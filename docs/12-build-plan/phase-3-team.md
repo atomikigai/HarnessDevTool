@@ -28,6 +28,7 @@ Audit rápido del 2026-05-27:
 - Zeus/sub-agentes está en estado puente: `kind=zeus` corre sobre Codex y el MCP expone `session_spawn_child/list/send_input/cancel/read_child_summary` más mailbox auditable.
 - Observación 2026-06-04: el panel Agents consume sesiones hijas reales y Zeus usa Codex como CLI principal.
 - Observación 2026-06-04: el spawner del scheduler ya respeta `Role.cli` como fuente de verdad para elegir Claude/Codex; roles `generic` conservan el kind pedido por el scheduler.
+- Handoff 2026-06-04: F3 avanzó hasta `harness-sandbox` best-effort y `module-ssh` enruta `ssh`/`scp` por ese perfil. Para continuar, cerrar primero la coherencia documental de N3: el harness **no** debe duplicar el sandbox propio de `claude`/`codex`/`cursor`/`agy`; solo envuelve ejecuciones directas del bridge.
 - Pendiente para cerrar F3 completo: roles por perfil con autorización fuerte, sandbox propio del harness, UI de spec/live cost completa y test de aceptación "TODO app" end-to-end.
 - Ajuste de coherencia: antes de endurecer roles/capabilities, implementar [[agents/autonomy-protocol]] para readiness check, execution modes, autonomy profiles y handoffs. Sin esto el equipo puede planificar de mas en tareas cortas o bloquearse tarde por credenciales/env faltantes.
 
@@ -148,7 +149,7 @@ Audit rápido del 2026-05-27:
 
 ## Riesgos
 - **Prompts de los roles**: son la pieza más sensible. Pueden requerir iteración. Tener un set de prompts baseline + evaluar contra tasks-target reproducibles desde F3.
-- **Sandboxing del shell.exec del CLI**: si `claude` corre dentro del container y a su vez ejecuta `npm install`, el sandbox del harness debe envolver eso. Verificar early.
+- **Sandbox del bridge**: N3 resolvió que el sandbox propio de `claude`/`codex`/`cursor`/`agy` cubre sus `shell.exec`; `harness-sandbox` debe envolver solo ejecuciones directas del bridge/módulos. Mantener este alcance al cerrar los checks restantes.
 - **Costos en pruebas**: cada eval del "TODO app" gasta dinero del usuario. Recomendar caps bajos (~$5 USD) durante desarrollo.
 - **Deadlocks de tasks**: dos workers reclamando deps mutuamente. Mitigación: el scheduler detecta ciclos y emite warning.
 

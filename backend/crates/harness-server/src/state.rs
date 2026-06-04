@@ -351,8 +351,7 @@ struct ManagerSpawner {
 }
 
 impl ManagerSpawner {
-    /// Parse `agent:claude-3` / `agent:codex-1` back into an [`AgentKind`].
-    fn kind_from_str(s: &str) -> Option<AgentKind> {
+    fn kind_from_request(s: &str) -> Option<AgentKind> {
         match s {
             "claude" => Some(AgentKind::Claude),
             "codex" => Some(AgentKind::Codex),
@@ -360,6 +359,18 @@ impl ManagerSpawner {
             "antigravity" => Some(AgentKind::Antigravity),
             "zeus" => Some(AgentKind::Zeus),
             _ => None,
+        }
+    }
+
+    fn kind_for_role(
+        role_cli: harness_core::agents::AgentKind,
+        requested_kind: &str,
+    ) -> Result<AgentKind, String> {
+        match role_cli {
+            harness_core::agents::AgentKind::Claude => Ok(AgentKind::Claude),
+            harness_core::agents::AgentKind::Codex => Ok(AgentKind::Codex),
+            harness_core::agents::AgentKind::Generic => Self::kind_from_request(requested_kind)
+                .ok_or_else(|| format!("unknown kind: {requested_kind}")),
         }
     }
 
@@ -398,18 +409,6 @@ impl SessionSpawner for ManagerSpawner {
             return SpawnResult::AlreadyRunning { session_id: sid };
         }
 
-        let kind = match Self::kind_from_str(&req.kind) {
-            Some(k) => k,
-            None => return SpawnResult::Failed(format!("unknown kind: {}", req.kind)),
-        };
-
-        let binary = match self.binaries.get(&kind).cloned() {
-            Some(b) => b,
-            None => {
-                return SpawnResult::Failed(format!("no binary detected for kind {}", req.kind))
-            }
-        };
-
         let role = match self.roles.get(&req.role) {
             Some(r) => r,
             None => {
@@ -418,6 +417,20 @@ impl SessionSpawner for ManagerSpawner {
                 // resulting in invisible failures. With this guard we return
                 // Failed and the scheduler logs at warn level.
                 return SpawnResult::Failed(format!("unknown role: {}", req.role));
+            }
+        };
+        let kind = match Self::kind_for_role(role.cli, &req.kind) {
+            Ok(kind) => kind.underlying_cli(),
+            Err(e) => return SpawnResult::Failed(e),
+        };
+
+        let binary = match self.binaries.get(&kind).cloned() {
+            Some(b) => b,
+            None => {
+                return SpawnResult::Failed(format!(
+                    "no binary detected for role {} cli {} (requested agent kind {})",
+                    req.role, kind, req.kind
+                ))
             }
         };
 
@@ -448,7 +461,7 @@ impl SessionSpawner for ManagerSpawner {
         // sub-agents see the same `task_*` tool surface as user-spawned
         // sessions).
         let mut config_path: Option<PathBuf> = None;
-        if matches!(kind, AgentKind::Claude) {
+        if matches!(kind, AgentKind::Claude | AgentKind::Codex) {
             if let Some(mcp_bin) = self.mcp_server_binary.as_ref() {
                 let mcp_id = uuid::Uuid::new_v4().to_string();
                 let agent_id = format!("agent:{}-{}", kind.as_str(), &mcp_id[..8]);
@@ -488,7 +501,7 @@ impl SessionSpawner for ManagerSpawner {
                     "harness".to_string(),
                     json!({
                         "command": mcp_bin.display().to_string(),
-                        "args": mcp_args
+                        "args": mcp_args.clone()
                     }),
                 );
                 if load_crawl4ai {
@@ -506,6 +519,8 @@ impl SessionSpawner for ManagerSpawner {
                     return SpawnResult::Failed(format!("write mcp config: {e}"));
                 }
                 opts.mcp_config_path = Some(path.clone());
+                opts.mcp_server_command = Some(mcp_bin.display().to_string());
+                opts.mcp_server_args = mcp_args;
                 opts.auto_intro = Some(if load_crawl4ai {
                     format!(
                         "{}\n\n{}",
@@ -515,6 +530,10 @@ impl SessionSpawner for ManagerSpawner {
                 } else {
                     crate::routes::sessions::harness_mcp_intro().to_string()
                 });
+                if load_crawl4ai {
+                    opts.extra_mcp_servers
+                        .push(crate::routes::sessions::crawl4ai_mcp_server());
+                }
                 config_path = Some(path);
             }
         }
@@ -567,4 +586,37 @@ fn detect_binaries() -> HashMap<AgentKind, PathBuf> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use harness_core::agents::AgentKind as RoleAgentKind;
+
+    #[test]
+    fn role_cli_overrides_scheduler_requested_kind() {
+        assert_eq!(
+            ManagerSpawner::kind_for_role(RoleAgentKind::Codex, "claude").unwrap(),
+            AgentKind::Codex
+        );
+        assert_eq!(
+            ManagerSpawner::kind_for_role(RoleAgentKind::Claude, "codex").unwrap(),
+            AgentKind::Claude
+        );
+    }
+
+    #[test]
+    fn generic_role_uses_scheduler_requested_kind() {
+        assert_eq!(
+            ManagerSpawner::kind_for_role(RoleAgentKind::Generic, "cursor").unwrap(),
+            AgentKind::Cursor
+        );
+        assert_eq!(
+            ManagerSpawner::kind_for_role(RoleAgentKind::Generic, "zeus")
+                .unwrap()
+                .underlying_cli(),
+            AgentKind::Codex
+        );
+        assert!(ManagerSpawner::kind_for_role(RoleAgentKind::Generic, "missing").is_err());
+    }
 }

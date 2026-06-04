@@ -27,6 +27,7 @@ Audit rápido del 2026-05-27:
 - Observación 2026-06-04: `repo_write_file` ya es path-gated por `Task.write_paths` / `forbidden_paths` y requiere `task_id` + `scope task:<id>` confiables del MCP spawn.
 - Zeus/sub-agentes está en estado puente: `kind=zeus` corre sobre Codex y el MCP expone `session_spawn_child/list/send_input/cancel/read_child_summary` más mailbox auditable.
 - Observación 2026-06-04: el panel Agents consume sesiones hijas reales y Zeus usa Codex como CLI principal.
+- Observación 2026-06-04: el spawner del scheduler ya respeta `Role.cli` como fuente de verdad para elegir Claude/Codex; roles `generic` conservan el kind pedido por el scheduler.
 - Pendiente para cerrar F3 completo: roles por perfil con autorización fuerte, sandbox propio del harness, UI de spec/live cost completa y test de aceptación "TODO app" end-to-end.
 - Ajuste de coherencia: antes de endurecer roles/capabilities, implementar [[agents/autonomy-protocol]] para readiness check, execution modes, autonomy profiles y handoffs. Sin esto el equipo puede planificar de mas en tareas cortas o bloquearse tarde por credenciales/env faltantes.
 
@@ -51,7 +52,7 @@ Audit rápido del 2026-05-27:
 - [x] Enforcement obligatorio `generator -> evaluator` antes de `pending_verify`.
 
 ### Backend — Zeus orchestrator (work item)
-- [ ] Implementar el routing rol → CLI según la matriz canónica de [[agents/zeus-orchestrator]].
+- [x] Implementar el routing rol → CLI base según `~/.harness/profiles/<p>/roles/*.toml`: `Role.cli` fuerza Claude/Codex y `generic` conserva el kind pedido por el scheduler.
 - [ ] Routing especial frontend visual: tasks de pantallas, CSS, layout,
   responsive, shadcn/polish y a11y visual se delegan a Cursor primero; frontend
   logic/API/stores usa Codex/Claude.

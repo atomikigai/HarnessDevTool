@@ -53,6 +53,11 @@ revisar, aprobar y ejecutar sin mezclar scopes.
 36. **Task 32: Reemplazar `pdftotext` por `pdf_oxide` embebido** — eliminar la dependencia del subprocess externo poppler/pdftotext en `harness-core/knowledge.rs`; embeber el crate `pdf_oxide` como extracción pure Rust (cero subprocess); agregar `pdf_oxide_mcp` como servicio MCP opcional en `docker-compose.mcp.yml` para que agentes lean PDFs directamente como tool.
 37. **Task 33: Capacidad `docs.build` con Starlight como backend default** — el doc-agent genera markdown; el harness compila un sitio navegable para el proyecto donde está desplegado. Backend Starlight (Astro) como default universal; arquitectura intercambiable para soporte futuro de mdBook/VitePress según stack detectado.
 
+Nota F3 2026-06-04:
+- El routing base rol → CLI quedó cerrado para el scheduler: `Role.cli`
+  fuerza Claude/Codex, `generic` conserva el kind pedido y Zeus se resuelve a
+  su CLI subyacente antes de spawnear.
+
 ## A1. Readiness check + execution mode
 
 Objetivo:

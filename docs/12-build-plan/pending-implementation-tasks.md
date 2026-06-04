@@ -29,7 +29,7 @@ revisar, aprobar y ejecutar sin mezclar scopes.
 12. **Task A4: Repo intelligence + codebase-memory-mcp** — base ejecutada; follow-up: index orchestration/cache y wrappers profundos de grafo.
 13. **Task 12: TaskBrief first-class** — ejecutada; brief estructurado (objective/context/tasks/rules/expected_result) como campo propio del Task, fuera de acceptance checks, con compat de brief string legacy. Rebaseada sobre el batch de hardening de seguridad y pusheada a main.
 14. **Task 13: Separar `task.create` y `task.propose`** — ejecutada; `TaskStatus::Proposed`, `task_propose` (cualquier rol) crea en `proposed`, `task_create` con gate mínimo de rol en el dispatcher (deny FUERA de `harness-policy`, confirmado por audit: el `PolicyEngine` es ciego al rol → el middleware completo es Task 14). `role: Option<String>` hilado por dispatcher/server (default `None` permisivo; match exacto fail-closed). Transición `Proposed→Queued`; `Proposed` no reclamable ni agendable. Tipos `ts-rs` regenerados. Follow-up SSE/UI cerrado por Task 27.
-15. **Task 14: Capability policy middleware mínimo** — enforcement real de roles/tools/resources.
+15. **Task 14: Capability policy middleware mínimo** — ejecutada: matriz `capability_default` en `harness-policy`, reglas role-aware, dispatcher MCP consulta `/api/approvals/check` con `role`, offline fail-closed para tools sensibles sin rol confiable, deny claro al modelo y audit append-only `capability.decided`. Follow-ups de hardening cerrados por Task 29.
 16. **Task 15: Eventos append-only unificados** — ejecutada (slice incremental backend-only): `Event` con envelope aditivo (`thread_id`/`actor`/`payload`), `seq` atómico en `append_event` (cierra Task 28), TaskEvents persistidos como envelopes vía sink server-side (MCP sink-free), `emit` best-effort, SSE intacto (cero frontend). Diferido a follow-up: broadcast en vivo de capability/handoff/readiness por SSE; envelope en el cable (opción full); endpoint/UI de replay (Task 23).
 17. **Task 16: Metadata fuerte de subagentes** — ejecutada 2026-06-04: `SessionMeta` persiste `owner_session_id`, `task_id` y `scopes`; `session_spawn_child`/REST aceptan task/scopes opcionales; children/API/UI exponen metadata segura; DB agents salen con scope de conexión/base. `just gen-types`, `pnpm check` y `just test` verdes.
 18. **Task 17: `spec.md` append-only con versiones** — ejecutada 2026-06-04: `spec.events.jsonl` append-only versiona cambios; `GET/PUT /spec` mantienen compat y exponen `version`; `PUT /spec/sections/:section` y MCP `spec_set_section` validan `spec_version_required`; `Task.spec_refs` permite `{ section, version }`; `spec.changed` incluye versión/sección. `just gen-types`, `pnpm check` y `just test` verdes.
@@ -49,6 +49,7 @@ revisar, aprobar y ejecutar sin mezclar scopes.
 32. **Task 28: `seq` atómico en `append_event`** — ejecutada (absorbida por Task 15): `append_event` asigna `seq` contando records bajo el `write_lock` y lo retorna; los 3 callers (approvals/tasks/threads) dejaron de pre-calcular con `read_events().len()`. Test de append concurrente verde.
 33. **Task 29: Hardening de capability policy** — ejecutada 2026-06-04: root spawn rechaza roles desconocidos contra `RolesRegistry`; `remembered_rule` persiste el rol de `ApprovalSummary`; offline sin rol o con rol desconocido niega tools sensibles y conserva read-only.
 34. **Task 30: gitignore de `backend/crates/*/bindings/`** — ejecutada 2026-06-04: `.gitignore` cubre outputs crate-locales de `ts-rs`, `ReadinessReport.facts` exporta `unknown` desde Rust en vez de importar `JsonValue`, y el gate frontend queda en `pnpm check`.
+35. **Task 31: Medición de eficiencia de tools por spawn** — benchmark de tokens, tool-calls y tasa de éxito por configuración de capacidades cargadas; identifica qué tools deben ser rails Rust o contexto pre-inyectado vs tools reales. Prerequisito: smart-loading implementado (spawn_hint / resolve_load).
 
 ## A1. Readiness check + execution mode
 
@@ -617,6 +618,20 @@ Resultado esperado:
 Las tools dejan de depender de instrucciones blandas; el harness bloquea
 acciones fuera de rol/scope.
 
+Estado implementado:
+- `harness-policy` define la matriz builtin `capability_default`, evalua reglas
+  por `tool` + `args` + `role` y pide approval para tools sensibles sin regla.
+- El dispatcher MCP envuelve tools con `check_tool_policy`; online delega a
+  `/api/approvals/check`, offline aplica la matriz local y niega tools
+  sensibles cuando el rol falta o no es confiable.
+- El server persiste decisiones `deny`/`ask` como evento append-only
+  `capability.decided` y preserva el `role` al recordar approvals.
+- Task 29 cerró los hardenings posteriores: root spawn valida roles conocidos,
+  `remembered_rule` conserva rol y el modo offline sin rol/desconocido niega
+  tools sensibles.
+- Verificado con `cargo test -p harness-policy`,
+  `cargo test -p harness-mcp-server` y `cargo test -p harness-server`.
+
 ## 15. Eventos append-only unificados
 
 Objetivo:
@@ -993,3 +1008,40 @@ los subagentes pueden coordinarse y crear subagentes propios con límites claros
 fuera del árbol no se mezcla contexto ni comunicación. La UI y el replay pueden
 explicar quién habló con quién, por qué se creó cada subagente y bajo qué scope
 trabajó.
+
+## Task 31: Medición de eficiencia de tools por spawn
+
+Objetivo:
+Medir el impacto real de cargar más o menos tools en cada spawn y determinar
+qué operaciones deben pasar de tool LLM a rail Rust o contexto pre-inyectado.
+Motivación: Vercel removió el 80% de las tools de su agente y pasó de 80% a 100%
+de éxito con menos tokens y menos pasos. La hipótesis es que el mismo patrón
+aplica aquí, especialmente para tasks de escritura de código.
+
+Contexto:
+Ver agents/smart-loading y agents/rust-rails. El smart-loading (spawn_hint /
+resolve_load / capability.request) debe estar implementado antes de este task.
+El meta.toml de cada spawn ya guarda started_at/finished_at; hay que extenderlo
+con métricas de tokens y tool calls.
+
+Tarea:
+1. Extender meta.toml del spawn con: prompt_tokens, output_tokens, tool_call_count,
+   tool_call_breakdown (map de tool_name → count).
+2. Agregar endpoint GET /api/spawns/:id/metrics que devuelva esas métricas.
+3. Diseñar experimento A/B: misma task, distintas configuraciones de
+   loaded_capabilities. Grupos mínimos: (a) tools completas del agente,
+   (b) solo harness-bridge + bash, (c) rails Rust + contexto pre-inyectado.
+4. Correr el experimento sobre al menos 3 tipos de task: code-write, plan,
+   refactor.
+5. Con los datos: identificar qué tools tienen call_count bajo o cero (candidatas
+   a eliminar del default), qué operaciones se repiten y son determinísticas
+   (candidatas a rail), y qué información se busca siempre al inicio
+   (candidata a contexto pre-inyectado).
+6. Proponer ajustes al capability-registry y a los spawn_hints del orchestrator.
+
+Resultado esperado:
+Tabla de ganancia por tipo de task: tokens ahorrados, pasos reducidos, delta
+en tasa de éxito. Al menos una tool promovida a rail Rust o a contexto
+pre-inyectado con evidencia de mejora.
+
+Estado: pendiente — blocked hasta que smart-loading (Task en F3) esté implementado.

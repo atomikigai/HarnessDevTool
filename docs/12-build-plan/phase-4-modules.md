@@ -51,7 +51,7 @@ Habilitar **dos módulos verticales** que el usuario usa directamente desde la U
 ### Backend (`module-ssh`)
 - [x] Crate `module-ssh` integrado al workspace. Implementación actual usa el cliente `ssh` del sistema para el slice funcional porque `russh`/`russh-sftp` introdujeron conflictos de compilación en este workspace.
 - [x] Storage privado `~/.harness/profiles/<p>/modules/ssh/hosts.toml` para hosts guardados; password auth soportado y redacted en respuestas REST.
-- [ ] Storage `~/.harness/profiles/<p>/modules/ssh/{identities.db, known_hosts}`.
+- [x] Storage `~/.harness/profiles/<p>/modules/ssh/{identities.db, known_hosts}`.
 - [ ] Operaciones:
   - [x] `host.list/add/remove/test`.
   - [ ] `session.open/close`.

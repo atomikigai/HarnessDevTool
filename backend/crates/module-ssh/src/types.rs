@@ -71,6 +71,55 @@ pub struct HostTestResult {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
 #[cfg_attr(feature = "ts-export", ts(export, export_to = "../../../bindings/"))]
+#[serde(rename_all = "snake_case")]
+pub enum SshIdentityKind {
+    KeyFile,
+    Agent,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export, export_to = "../../../bindings/"))]
+pub struct SshIdentityInput {
+    pub label: String,
+    pub kind: SshIdentityKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_socket: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export, export_to = "../../../bindings/"))]
+pub struct SshIdentity {
+    pub id: String,
+    pub label: String,
+    pub kind: SshIdentityKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_socket: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export, export_to = "../../../bindings/"))]
+pub struct SshKnownHost {
+    pub host: String,
+    pub port: u16,
+    pub fingerprint: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_type: Option<String>,
+    pub first_seen_at: DateTime<Utc>,
+    pub last_seen_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export, export_to = "../../../bindings/"))]
 pub struct SshExecResult {
     pub ok: bool,
     pub exit_code: i32,

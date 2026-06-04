@@ -14,5 +14,6 @@ pub use error::{SshError, SshResult};
 pub use manager::Manager;
 pub use types::{
     AuthMethod, Host, HostInput, HostKeyPolicy, HostTestResult, RemoteEntry, RemoteEntryKind,
-    SftpListResult, SftpTransfer, SftpTransferStatus, SshExecResult, SshSession, SshSessionStatus,
+    SftpListResult, SftpTransfer, SftpTransferStatus, SshExecResult, SshIdentity, SshIdentityInput,
+    SshIdentityKind, SshKnownHost, SshSession, SshSessionStatus,
 };

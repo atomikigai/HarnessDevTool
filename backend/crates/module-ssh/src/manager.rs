@@ -11,7 +11,8 @@ use crate::error::{SshError, SshResult};
 use crate::storage::Storage;
 use crate::types::{
     AuthMethod, Host, HostInput, HostKeyPolicy, HostTestResult, RemoteEntry, RemoteEntryKind,
-    SftpListResult, SftpTransfer, SftpTransferStatus, SshExecResult, SshSession, SshSessionStatus,
+    SftpListResult, SftpTransfer, SftpTransferStatus, SshExecResult, SshIdentity, SshIdentityInput,
+    SshKnownHost, SshSession, SshSessionStatus,
 };
 
 const SSH_TIMEOUT: Duration = Duration::from_secs(20);
@@ -53,6 +54,29 @@ impl Manager {
 
     pub fn remove_host(&self, id: &str) -> SshResult<bool> {
         self.storage.remove_host(id)
+    }
+
+    pub fn list_identities(&self) -> SshResult<Vec<SshIdentity>> {
+        self.storage.list_identities()
+    }
+
+    pub fn add_identity(&self, input: SshIdentityInput) -> SshResult<SshIdentity> {
+        self.storage.add_identity(input)
+    }
+
+    pub fn list_known_hosts(&self) -> SshResult<Vec<SshKnownHost>> {
+        self.storage.list_known_hosts()
+    }
+
+    pub fn record_known_host(
+        &self,
+        host: &str,
+        port: u16,
+        fingerprint: &str,
+        key_type: Option<String>,
+    ) -> SshResult<SshKnownHost> {
+        self.storage
+            .record_known_host(host, port, fingerprint, key_type)
     }
 
     pub async fn test_host(&self, id: &str) -> SshResult<HostTestResult> {

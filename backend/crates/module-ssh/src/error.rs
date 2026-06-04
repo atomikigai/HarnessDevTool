@@ -20,4 +20,8 @@ pub enum SshError {
     Io(#[from] std::io::Error),
     #[error("toml: {0}")]
     Toml(String),
+    #[error("sqlite: {0}")]
+    Sqlite(#[from] rusqlite::Error),
+    #[error("json: {0}")]
+    Json(#[from] serde_json::Error),
 }

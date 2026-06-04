@@ -2760,6 +2760,7 @@ version = "0.0.1"
 dependencies = [
  "chrono",
  "dashmap",
+ "rusqlite",
  "serde",
  "serde_json",
  "tempfile",

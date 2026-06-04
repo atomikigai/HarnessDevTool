@@ -17,8 +17,10 @@
   import { Button } from '$lib/components/ui/button';
   import { Input } from '$lib/components/ui/input';
   import { budgetStore } from '$lib/stores/budget.svelte';
+  import { sessionsState } from '$lib/stores/session.svelte';
   import { pauseAll } from '$lib/stores/pause-all.svelte';
   import { apiRequest } from '$lib/api/client';
+  import { kindChip, uiStatus, statusColor, statusLabel } from '$lib/sessionDisplay';
   import {
     Plus,
     ChevronLeft,
@@ -66,6 +68,13 @@
     return out;
   });
   const selectedCost = $derived(selected ? (taskCostById.get(selected.id) ?? null) : null);
+  const threadSessions = $derived(
+    sessionsState.threads.find((thread) => thread.id === threadId)?.sessions ?? []
+  );
+  const activeThreadSessions = $derived(
+    threadSessions.filter((session) => session.status === 'running')
+  );
+  const visibleThreadSessions = $derived(activeThreadSessions.slice(0, 8));
 
   // Hard cap visible rows at 200 (see deuda about virtualization).
   const visible = $derived(tasksState.items.slice(0, 200));
@@ -75,6 +84,7 @@
     tasksState.start(threadId);
     void loadReconcile();
     void pauseAll.refresh();
+    void sessionsState.refresh();
   });
 
   onDestroy(() => {
@@ -86,6 +96,7 @@
     if (threadId) {
       tasksState.start(threadId);
       void loadReconcile();
+      void sessionsState.refresh();
     }
   });
 
@@ -106,6 +117,7 @@
   function refreshAll() {
     tasksState.refresh();
     void loadReconcile();
+    void sessionsState.refresh();
   }
 
   function applyFilters() {
@@ -267,6 +279,43 @@
     <div class="mt-2">
       <AgentCostBreakdown view={budgetView} />
     </div>
+    {#if activeThreadSessions.length > 0}
+      <div class="mt-2 flex flex-wrap items-center gap-2 text-xs" style="color: var(--fg-muted);">
+        <span class="text-[10px] uppercase tracking-wider" style="color: var(--fg-label);">
+          Sessions
+        </span>
+        {#each visibleThreadSessions as session (session.id)}
+          {@const chip = kindChip(session.kind)}
+          {@const status = uiStatus(session)}
+          <a
+            href={`/threads/${threadId}/sessions/${session.id}`}
+            class="inline-flex min-w-0 items-center gap-1.5 rounded-md border px-2 py-1"
+            style="border-color: var(--border-subtle); background: var(--surface-window); color: var(--fg-muted);"
+            title={`${session.role ?? session.kind} · ${session.status} · ${session.id}`}
+          >
+            <span
+              class="h-1.5 w-1.5 shrink-0 rounded-full"
+              style={`background: ${statusColor(status)};`}
+            ></span>
+            <span class="font-mono text-[11px]" style="color: var(--fg-default);">
+              {session.id.slice(0, 8)}
+            </span>
+            <span
+              class="rounded-sm px-1.5 py-0.5 text-[10px]"
+              style={`background: ${chip.bg}; color: ${chip.color};`}
+            >
+              {session.role ?? chip.label}
+            </span>
+            <span class="text-[10px]">{statusLabel(status)}</span>
+          </a>
+        {/each}
+        {#if activeThreadSessions.length > visibleThreadSessions.length}
+          <span class="font-mono text-[11px]">
+            +{activeThreadSessions.length - visibleThreadSessions.length}
+          </span>
+        {/if}
+      </div>
+    {/if}
   </div>
 
   <div

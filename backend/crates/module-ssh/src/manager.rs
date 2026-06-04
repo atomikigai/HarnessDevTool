@@ -3,6 +3,7 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use dashmap::DashMap;
+use harness_sandbox::{apply_to_tokio_command, SandboxProfile};
 use tokio::process::Command;
 use tokio::time;
 use uuid::Uuid;
@@ -326,6 +327,7 @@ impl Manager {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
+        self.apply_sandbox(&mut command)?;
         let output = time::timeout(SSH_TIMEOUT, command.output())
             .await
             .map_err(|_| SshError::Timeout)??;
@@ -398,12 +400,22 @@ impl Manager {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
+        self.apply_sandbox(&mut command)?;
         let output = time::timeout(TRANSFER_TIMEOUT, command.output())
             .await
             .map_err(|_| SshError::Timeout)??;
         drop(askpass);
         Ok(output)
     }
+
+    fn apply_sandbox(&self, command: &mut Command) -> SshResult<()> {
+        apply_to_tokio_command(command, &ssh_command_sandbox_profile(self.storage.root()))?;
+        Ok(())
+    }
+}
+
+fn ssh_command_sandbox_profile(root: &Path) -> SandboxProfile {
+    SandboxProfile::workspace(root)
 }
 
 struct Askpass {
@@ -512,5 +524,22 @@ fn transfer_error(output: &std::process::Output) -> Option<String> {
             String::from_utf8_lossy(&output.stderr).to_string(),
             String::from_utf8_lossy(&output.stdout).to_string(),
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use harness_sandbox::{sandbox_level_str, SandboxLevel};
+
+    #[test]
+    fn ssh_commands_use_workspace_sandbox_profile() {
+        let root = std::env::temp_dir();
+        let profile = ssh_command_sandbox_profile(&root);
+
+        assert_eq!(profile.level, SandboxLevel::Workspace);
+        assert_eq!(sandbox_level_str(profile.level), "workspace");
+        assert_eq!(profile.workspace_root.as_deref(), Some(root.as_path()));
+        assert_eq!(profile.writable_roots, vec![root]);
     }
 }

@@ -16,6 +16,8 @@ pub enum SshError {
     Timeout,
     #[error("ssh command failed: {0}")]
     Command(String),
+    #[error("sandbox: {0}")]
+    Sandbox(#[from] harness_sandbox::SandboxError),
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
     #[error("toml: {0}")]

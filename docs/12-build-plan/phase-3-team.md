@@ -110,6 +110,7 @@ Audit rápido del 2026-05-27:
   - [ ] macOS: `Command` con `sandbox-exec` profile.
   - [x] Windows: stub (warning) en F3; implementación real en F6.
 - [ ] Toda invocación de tool del módulo (DB/SSH en F4) y todo `shell.exec` del CLI pasa por el sandbox.
+  - [x] `module-ssh` enruta comandos directos `ssh`/`scp` por un perfil `harness-sandbox`.
 - [ ] Importante: el `claude`/`codex` child **ya tiene su propio sandbox/approval**. Aquí sandbox-eamos los **child-of-child** que ellos ejecuten.
 
 ### Backend — file-based coordination

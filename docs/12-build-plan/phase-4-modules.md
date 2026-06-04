@@ -60,7 +60,7 @@ Habilitar **dos módulos verticales** que el usuario usa directamente desde la U
   - [x] `sftp.put / sftp.get` básico síncrono para archivos.
   - [ ] `transfer.queue/pause/resume/cancel` con resume.
   - [x] `ssh.exec` (no interactivo).
-- [ ] Verificación de host keys con TOFU + warning fuerte si cambia.
+- [x] Verificación de host keys con TOFU + warning fuerte si cambia (`ssh/scp` usan `UserKnownHostsFile` privado del módulo y `StrictHostKeyChecking=accept-new|yes`).
 - [ ] Tools MCP:
   - [x] `ssh.exec { host, cmd, env? }`.
   - [x] `sftp.list { host, path }`.

@@ -185,6 +185,23 @@ impl Storage {
         &self.root
     }
 
+    pub(crate) fn openssh_known_hosts_path(&self) -> SshResult<PathBuf> {
+        std::fs::create_dir_all(&self.root)?;
+        let path = self.root.join("known_hosts.openssh");
+        if !path.exists() {
+            let mut options = OpenOptions::new();
+            options.create_new(true).write(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            options.open(&path)?;
+        }
+        set_private_file_permissions(&path)?;
+        Ok(path)
+    }
+
     fn path(&self) -> PathBuf {
         self.root.join("hosts.toml")
     }
@@ -445,6 +462,28 @@ mod tests {
                 .permissions()
                 .mode()
                 & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+    }
+
+    #[test]
+    fn openssh_known_hosts_path_is_private_and_separate_from_metadata_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = Storage::new(dir.path()).unwrap();
+
+        let path = storage.openssh_known_hosts_path().unwrap();
+
+        assert_eq!(
+            path.file_name().and_then(|v| v.to_str()),
+            Some("known_hosts.openssh")
+        );
+        assert!(path.exists());
+        assert!(!dir.path().join("known_hosts").exists());
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
             assert_eq!(mode, 0o600);
         }
     }

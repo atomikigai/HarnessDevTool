@@ -262,6 +262,7 @@ impl Manager {
         remote_cmd: &str,
     ) -> SshResult<std::process::Output> {
         let askpass = Askpass::new(self.storage.root(), host.password.as_deref())?;
+        let known_hosts = self.storage.openssh_known_hosts_path()?;
         let mut command = Command::new("ssh");
         command
             .arg("-p")
@@ -272,6 +273,12 @@ impl Manager {
             .arg("ServerAliveInterval=5")
             .arg("-o")
             .arg("ServerAliveCountMax=1")
+            .arg("-o")
+            .arg(format!("UserKnownHostsFile={}", known_hosts.display()))
+            .arg("-o")
+            .arg("GlobalKnownHostsFile=/dev/null")
+            .arg("-o")
+            .arg("HashKnownHosts=no")
             .arg("-o")
             .arg(match host.host_key_policy {
                 HostKeyPolicy::Tofu => "StrictHostKeyChecking=accept-new",
@@ -332,12 +339,19 @@ impl Manager {
         args: &[String],
     ) -> SshResult<std::process::Output> {
         let askpass = Askpass::new(self.storage.root(), host.password.as_deref())?;
+        let known_hosts = self.storage.openssh_known_hosts_path()?;
         let mut command = Command::new("scp");
         command
             .arg("-P")
             .arg(host.port.to_string())
             .arg("-o")
             .arg("ConnectTimeout=10")
+            .arg("-o")
+            .arg(format!("UserKnownHostsFile={}", known_hosts.display()))
+            .arg("-o")
+            .arg("GlobalKnownHostsFile=/dev/null")
+            .arg("-o")
+            .arg("HashKnownHosts=no")
             .arg("-o")
             .arg(match host.host_key_policy {
                 HostKeyPolicy::Tofu => "StrictHostKeyChecking=accept-new",

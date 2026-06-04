@@ -37,7 +37,7 @@ Habilitar **dos módulos verticales** que el usuario usa directamente desde la U
 - [x] `<ResultGrid>` con `@tanstack/svelte-virtual` (inline cell edit, pending-changes bar).
 - [x] `<RowEditorPanel>` slide-out lateral.
 - [x] `<ExportDialog>` para JSON/SQL/CSV (tablas + schemas via right-click).
-- [ ] Form "Add connection" con **valibot** (URL parsing, sslmode, etc.) — dialog existe pero sin schema valibot.
+- [x] Form "Add connection" con **valibot** (URL parsing, sslmode, etc.).
 
 ### Test de aceptación DB
 1. Add SQLite local (`/data/test.db`).

@@ -703,6 +703,30 @@ mod tests {
     }
 
     #[test]
+    fn budget_schema_v1_lists_persisted_fields() {
+        let schema: serde_json::Value =
+            serde_json::from_str(include_str!("../../schemas/budget.v1.json")).unwrap();
+        assert_eq!(schema["$id"], "https://harness.dev/schemas/budget.v1.json");
+        let required = schema["required"].as_array().unwrap();
+        for field in [
+            "schema_version",
+            "limit_usd",
+            "spent_usd",
+            "soft_pct",
+            "hard_pct",
+        ] {
+            assert!(
+                required.iter().any(|value| value == field),
+                "missing required field {field}"
+            );
+        }
+        assert_eq!(
+            schema["properties"]["max_concurrent_workers"]["type"],
+            serde_json::json!(["integer", "null"])
+        );
+    }
+
+    #[test]
     fn thresholds_trigger_at_pct() {
         let b = Budget {
             limit_usd: 10.0,

@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://harness.dev/schemas/budget.v1.json",
+  "title": "harness.budget.v1",
+  "type": "object",
+  "required": ["schema_version", "limit_usd", "spent_usd", "soft_pct", "hard_pct"],
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "limit_usd": {
+      "type": "number",
+      "minimum": 0,
+      "description": "USD limit for the thread. 0 means no configured cap."
+    },
+    "spent_usd": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Observed spend accumulated from session cost reporters."
+    },
+    "soft_pct": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 100,
+      "description": "Percent of limit_usd where budget.warning should emit."
+    },
+    "hard_pct": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 100,
+      "description": "Percent of limit_usd where the scheduler pauses work."
+    },
+    "max_concurrent_workers": {
+      "type": ["integer", "null"],
+      "minimum": 1,
+      "description": "Optional per-thread scheduler concurrency override. null/absent uses the global default."
+    }
+  },
+  "additionalProperties": false
+}

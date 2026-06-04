@@ -88,7 +88,7 @@ Audit rápido del 2026-05-27:
 
 ### Backend — budget
 - [x] Crate `harness-core::budget`:
-  - [ ] Schema `budget.v1.json`.
+  - [x] Schema `budget.v1.json`.
   - [x] Tracking en RAM y persistencia a `~/.harness/.../budget.toml` desde el budget pass.
   - [x] `max_concurrent_workers` opcional por thread usado por el scheduler.
   - [x] Soft cap → notification `budget.warning` (bandas 75/90/100).

@@ -60,6 +60,8 @@ Nota F3 2026-06-04:
 - El selector del scheduler cae a Claude cuando el CLI primario no tiene
   binario detectado y registra `scheduler.spawn.fallback` append-only con
   `reason=binary_missing`.
+- `budget.v1.json` agregado en `harness-core/schemas` y cubierto por test de
+  smoke contra los campos persistidos.
 
 ## A1. Readiness check + execution mode
 

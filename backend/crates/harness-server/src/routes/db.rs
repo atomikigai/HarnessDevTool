@@ -96,6 +96,9 @@ async fn start_db_agent(
             thread_id: thread.id.clone(),
             cwd,
             role: None,
+            owner_session_id: None,
+            task_id: None,
+            scopes: db_agent_scopes(&id, body.database.as_deref()),
             auto_intro: supports_system_context.then(|| prompt.clone()),
             initial_prompt: (!supports_system_context).then_some(prompt),
             parent_session_id: None,
@@ -107,6 +110,14 @@ async fn start_db_agent(
         thread_id: thread.id,
         session_id,
     }))
+}
+
+fn db_agent_scopes(connection_id: &str, database: Option<&str>) -> Vec<String> {
+    let mut scopes = vec![format!("db:connection:{connection_id}")];
+    if let Some(database) = database.filter(|database| !database.trim().is_empty()) {
+        scopes.push(format!("db:database:{database}"));
+    }
+    scopes
 }
 
 fn resolve_agent_cwd(raw: Option<&str>) -> Result<PathBuf, ApiError> {

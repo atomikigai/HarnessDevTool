@@ -265,6 +265,9 @@ impl Manager {
             dir,
             extra_args,
             opts.role.clone(),
+            opts.owner_session_id.clone(),
+            opts.task_id.clone(),
+            opts.scopes.clone(),
             parent_session_id,
             root_session_id,
             opts.initial_size,
@@ -405,6 +408,13 @@ pub struct SpawnOpts {
     /// Optional role name to record in [`SessionMeta`] for inspection. Does
     /// NOT affect runtime behavior on its own; pair with `role_prompt`.
     pub role: Option<String>,
+    /// Session that owns this worker's lifecycle/output. For child spawns the
+    /// server normally sets this to the parent session id.
+    pub owner_session_id: Option<String>,
+    /// Harness task id this session is scoped to.
+    pub task_id: Option<String>,
+    /// Resource/work scopes granted to this session.
+    pub scopes: Vec<String>,
     /// Briefing appended to claude's system prompt via `--append-system-prompt`
     /// (NOT typed into the PTY). Used to tell the agent about the harness MCP
     /// tools so it doesn't fall back to its built-in todo list. Silent to the
@@ -631,6 +641,9 @@ mod tests {
             started_at: 1_700_000_000_000,
             exit_code: None,
             role: None,
+            owner_session_id: None,
+            task_id: None,
+            scopes: Vec::new(),
             parent_session_id: None,
             root_session_id: id.to_string(),
             detected_state: None,
@@ -838,6 +851,9 @@ mod tests {
                     session_id_override: Some("active-child".to_string()),
                     parent_session_id: Some(parent.id().to_string()),
                     role: Some("worker".to_string()),
+                    owner_session_id: Some(parent.id().to_string()),
+                    task_id: Some("T-0001".to_string()),
+                    scopes: vec!["backend".to_string(), "task:T-0001".to_string()],
                     ..SpawnOpts::default()
                 },
             )
@@ -868,6 +884,12 @@ mod tests {
         assert_eq!(active_meta.parent_session_id.as_deref(), Some(parent.id()));
         assert_eq!(active_meta.root_session_id, parent.id());
         assert_eq!(active_meta.role.as_deref(), Some("worker"));
+        assert_eq!(active_meta.owner_session_id.as_deref(), Some(parent.id()));
+        assert_eq!(active_meta.task_id.as_deref(), Some("T-0001"));
+        assert_eq!(
+            active_meta.scopes,
+            vec!["backend".to_string(), "task:T-0001".to_string()]
+        );
 
         let exited_meta = exited_child.meta().await;
         assert_eq!(exited_meta.parent_session_id.as_deref(), Some(parent.id()));

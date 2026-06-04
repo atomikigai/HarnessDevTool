@@ -41,6 +41,17 @@ pub fn spawn_child(
     let role = str_arg(args, "role")?;
     let initial_prompt = str_arg(args, "initial_prompt")?;
     let cwd = opt_str(args, "working_dir");
+    let task_id = opt_str(args, "task_id");
+    let scopes = args
+        .get("scopes")
+        .and_then(|value| value.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str().map(str::to_string))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
 
     let url = format!(
         "{}/api/sessions/{}/children",
@@ -51,6 +62,8 @@ pub fn spawn_child(
         "kind": kind,
         "role": role,
         "initial_prompt": initial_prompt,
+        "task_id": task_id,
+        "scopes": scopes,
         "cwd": cwd,
     });
     let mut req = ureq::post(&url).timeout(Duration::from_secs(10));

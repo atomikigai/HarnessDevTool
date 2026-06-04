@@ -512,6 +512,15 @@ pub fn list_descriptors() -> Vec<ToolDescriptor> {
                         "description": "First user turn typed into the child PTY. Include scope, \
                                         forbidden areas, expected output, test requirements."
                     },
+                    "task_id": {
+                        "type": "string",
+                        "description": "Optional harness task id this child is assigned to."
+                    },
+                    "scopes": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Optional resource/work scopes granted to this child."
+                    },
                     "working_dir": {
                         "type": "string",
                         "description": "Optional cwd override; defaults to $HOME."

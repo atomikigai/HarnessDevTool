@@ -31,7 +31,7 @@ revisar, aprobar y ejecutar sin mezclar scopes.
 14. **Task 13: Separar `task.create` y `task.propose`** — ejecutada; `TaskStatus::Proposed`, `task_propose` (cualquier rol) crea en `proposed`, `task_create` con gate mínimo de rol en el dispatcher (deny FUERA de `harness-policy`, confirmado por audit: el `PolicyEngine` es ciego al rol → el middleware completo es Task 14). `role: Option<String>` hilado por dispatcher/server (default `None` permisivo; match exacto fail-closed). Transición `Proposed→Queued`; `Proposed` no reclamable ni agendable. Tipos `ts-rs` regenerados. Follow-up SSE/UI cerrado por Task 27.
 15. **Task 14: Capability policy middleware mínimo** — enforcement real de roles/tools/resources.
 16. **Task 15: Eventos append-only unificados** — ejecutada (slice incremental backend-only): `Event` con envelope aditivo (`thread_id`/`actor`/`payload`), `seq` atómico en `append_event` (cierra Task 28), TaskEvents persistidos como envelopes vía sink server-side (MCP sink-free), `emit` best-effort, SSE intacto (cero frontend). Diferido a follow-up: broadcast en vivo de capability/handoff/readiness por SSE; envelope en el cable (opción full); endpoint/UI de replay (Task 23).
-17. **Task 16: Metadata fuerte de subagentes** — ownership, rol, task, parent/root y scopes.
+17. **Task 16: Metadata fuerte de subagentes** — ejecutada 2026-06-04: `SessionMeta` persiste `owner_session_id`, `task_id` y `scopes`; `session_spawn_child`/REST aceptan task/scopes opcionales; children/API/UI exponen metadata segura; DB agents salen con scope de conexión/base. `just gen-types`, `pnpm check` y `just test` verdes.
 18. **Task 17: `spec.md` append-only con versiones** — referencias estables desde tasks.
 19. **Task 18: Artifacts como entidad/evento real** — metadata recuperable para diff, logs, screenshots.
 20. **Task 19: Razones estructuradas en tasks** — blocked/paused/rejected/needs_human.
@@ -650,6 +650,17 @@ ordenado y auditable.
 Objetivo:
 Hacer que cada subagente sea atribuible a un thread, task, rol, padre/root y
 scope autorizado.
+
+Estado implementado:
+- `SessionMeta` agrega metadata compatible para ownership (`owner_session_id`),
+  task asignada (`task_id`) y scopes.
+- `SpawnArgs`/`SpawnOpts`/`AgentSession` persisten la metadata en `meta.json`.
+- `session_spawn_child` y `POST /api/sessions/:sid/children` aceptan `task_id`
+  y `scopes` opcionales; el parent queda como owner por defecto.
+- `ChildSummary` y el tab Agents muestran task/scopes cuando existen.
+- DB agents se inicializan con scopes `db:connection:<id>` y
+  `db:database:<name>` cuando aplica.
+- Verificado con `just gen-types`, `pnpm check` y `just test`.
 
 Contexto:
 Las sesiones hijas existen, pero para operar equipos hace falta explicar qué

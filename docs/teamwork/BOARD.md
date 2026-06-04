@@ -15,9 +15,29 @@ Modelo operativo: ver [`docs/teamwork/OPERATING_MODEL.md`](./OPERATING_MODEL.md)
 
 ## En curso
 
-_Ninguna. T4 quedó cerrada el 2026-06-04 con smoke real, `just test` verde y verificación de rehidratación._
+_Ninguna. Task 16 quedó cerrada el 2026-06-04 con `just gen-types`, `pnpm check` y `just test` verdes._
 
-## Última cerrada — T4
+## Última cerrada — Task 16
+
+| Campo | Valor |
+|---|---|
+| **Tarea** | Task 16 — Metadata fuerte de subagentes |
+| **Estado** | ✅ `DONE` — implementada por Codex el 2026-06-04; `SessionMeta` persiste owner/task/scopes, REST/MCP child spawn aceptan task/scopes opcionales, DB agents reciben scopes DB, y el tab Agents muestra task/scopes cuando existen. |
+| **Objetivo** | Hacer que cada subagente sea atribuible a un thread, task, rol, padre/root y scope autorizado. |
+| **Alcance / archivos** | Backend/session metadata, spawn child REST/MCP, DB agent scopes, frontend tab Agents y tipos manuales. |
+| **Responsables** | Planner/Codex con subagentes Codex para auditoría de contrato y docs. |
+| **Criterio de aceptación** | (1) `SessionMeta` conserva compatibilidad con sesiones legacy; (2) `session_spawn_child` rellena metadata fuerte; (3) parent/root/task/role/scopes persisten en `meta.json`; (4) REST expone metadata segura; (5) tab Agents muestra rol/task/estado/scopes; (6) tests relevantes verdes. |
+| **Checks corridos** | `cargo test -p harness-session -p harness-server -p harness-mcp-server`; `just gen-types`; `pnpm check`; `just test`. |
+
+### Contrato breve — Task 16
+
+1. Extender metadata de subagentes sin migración destructiva ni rewrite de logs.
+2. Mantener campos nuevos opcionales/default-safe para sesiones existentes.
+3. `owner_session_id`, `task_id`, `role` y `scopes` no deben exponer secretos.
+4. Parent/root se heredan de forma determinística: hija apunta a padre inmediato y conserva root del árbol.
+5. Las operaciones vivas siguen usando el contrato actual de sesión; la metadata nueva es trazabilidad, no cambio del hot path PTY.
+
+## Cerrada anterior — T4
 
 | Campo | Valor |
 |---|---|

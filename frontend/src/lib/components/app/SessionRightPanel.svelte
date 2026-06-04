@@ -307,6 +307,13 @@
               <p class="mt-1 truncate font-mono text-[10px]" style="color: var(--fg-muted);">
                 {ag.session_id.slice(0, 8)}… · pid {ag.pid} · started {startedLabel(ag.started_at)}
               </p>
+              {#if ag.task_id || (ag.scopes?.length ?? 0) > 0}
+                <p class="mt-1 truncate font-mono text-[10px]" style="color: var(--fg-muted);">
+                  {#if ag.task_id}task {ag.task_id}{/if}
+                  {#if ag.task_id && (ag.scopes?.length ?? 0) > 0} · {/if}
+                  {#if (ag.scopes?.length ?? 0) > 0}{ag.scopes?.join(', ')}{/if}
+                </p>
+              {/if}
               {#if ag.detected_state && ag.detected_state !== 'unknown' && ag.status === 'running'}
                 <p
                   class="mt-1 inline-flex items-center gap-1 text-[10px] font-mono"

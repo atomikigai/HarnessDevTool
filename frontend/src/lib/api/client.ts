@@ -178,6 +178,12 @@ export interface SessionMeta {
   /** Free-form role label — "zeus-orchestrator" for Zeus, "backend"/"qa"/...
    *  for spawned workers, null for plain user-created sessions. */
   role?: string | null;
+  /** Session that owns this worker's lifecycle/output; usually the parent for children. */
+  owner_session_id?: string | null;
+  /** Harness task this session is scoped to, when assigned by an orchestrator. */
+  task_id?: string | null;
+  /** Coarse resource/work scopes granted to this session. */
+  scopes?: string[];
   /** Parent session id when this session was spawned by an orchestrator. */
   parent_session_id?: string | null;
   /** Topmost ancestor in the session tree (equals `id` for root sessions). */
@@ -195,6 +201,9 @@ export interface ChildSessionSummary {
   root_session_id: string;
   kind: SessionKind;
   role?: string | null;
+  owner_session_id?: string | null;
+  task_id?: string | null;
+  scopes?: string[];
   status: SessionStatus;
   /** Unix epoch ms. */
   started_at: number;

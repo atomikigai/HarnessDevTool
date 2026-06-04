@@ -31,6 +31,19 @@ pub struct SessionMeta {
     /// metadata only — the prompt itself is written to the PTY at spawn time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
+    /// Session that owns this worker's output and lifecycle decisions. For
+    /// orchestrated child sessions this is the direct parent; root sessions
+    /// leave it unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_session_id: Option<String>,
+    /// Harness task this session is expected to work on, if the spawn was
+    /// scoped to a task.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
+    /// Coarse resource/work scopes granted to the session. Examples:
+    /// `backend`, `frontend`, `db:connection:<id>`, `task:T-0001`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scopes: Vec<String>,
 
     // ── Session tree (Zeus / orchestrator) ────────────────────────────────
     /// Parent session id when this session was spawned as a child of another

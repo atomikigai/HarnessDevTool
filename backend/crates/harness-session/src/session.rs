@@ -41,6 +41,9 @@ pub struct AgentSession {
     parent_session_id_static: Option<String>,
     root_session_id_static: String,
     role_static: Option<String>,
+    owner_session_id_static: Option<String>,
+    task_id_static: Option<String>,
+    scopes_static: Vec<String>,
 }
 
 impl AgentSession {
@@ -65,6 +68,15 @@ impl AgentSession {
     pub fn role(&self) -> Option<String> {
         self.role_static.clone()
     }
+    pub fn owner_session_id_static(&self) -> Option<&str> {
+        self.owner_session_id_static.as_deref()
+    }
+    pub fn task_id_static(&self) -> Option<&str> {
+        self.task_id_static.as_deref()
+    }
+    pub fn scopes(&self) -> &[String] {
+        &self.scopes_static
+    }
 }
 
 impl AgentSession {
@@ -83,6 +95,9 @@ impl AgentSession {
         dir: PathBuf,
         extra_args: Vec<String>,
         role: Option<String>,
+        owner_session_id: Option<String>,
+        task_id: Option<String>,
+        scopes: Vec<String>,
         parent_session_id: Option<String>,
         root_session_id: String,
         initial_size: Option<(u16, u16)>,
@@ -175,6 +190,9 @@ impl AgentSession {
             started_at: Utc::now().timestamp_millis(),
             exit_code: None,
             role: role.clone(),
+            owner_session_id: owner_session_id.clone(),
+            task_id: task_id.clone(),
+            scopes: scopes.clone(),
             parent_session_id: parent_session_id.clone(),
             root_session_id: root_session_id.clone(),
             detected_state: None,
@@ -198,6 +216,9 @@ impl AgentSession {
             parent_session_id_static: parent_session_id.clone(),
             root_session_id_static: root_session_id.clone(),
             role_static: role.clone(),
+            owner_session_id_static: owner_session_id.clone(),
+            task_id_static: task_id.clone(),
+            scopes_static: scopes.clone(),
         });
 
         // Emit started.

@@ -112,6 +112,9 @@ async fn create_session(
             thread_id: tid,
             cwd,
             role: req.role,
+            owner_session_id: None,
+            task_id: None,
+            scopes: Vec::new(),
             auto_intro: None,
             initial_prompt: None,
             parent_session_id: None,
@@ -134,6 +137,9 @@ pub struct SpawnArgs {
     pub thread_id: String,
     pub cwd: PathBuf,
     pub role: Option<String>,
+    pub owner_session_id: Option<String>,
+    pub task_id: Option<String>,
+    pub scopes: Vec<String>,
     /// Optional system-prompt addendum for context that must be available
     /// before the first user turn. Claude receives this through
     /// `--append-system-prompt` when MCP injection is active.
@@ -277,6 +283,9 @@ pub async fn spawn_session_internal(
 
     // Child spawn: parent must exist and be active; manager validates this.
     opts.parent_session_id = args.parent_session_id.clone();
+    opts.owner_session_id = args.owner_session_id.clone();
+    opts.task_id = args.task_id.clone();
+    opts.scopes = args.scopes.clone();
 
     // For child spawns we also seed an explicit `role_prompt` so the worker
     // immediately sees its briefing as the first user turn. The role-template
@@ -736,6 +745,10 @@ pub struct SpawnChildBody {
     pub role: String,
     pub initial_prompt: String,
     #[serde(default)]
+    pub task_id: Option<String>,
+    #[serde(default)]
+    pub scopes: Vec<String>,
+    #[serde(default)]
     pub cwd: Option<String>,
 }
 
@@ -746,11 +759,27 @@ pub struct ChildSummary {
     pub root_session_id: String,
     pub kind: AgentKind,
     pub role: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner_session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scopes: Vec<String>,
     pub status: harness_session::SessionStatus,
     pub started_at: i64,
     pub pid: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detected_state: Option<AgentState>,
+}
+
+fn normalize_child_scopes(mut scopes: Vec<String>, task_id: Option<&str>) -> Vec<String> {
+    if let Some(task_id) = task_id {
+        scopes.push(format!("task:{task_id}"));
+    }
+    scopes.retain(|scope| !scope.trim().is_empty());
+    scopes.sort();
+    scopes.dedup();
+    scopes
 }
 
 async fn spawn_child_route(
@@ -789,6 +818,9 @@ async fn spawn_child_route(
             thread_id,
             cwd,
             role: Some(body.role.clone()),
+            owner_session_id: Some(parent_sid.clone()),
+            task_id: body.task_id.clone(),
+            scopes: normalize_child_scopes(body.scopes, body.task_id.as_deref()),
             auto_intro: None,
             initial_prompt: Some(body.initial_prompt),
             parent_session_id: Some(parent_sid.clone()),
@@ -812,6 +844,9 @@ async fn spawn_child_route(
             root_session_id: meta.root_session_id,
             kind: meta.kind,
             role: meta.role,
+            owner_session_id: meta.owner_session_id,
+            task_id: meta.task_id,
+            scopes: meta.scopes,
             status: meta.status,
             started_at: meta.started_at,
             pid: meta.pid,
@@ -837,6 +872,9 @@ async fn list_children_route(
             root_session_id: meta.root_session_id,
             kind: meta.kind,
             role: meta.role,
+            owner_session_id: meta.owner_session_id,
+            task_id: meta.task_id,
+            scopes: meta.scopes,
             status: meta.status,
             started_at: meta.started_at,
             pid: meta.pid,
@@ -1228,5 +1266,19 @@ mod tests {
         assert!(!should_load_crawl4ai_context(
             "revisa la documentacion local del crate"
         ));
+    }
+
+    #[test]
+    fn child_scopes_include_task_and_drop_duplicates() {
+        let scopes = normalize_child_scopes(
+            vec![
+                "backend".to_string(),
+                "".to_string(),
+                "task:T-0001".to_string(),
+            ],
+            Some("T-0001"),
+        );
+
+        assert_eq!(scopes, vec!["backend".to_string(), "task:T-0001".to_string()]);
     }
 }

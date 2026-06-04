@@ -57,6 +57,9 @@ Nota F3 2026-06-04:
 - El routing base rol → CLI quedó cerrado para el scheduler: `Role.cli`
   fuerza Claude/Codex, `generic` conserva el kind pedido y Zeus se resuelve a
   su CLI subyacente antes de spawnear.
+- El selector del scheduler cae a Claude cuando el CLI primario no tiene
+  binario detectado y registra `scheduler.spawn.fallback` append-only con
+  `reason=binary_missing`.
 
 ## A1. Readiness check + execution mode
 

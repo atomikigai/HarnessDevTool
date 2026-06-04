@@ -8,8 +8,8 @@ use dashmap::DashMap;
 use harness_core::{
     ActiveSession, ActiveSessionsSource, AgentsRegistry, BudgetStore, BudgetWarning,
     BudgetWarningSink, BudgetWiring, ClaudeTranscriptReporter, CodexStubReporter, CostReporter,
-    PauseFlag, RolesRegistry, Scheduler, SessionSpawner, SpawnRequest, SpawnResult, Store,
-    StubReporter, TaskStore,
+    Event, Item, PauseFlag, RolesRegistry, Scheduler, SessionSpawner, SpawnRequest, SpawnResult,
+    Store, StubReporter, TaskStore,
 };
 use harness_policy::PolicyEngine;
 use harness_session::{AgentKind, Manager, SpawnOpts};
@@ -164,6 +164,7 @@ impl AppState {
         // the agent (the "phantom assignee" bug).
         let spawner = Arc::new(ManagerSpawner {
             manager: manager.clone(),
+            store: store.clone(),
             roles: roles.clone(),
             tasks: Arc::new(task_store.clone()),
             binaries: binaries.clone(),
@@ -338,6 +339,7 @@ fn detect_mcp_server_binary() -> Option<PathBuf> {
 /// period — see `manager.rs`.
 struct ManagerSpawner {
     manager: Arc<Manager>,
+    store: Arc<Store>,
     roles: Arc<RolesRegistry>,
     tasks: Arc<TaskStore>,
     binaries: HashMap<AgentKind, PathBuf>,
@@ -348,6 +350,21 @@ struct ManagerSpawner {
     server_url: String,
     api_token: Option<String>,
     mcp_configs: Arc<DashMap<String, PathBuf>>,
+}
+
+#[derive(Debug, Clone)]
+struct KindSelection {
+    kind: AgentKind,
+    binary: PathBuf,
+    fallback: Option<FallbackSelection>,
+}
+
+#[derive(Debug, Clone)]
+struct FallbackSelection {
+    from: AgentKind,
+    to: AgentKind,
+    reason: &'static str,
+    detail: String,
 }
 
 impl ManagerSpawner {
@@ -371,6 +388,75 @@ impl ManagerSpawner {
             harness_core::agents::AgentKind::Codex => Ok(AgentKind::Codex),
             harness_core::agents::AgentKind::Generic => Self::kind_from_request(requested_kind)
                 .ok_or_else(|| format!("unknown kind: {requested_kind}")),
+        }
+    }
+
+    fn select_kind_and_binary(
+        &self,
+        role_cli: harness_core::agents::AgentKind,
+        role_name: &str,
+        requested_kind: &str,
+    ) -> Result<KindSelection, String> {
+        let desired = Self::kind_for_role(role_cli, requested_kind)?.underlying_cli();
+        if let Some(binary) = self.binaries.get(&desired).cloned() {
+            return Ok(KindSelection {
+                kind: desired,
+                binary,
+                fallback: None,
+            });
+        }
+
+        if desired != AgentKind::Claude {
+            if let Some(binary) = self.binaries.get(&AgentKind::Claude).cloned() {
+                return Ok(KindSelection {
+                    kind: AgentKind::Claude,
+                    binary,
+                    fallback: Some(FallbackSelection {
+                        from: desired,
+                        to: AgentKind::Claude,
+                        reason: "binary_missing",
+                        detail: format!(
+                            "no binary detected for role {role_name} cli {desired} (requested agent kind {requested_kind})"
+                        ),
+                    }),
+                });
+            }
+        }
+
+        Err(format!(
+            "no binary detected for role {role_name} cli {desired} (requested agent kind {requested_kind})"
+        ))
+    }
+
+    fn append_spawn_fallback_event(&self, req: &SpawnRequest, fallback: &FallbackSelection) {
+        let payload = json!({
+            "agent_id": req.agent_id,
+            "role": req.role,
+            "task_id": req.task_id,
+            "requested_kind": req.kind,
+            "from": fallback.from.as_str(),
+            "to": fallback.to.as_str(),
+            "reason": fallback.reason,
+            "detail": fallback.detail,
+        });
+        let event = Event {
+            seq: 0,
+            at: chrono::Utc::now().timestamp_millis(),
+            event_type: "scheduler.spawn.fallback".to_string(),
+            items: vec![Item::Text {
+                text: serde_json::to_string(&payload).unwrap_or_else(|_| "{}".to_string()),
+            }],
+            thread_id: Some(req.thread_id.clone()),
+            actor: Some("scheduler".to_string()),
+            payload: Some(payload),
+        };
+        if let Err(e) = self.store.append_event(&req.thread_id, &event) {
+            tracing::warn!(
+                thread_id = %req.thread_id,
+                agent_id = %req.agent_id,
+                error = %e,
+                "failed to append scheduler spawn fallback event"
+            );
         }
     }
 
@@ -419,20 +505,15 @@ impl SessionSpawner for ManagerSpawner {
                 return SpawnResult::Failed(format!("unknown role: {}", req.role));
             }
         };
-        let kind = match Self::kind_for_role(role.cli, &req.kind) {
-            Ok(kind) => kind.underlying_cli(),
+        let selection = match self.select_kind_and_binary(role.cli, &req.role, &req.kind) {
+            Ok(selection) => selection,
             Err(e) => return SpawnResult::Failed(e),
         };
-
-        let binary = match self.binaries.get(&kind).cloned() {
-            Some(b) => b,
-            None => {
-                return SpawnResult::Failed(format!(
-                    "no binary detected for role {} cli {} (requested agent kind {})",
-                    req.role, kind, req.kind
-                ))
-            }
-        };
+        if let Some(fallback) = selection.fallback.as_ref() {
+            self.append_spawn_fallback_event(&req, fallback);
+        }
+        let kind = selection.kind;
+        let binary = selection.binary;
 
         let cwd = req
             .cwd
@@ -592,6 +673,31 @@ fn detect_binaries() -> HashMap<AgentKind, PathBuf> {
 mod tests {
     use super::*;
     use harness_core::agents::AgentKind as RoleAgentKind;
+    use tempfile::TempDir;
+
+    fn test_spawner(binaries: HashMap<AgentKind, PathBuf>) -> (ManagerSpawner, TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let profile = "default";
+        let store = Arc::new(Store::with_profile(dir.path(), profile).unwrap());
+        let manager = Arc::new(Manager::new(dir.path().join("profiles/default/sessions")).unwrap());
+        let roles = Arc::new(RolesRegistry::load_for_profile(dir.path(), profile).unwrap());
+        let tasks = Arc::new(TaskStore::with_profile(dir.path(), profile).unwrap());
+        (
+            ManagerSpawner {
+                manager,
+                store,
+                roles,
+                tasks,
+                binaries,
+                mcp_server_binary: None,
+                harness_home: dir.path().to_path_buf(),
+                server_url: "http://127.0.0.1:7777".to_string(),
+                api_token: None,
+                mcp_configs: Arc::new(DashMap::new()),
+            },
+            dir,
+        )
+    }
 
     #[test]
     fn role_cli_overrides_scheduler_requested_kind() {
@@ -618,5 +724,60 @@ mod tests {
             AgentKind::Codex
         );
         assert!(ManagerSpawner::kind_for_role(RoleAgentKind::Generic, "missing").is_err());
+    }
+
+    #[test]
+    fn missing_role_cli_binary_falls_back_to_claude() {
+        let mut binaries = HashMap::new();
+        binaries.insert(AgentKind::Claude, PathBuf::from("/bin/claude"));
+        let (spawner, _dir) = test_spawner(binaries);
+
+        let selected = spawner
+            .select_kind_and_binary(RoleAgentKind::Codex, "generator", "codex")
+            .unwrap();
+
+        assert_eq!(selected.kind, AgentKind::Claude);
+        assert_eq!(selected.binary, PathBuf::from("/bin/claude"));
+        let fallback = selected.fallback.expect("fallback metadata");
+        assert_eq!(fallback.from, AgentKind::Codex);
+        assert_eq!(fallback.to, AgentKind::Claude);
+        assert_eq!(fallback.reason, "binary_missing");
+    }
+
+    #[test]
+    fn spawn_fallback_event_is_append_only() {
+        let mut binaries = HashMap::new();
+        binaries.insert(AgentKind::Claude, PathBuf::from("/bin/claude"));
+        let (spawner, _dir) = test_spawner(binaries);
+        let thread = spawner
+            .store
+            .create_thread(Some("fallback test".to_string()))
+            .unwrap();
+        let req = SpawnRequest {
+            thread_id: thread.id.clone(),
+            agent_id: "agent:generator-1".to_string(),
+            kind: "codex".to_string(),
+            role: "generator".to_string(),
+            task_id: Some("T-0001".to_string()),
+            cwd: None,
+        };
+        let fallback = FallbackSelection {
+            from: AgentKind::Codex,
+            to: AgentKind::Claude,
+            reason: "binary_missing",
+            detail: "codex missing".to_string(),
+        };
+
+        spawner.append_spawn_fallback_event(&req, &fallback);
+
+        let events = spawner.store.read_events(&thread.id).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, "scheduler.spawn.fallback");
+        assert_eq!(events[0].actor.as_deref(), Some("scheduler"));
+        let payload = events[0].payload.as_ref().unwrap();
+        assert_eq!(payload["from"], "codex");
+        assert_eq!(payload["to"], "claude");
+        assert_eq!(payload["reason"], "binary_missing");
+        assert_eq!(payload["task_id"], "T-0001");
     }
 }

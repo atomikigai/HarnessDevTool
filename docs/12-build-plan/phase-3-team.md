@@ -56,8 +56,10 @@ Audit rápido del 2026-05-27:
 - [ ] Routing especial frontend visual: tasks de pantallas, CSS, layout,
   responsive, shadcn/polish y a11y visual se delegan a Cursor primero; frontend
   logic/API/stores usa Codex/Claude.
-- [ ] Selector con fallback uniforme a Claude (quota / binary missing / runtime error).
-- [ ] Audit log para cada fallback (`reason: quota_exceeded | binary_missing | runtime_error`).
+- [x] Selector con fallback a Claude cuando falta el binario del CLI primario (`reason: binary_missing`).
+- [ ] Selector con fallback a Claude para `quota_exceeded` / `runtime_error` clasificados por CLI.
+- [x] Audit log append-only para fallback `binary_missing` (`scheduler.spawn.fallback`).
+- [ ] Audit log para fallbacks `quota_exceeded` / `runtime_error`.
 - [x] `POST /api/threads/:tid/sessions { kind: "zeus" }` deja de devolver 400 BadRequest y resuelve a Codex como CLI principal.
 - [ ] UI: tab carrusel principal "Zeus session" + sub-tabs por hija con `parent_session_id`.
 - [ ] Test de aceptación: dado un goal sintético, verificar que cada rol se delega al CLI esperado y que el fallback dispara cuando el primario está bloqueado.

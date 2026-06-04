@@ -104,11 +104,11 @@ Audit rápido del 2026-05-27:
 - [x] UI atajo `Cmd/Ctrl+Shift+.`.
 
 ### Backend — sandbox
-- [ ] Crate **`harness-sandbox`**:
-  - [ ] Niveles: `none | workspace | workspace-net | strict`.
+- [x] Crate **`harness-sandbox`**:
+  - [x] Niveles: `none | workspace | workspace-net | strict`.
   - [ ] Linux: `seccompiler` + bind mounts.
   - [ ] macOS: `Command` con `sandbox-exec` profile.
-  - [ ] Windows: stub (warning) en F3; implementación real en F6.
+  - [x] Windows: stub (warning) en F3; implementación real en F6.
 - [ ] Toda invocación de tool del módulo (DB/SSH en F4) y todo `shell.exec` del CLI pasa por el sandbox.
 - [ ] Importante: el `claude`/`codex` child **ya tiene su propio sandbox/approval**. Aquí sandbox-eamos los **child-of-child** que ellos ejecuten.
 

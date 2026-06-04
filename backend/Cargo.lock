@@ -1982,6 +1982,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "harness-sandbox"
+version = "0.0.1"
+dependencies = [
+ "serde",
+ "thiserror 1.0.69",
+ "tokio",
+]
+
+[[package]]
 name = "harness-server"
 version = "0.0.1"
 dependencies = [

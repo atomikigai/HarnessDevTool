@@ -12,7 +12,7 @@ expone a una UI web (SvelteKit) via una API HTTP servida por un backend Rust
 
 ## Arquitectura en una linea
 
-`frontend (SvelteKit, :8080)` <-> `backend (harness-server, :7777)` <-> `PTY child agents`
+`frontend (SvelteKit)` <-> `backend (harness-server)` <-> `PTY child agents`
 con estado en `HARNESS_HOME` (default `~/.harness`, montado como `/data` en
 container).
 
@@ -25,8 +25,10 @@ container).
 - **`ts-rs` como fuente de verdad de tipos**: los tipos compartidos se definen
   en Rust y se exportan a TypeScript via `just gen-types`. Nunca editar a mano
   los `.ts` generados en `frontend/src/lib/api/types/`.
-- **Puertos fijos**: backend `7777`, frontend `8080`. En docker-compose se
-  comunican por nombre de servicio (`backend:7777`).
+- **Puertos locales dinámicos**: en dev, `just dev`/`just dev-raw`/`just docker-dev`
+  eligen puertos altos libres si `BACKEND_PORT`/`FRONTEND_PORT` no están definidos.
+  `HARNESS_CORS_ORIGIN` se deriva del puerto frontend elegido. En docker-compose
+  los servicios se comunican internamente por nombre de servicio (`backend:7777`).
 - **`HARNESS_HOME`**: variable de entorno para la raiz de estado. En container
   siempre vale `/data`; en host default `~/.harness`.
 

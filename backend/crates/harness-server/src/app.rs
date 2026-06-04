@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use axum::http::{header, HeaderName, HeaderValue, Method};
+use axum::http::{header, HeaderName, HeaderValue, Method, Uri};
 use axum::{middleware, Router};
 use tower::ServiceBuilder;
 use tower_http::compression::CompressionLayer;
@@ -16,10 +16,11 @@ pub const PROTOCOL_VERSION: &str = "1.0";
 pub const PROTOCOL_VERSION_HEADER: HeaderName = HeaderName::from_static("x-protocol-version");
 
 pub fn build_router(state: Arc<AppState>, cfg: &Config) -> Router {
+    let configured_cors_origin = cfg.cors_origin.clone();
     let cors = CorsLayer::new()
-        .allow_origin(AllowOrigin::exact(
-            HeaderValue::from_str(&cfg.cors_origin).expect("invalid HARNESS_CORS_ORIGIN value"),
-        ))
+        .allow_origin(AllowOrigin::predicate(move |origin, _| {
+            cors_origin_allowed(origin, &configured_cors_origin)
+        }))
         .allow_methods([
             Method::GET,
             Method::POST,
@@ -71,4 +72,54 @@ pub fn build_router(state: Arc<AppState>, cfg: &Config) -> Router {
         .merge(protected)
         .layer(middleware)
         .with_state(state)
+}
+
+fn cors_origin_allowed(origin: &HeaderValue, configured: &str) -> bool {
+    let Ok(origin) = origin.to_str() else {
+        return false;
+    };
+    origin == configured || is_loopback_origin(origin)
+}
+
+fn is_loopback_origin(origin: &str) -> bool {
+    let Ok(uri) = origin.parse::<Uri>() else {
+        return false;
+    };
+    let scheme_allowed = matches!(uri.scheme_str(), Some("http" | "https"));
+    let host_allowed = matches!(
+        uri.host(),
+        Some("localhost" | "127.0.0.1" | "[::1]" | "::1")
+    );
+    scheme_allowed && host_allowed
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cors_allows_configured_origin() {
+        let origin = HeaderValue::from_static("https://example.test");
+
+        assert!(cors_origin_allowed(&origin, "https://example.test"));
+    }
+
+    #[test]
+    fn cors_allows_loopback_origins_on_any_port() {
+        for raw in [
+            "http://localhost:43178",
+            "http://127.0.0.1:45678",
+            "http://[::1]:50999",
+        ] {
+            let origin = HeaderValue::from_str(raw).unwrap();
+            assert!(cors_origin_allowed(&origin, "https://example.test"));
+        }
+    }
+
+    #[test]
+    fn cors_rejects_non_loopback_origins() {
+        let origin = HeaderValue::from_static("http://192.168.1.50:43178");
+
+        assert!(!cors_origin_allowed(&origin, "https://example.test"));
+    }
 }

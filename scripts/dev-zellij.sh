@@ -8,42 +8,6 @@ COMPOSE=(docker compose -f "$ROOT_DIR/docker-compose.mcp.yml")
 MCP_SERVICES=(crawl4ai excalidraw-mcp)
 PRIMARY_MCP_CONTAINERS=(crawl4ai excalidraw-mcp)
 
-find_free_port() {
-  python3 - "$1" <<'PY'
-import socket
-import sys
-
-port = int(sys.argv[1])
-while True:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        try:
-            sock.bind(("127.0.0.1", port))
-        except OSError:
-            port += 1
-            continue
-        print(port)
-        break
-PY
-}
-
-export_default_port() {
-  local name="$1"
-  local default="$2"
-
-  if [[ -n "${!name:-}" ]]; then
-    export "$name"
-    return
-  fi
-
-  local selected
-  selected="$(find_free_port "$default")"
-  export "$name=$selected"
-
-  if [[ "$selected" != "$default" ]]; then
-    echo "$name default port $default is busy; using $selected for this Zellij session." >&2
-  fi
-}
-
 mcp_services_running() {
   local container
   local primary_running=true
@@ -74,18 +38,16 @@ if ! command -v zellij >/dev/null 2>&1; then
   exit 127
 fi
 
-export_default_port BACKEND_PORT 7778
-export_default_port FRONTEND_PORT 8081
-export HARNESS_BIND="${HARNESS_BIND:-127.0.0.1:${BACKEND_PORT}}"
-export HARNESS_CORS_ORIGIN="${HARNESS_CORS_ORIGIN:-http://localhost:${FRONTEND_PORT}}"
+source "$ROOT_DIR/scripts/dev-env.sh"
+export_harness_dev_env
 
 if zellij list-sessions --short --no-formatting 2>/dev/null | grep -Fxq "$SESSION_NAME"; then
   exec zellij attach "$SESSION_NAME"
 fi
 
 if ! mcp_services_running; then
-  export_default_port CRAWL4AI_PORT 11235
-  export_default_port EXCALIDRAW_MCP_PORT 3001
+  export CRAWL4AI_PORT="${CRAWL4AI_PORT:-$(find_random_free_port "$BACKEND_PORT" "$FRONTEND_PORT")}"
+  export EXCALIDRAW_MCP_PORT="${EXCALIDRAW_MCP_PORT:-$(find_random_free_port "$BACKEND_PORT" "$FRONTEND_PORT" "$CRAWL4AI_PORT")}"
 fi
 
 zellij attach --create-background "$SESSION_NAME" options \

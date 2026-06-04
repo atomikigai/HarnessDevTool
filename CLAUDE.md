@@ -124,7 +124,8 @@ del equipo; Frontend, Doc-agent, Revisor y QA son subagentes Claude nativos.
 - **`ts-rs` es la fuente de verdad de tipos** (type-bridge gate): quien toque un tipo `#[derive(TS)]`
   **debe** correr `just gen-types`; **nunca** editar a mano `frontend/src/lib/api/types/`. El Planner
   lo verifica en VERIFY.
-- **Puertos fijos**: backend `7777`, frontend `8080` (en local dev `7778`/`8081` vía Justfile).
+- **Puertos locales dinámicos**: `just dev`/`just dev-raw`/`just docker-dev` eligen puertos altos libres
+  si `BACKEND_PORT`/`FRONTEND_PORT` no están definidos; `HARNESS_CORS_ORIGIN` se deriva del frontend.
 - **`HARNESS_HOME`**: raíz de estado (default `~/.harness`, `/data` en container).
 - **Propiedad por dominio** (no cruzar paths): backend `backend/**`, frontend `frontend/**`,
   infra/raíz `Justfile`/`docker-compose*.yml`/`.env.example`/`.gitignore`/`AGENTS.md`, docs `docs/**`.

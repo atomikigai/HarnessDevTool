@@ -9,18 +9,16 @@ default:
 list:
     @just --list
 
-# Run the local dev workspace in Zellij
+# Run backend + frontend locally in parallel
 dev:
-    ./scripts/dev-zellij.sh
+    just dev-raw
 
 # Run backend + frontend locally in parallel (no Zellij)
 dev-raw:
     #!/usr/bin/env bash
     set -euo pipefail
-    export BACKEND_PORT="${BACKEND_PORT:-7778}"
-    export FRONTEND_PORT="${FRONTEND_PORT:-8081}"
-    export HARNESS_BIND="${HARNESS_BIND:-127.0.0.1:${BACKEND_PORT}}"
-    export HARNESS_CORS_ORIGIN="${HARNESS_CORS_ORIGIN:-http://localhost:${FRONTEND_PORT}}"
+    source ./scripts/dev-env.sh
+    export_harness_dev_env
     cleanup() {
       trap - EXIT INT TERM
       jobs -pr | xargs -r kill 2>/dev/null || true
@@ -36,16 +34,14 @@ dev-local: dev-raw
 
 # Run only backend (local)
 dev-backend:
-    export BACKEND_PORT="${BACKEND_PORT:-7778}"; \
-    export FRONTEND_PORT="${FRONTEND_PORT:-8081}"; \
-    export HARNESS_BIND="${HARNESS_BIND:-127.0.0.1:${BACKEND_PORT}}"; \
-    export HARNESS_CORS_ORIGIN="${HARNESS_CORS_ORIGIN:-http://localhost:${FRONTEND_PORT}}"; \
+    source ./scripts/dev-env.sh; \
+    export_harness_dev_env; \
     cd backend && exec cargo run -p harness-server
 
 # Run only frontend (local)
 dev-frontend:
-    export BACKEND_PORT="${BACKEND_PORT:-7778}"; \
-    export FRONTEND_PORT="${FRONTEND_PORT:-8081}"; \
+    source ./scripts/dev-env.sh; \
+    export_harness_dev_env; \
     cd frontend && exec pnpm dev
 
 # Run optional MCP support services in foreground
@@ -100,6 +96,10 @@ docker-down:
 
 # Bring up dev stack with hot-reload (foreground)
 docker-dev:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source ./scripts/dev-env.sh
+    export_harness_dev_env
     docker compose -f docker-compose.dev.yml up
 
 # Start optional MCP support services without rebuilding

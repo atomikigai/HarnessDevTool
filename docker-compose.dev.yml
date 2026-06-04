@@ -14,9 +14,11 @@ services:
         cargo watch -x 'run -p harness-server'
       "
     ports:
-      - "${BACKEND_PORT:-7777}:7777"
+      - "${BACKEND_PORT:?Set BACKEND_PORT via just docker-dev}:7777"
     environment:
       HARNESS_HOME: /data
+      HARNESS_BIND: 0.0.0.0:7777
+      HARNESS_CORS_ORIGIN: http://localhost:${FRONTEND_PORT:?Set FRONTEND_PORT via just docker-dev}
       HARNESS_API_TOKEN: ${HARNESS_API_TOKEN:?Set HARNESS_API_TOKEN in .env}
       RUST_LOG: ${RUST_LOG:-debug}
       CARGO_HOME: /cargo
@@ -36,12 +38,12 @@ services:
       bash -lc "
         corepack enable && corepack prepare pnpm@latest --activate;
         pnpm install --frozen-lockfile || pnpm install;
-        pnpm dev --host 0.0.0.0 --port 5173
+        pnpm dev --host 0.0.0.0 --port 8080
       "
     ports:
-      - "5173:5173"
+      - "${FRONTEND_PORT:?Set FRONTEND_PORT via just docker-dev}:8080"
     environment:
-      PUBLIC_API_BASE: http://localhost:${BACKEND_PORT:-7777}/api
+      PUBLIC_API_BASE: http://localhost:${BACKEND_PORT:?Set BACKEND_PORT via just docker-dev}/api
       PUBLIC_HARNESS_API_TOKEN: ${HARNESS_API_TOKEN:?Set HARNESS_API_TOKEN in .env}
       NODE_ENV: development
     volumes:

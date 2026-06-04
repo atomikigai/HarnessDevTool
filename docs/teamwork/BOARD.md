@@ -17,8 +17,28 @@ Modelo operativo: ver [`docs/teamwork/OPERATING_MODEL.md`](./OPERATING_MODEL.md)
 
 | Campo | Valor |
 |---|---|
+| **Tarea** | Task 19 — Razones estructuradas en tasks |
+| **Estado** | `OPEN` — equipo inicializado el 2026-06-04. Pendiente audit inicial antes de implementar. |
+| **Objetivo** | Evitar que bloqueos, pausas, rechazos, fallos y necesidades humanas queden escondidos en strings libres; exponer razones operativas legibles y machine-readable. |
+| **Alcance / archivos** | Backend/core task model/store/state machine/events/schema; MCP/API task patch/submit si aplica; frontend TaskDetail, badges/listas y tipos. |
+| **Responsables** | Planner/Codex. Usar auditoría auxiliar backend/frontend antes del primer patch. |
+| **Criterio de aceptación** | (1) existen campos o eventos para `blocked_reason`, `paused_reason`, `rejected_reason`, `last_failure` y `needs_human`; (2) state machine exige razón donde aplique; (3) TaskDetail/badges muestran razones compactas; (4) eventos se emiten cuando cambian razones; (5) tests cubren transiciones con/sin razón requerida. |
+| **Checks obligatorios** | `cargo test -p harness-core -p harness-mcp-server -p harness-server`; `just gen-types` si cambian tipos exportados; `pnpm check`; `just test` al cierre. |
+
+### Contrato breve — Task 19
+
+1. Mantener compatibilidad con `notes.feedback`, `why_paused` y `why_abandoned`.
+2. No rigidizar comentarios libres; estructurar solo razones operativas que scheduler/UI/agentes necesitan entender.
+3. Cualquier reparación o cambio de razón debe ser trazable por evento append-only.
+4. `blocked`/`paused`/`rejected`/`needs_human` deben explicar el bloqueo sin obligar a leer logs internos.
+5. UI debe mostrar razones sin saturar el panel de tasks.
+
+## Última cerrada — Task 18
+
+| Campo | Valor |
+|---|---|
 | **Tarea** | Task 18 — Artifacts como entidad/evento real |
-| **Estado** | `VERIFY` — implementación Codex completa el 2026-06-04; auditorías auxiliares backend/frontend incorporadas y findings de revisión auxiliar corregidos. Pendiente decisión del Planner para pasar a `DONE`. |
+| **Estado** | ✅ `DONE` — implementada por Codex el 2026-06-04; auditorías auxiliares backend/frontend incorporadas, findings de revisión auxiliar corregidos y checks verdes. Commit `c33e8de`. |
 | **Objetivo** | Modelar artifacts con metadata propia para que evaluator, replay y UI sepan quién produjo cada evidencia, cuándo, de qué tipo es y cómo se relaciona con una task. |
 | **Alcance / archivos** | Backend/core task model/store/events/schema, MCP `task_submit`, server routes/SSE si hace falta; frontend TaskDetail/SessionRightPanel y tipos/API. |
 | **Responsables** | Planner/Codex. Subagentes auxiliares Codex: backend audit (`Harvey`) y frontend audit (`Herschel`). QA oficial requerida antes de cierre por tocar append-only/eventos. |
@@ -83,7 +103,7 @@ Modelo operativo: ver [`docs/teamwork/OPERATING_MODEL.md`](./OPERATING_MODEL.md)
 **Notas:**
 - `Justfile` tiene un cambio no relacionado (`setup`) presente en el worktree y no pertenece a esta task.
 
-## Última cerrada — Task 17
+## Cerrada anterior — Task 17
 
 | Campo | Valor |
 |---|---|

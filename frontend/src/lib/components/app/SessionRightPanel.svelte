@@ -58,11 +58,27 @@
 
   function needsAttention(task: (typeof tasksState.items)[number]): boolean {
     const notes = task.notes;
+    const schedulerDecision = task.scheduler_explanation?.decision;
     return Boolean(
       notes.needs_human ||
         notes.last_failure?.trim() ||
         notes.rejected_reason?.trim() ||
-        notes.blocked_reason?.trim()
+        notes.blocked_reason?.trim() ||
+        (schedulerDecision &&
+          ['assignment_skipped', 'cooldown_skipped', 'evaluator_skipped', 'claim_busy'].includes(
+            schedulerDecision
+          ))
+    );
+  }
+
+  function attentionTitle(task: (typeof tasksState.items)[number]): string {
+    const notes = task.notes;
+    return (
+      notes.last_failure?.trim() ||
+      notes.rejected_reason?.trim() ||
+      notes.blocked_reason?.trim() ||
+      task.scheduler_explanation?.reason?.trim() ||
+      (notes.needs_human ? 'Human input required' : 'Task has structured reason metadata')
     );
   }
 
@@ -273,7 +289,7 @@
                 <span
                   class="ml-auto shrink-0 rounded-sm px-1.5 py-0.5 text-[10px]"
                   style="background: color-mix(in srgb, var(--dot-warn) 16%, transparent); color: var(--dot-warn);"
-                  title="Task has structured reason metadata"
+                  title={attentionTitle(t)}
                 >
                   !
                 </span>

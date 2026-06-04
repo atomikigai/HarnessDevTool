@@ -141,6 +141,7 @@ mod tests {
             acceptance: AcceptanceBlock::default(),
             artifacts: Artifacts::default(),
             notes: Notes::default(),
+            scheduler_explanation: None,
             history: HistoryBlock::default(),
         }
     }

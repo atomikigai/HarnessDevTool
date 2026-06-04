@@ -17,13 +17,33 @@ Modelo operativo: ver [`docs/teamwork/OPERATING_MODEL.md`](./OPERATING_MODEL.md)
 
 | Campo | Valor |
 |---|---|
-| **Tarea** | Task 20 — Scheduler explain/debug |
-| **Estado** | `OPEN` — equipo inicializado el 2026-06-04. Pendiente auditoría inicial antes de implementar. |
-| **Objetivo** | Explicar por qué el scheduler asignó, saltó o enfrió una task para que planner/UI/agentes puedan depurar decisiones sin leer logs internos. |
-| **Alcance / archivos** | Backend/core scheduler tick/decisions/events; server/API/SSE si aplica; frontend TaskDetail/SessionRightPanel/listas para mostrar explicación compacta; tests de rutas de assign/skip/cooldown. |
+| **Tarea** | Task 21 — Budget por task/agente |
+| **Estado** | `OPEN` — pendiente inicializar auditoría antes de implementar. |
+| **Objetivo** | Atribuir costo por thread/session/task/role y retries para que planner pueda limitar gasto real y comparar eficiencia por agente. |
+| **Alcance / archivos** | Backend/core budget reporter/store/scheduler/session metadata/task linkage; server/API si aplica; frontend paneles de budget/task; tests de agregación y compat. |
 | **Responsables** | Planner/Codex. Usar auditoría auxiliar backend/frontend antes del primer patch. |
-| **Criterio de aceptación** | (1) las decisiones relevantes del scheduler tienen razón estructurada; (2) se distinguen assign, skip, cooldown, blockers y budget; (3) la razón queda disponible para replay/debug append-only; (4) UI muestra explicación compacta donde afecte a tasks/agentes; (5) tests cubren decisiones positivas y skips principales. |
+| **Criterio de aceptación** | (1) el budget conserva breakdown por agente/rol y puede asociarse a task cuando hay metadata; (2) retries/reasignaciones no duplican costo; (3) scheduler/pausa usan datos agregados correctamente; (4) UI muestra costo compacto por thread/task/agente; (5) tests cubren sesiones sin task y sesiones con task. |
 | **Checks obligatorios** | `cargo test -p harness-core -p harness-mcp-server -p harness-server`; `just gen-types` si cambian tipos exportados; `pnpm check`; `just test` al cierre. |
+
+### Contrato breve — Task 21
+
+1. No mezclar presupuesto global con atribución por task: la suma global sigue siendo la fuente para hard cap.
+2. Mantener compatibilidad con sesiones legacy sin `task_id`; deben agregarse bajo `unknown` o thread-only.
+3. No depender de parsing de transcript para inferir task si `SessionMeta.task_id` ya existe.
+4. La UI debe mostrar costo como señal operativa compacta, no como reporte financiero exhaustivo.
+5. Cualquier nueva métrica debe poder recalcularse desde estado persistido o eventos append-only.
+
+## Última cerrada — Task 20
+
+| Campo | Valor |
+|---|---|
+| **Tarea** | Task 20 — Scheduler explain/debug |
+| **Estado** | ✅ `DONE` — implementada por Codex el 2026-06-04; auditorías auxiliares backend/frontend incorporadas y checks verdes. |
+| **Objetivo** | Explicar por qué el scheduler asignó, saltó o enfrió una task para que planner/UI/agentes puedan depurar decisiones sin leer logs internos. |
+| **Alcance / archivos** | Backend/core scheduler tick/decisions/events/task snapshot; server SSE; frontend TaskDetail/SessionRightPanel/listas y task store. |
+| **Responsables** | Planner/Codex. Subagentes auxiliares Codex: backend audit (`Erdos`) y frontend audit (`Schrodinger`). |
+| **Criterio de aceptación** | ✅ decisiones relevantes del scheduler tienen razón estructurada; ✅ se distinguen assign/skip/cooldown/evaluator/lease; ✅ `task.scheduler.decision` queda append-only; ✅ UI muestra explicación compacta; ✅ tests cubren assign y max-concurrency skip. |
+| **Checks corridos** | ✅ `cargo test -p harness-core -p harness-mcp-server -p harness-server`; ✅ `just gen-types`; ✅ `pnpm --dir frontend check`; ✅ `just test`. |
 
 ### Contrato breve — Task 20
 
@@ -33,24 +53,32 @@ Modelo operativo: ver [`docs/teamwork/OPERATING_MODEL.md`](./OPERATING_MODEL.md)
 4. La UI debe mostrar el motivo sin saturar la lista ni convertirlo en log raw.
 5. El debug debe ayudar a distinguir “no asignable todavía” de “error operativo”.
 
-### Handoff inicial — Planner/Codex 2026-06-04
+### Handoff Implementación — Codex 2026-06-04
 
-**Backend audit auxiliar:**
-- Auditar `scheduler/tick.rs`, eventos de tasks/thread, rutas SSE y tests existentes.
-- Reportar qué decisión actual no deja rastro suficiente y proponer el contrato mínimo.
+**Archivos tocados:**
+- `backend/crates/harness-core/src/scheduler/tick.rs`
+- `backend/crates/harness-core/src/tasks/{model.rs,events.rs,store.rs,mod.rs,state_machine.rs}`
+- `backend/crates/harness-core/{src/lib.rs,schemas/task.v1.json}`
+- `backend/crates/harness-server/src/routes/events.rs`
+- `frontend/src/lib/api/models/task.ts`
+- `frontend/src/lib/stores/tasks.svelte.ts`
+- `frontend/src/lib/components/{tasks/TaskDetail.svelte,app/SessionRightPanel.svelte}`
+- `frontend/src/routes/threads/[id]/tasks/+page.svelte`
 
-**Frontend audit auxiliar:**
-- Auditar TaskDetail, SessionRightPanel, lista de tasks y stores.
-- Reportar dónde mostrar explicaciones sin ruido y qué tipos/API tocar si cambia el contrato.
+**Implementado:**
+- `SchedulerExplanation` + `SchedulerDecisionKind` quedan en snapshot de `Task`.
+- `TaskEvent::SchedulerDecision` emite `task.scheduler.decision` append-only y SSE.
+- `TaskStore::record_scheduler_decision` deduplica explicaciones idénticas para evitar spam del tick.
+- Scheduler registra ready, auto-unblocked, assigned, assignment skipped, cooldown added/skipped, evaluator skipped/routed y lease expired.
+- TaskDetail muestra la explicación en el bloque compacto de razones; lista y panel lateral usan el chip de atención existente.
 
-**Ruta propuesta:**
-1. Integrar hallazgos de auditoría.
-2. Implementar contrato backend/core + tests.
-3. Regenerar tipos si el contrato Rust cambia.
-4. Implementar UI mínima.
-5. Correr checks y cerrar con revisión.
+**Checks corridos:**
+- `cargo test -p harness-core -p harness-mcp-server -p harness-server` ✅
+- `just gen-types` ✅
+- `pnpm --dir frontend check` ✅
+- `just test` ✅
 
-## Última cerrada — Task 19
+## Cerrada anterior — Task 19
 
 | Campo | Valor |
 |---|---|

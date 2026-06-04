@@ -10,6 +10,7 @@ mod store;
 pub use events::TaskEvent;
 pub use model::{
     AcceptanceCheck, Artifact, ArtifactKind, Artifacts, ClaimResult, HistoryEvent, Lease,
-    ListFilters, SpecRef, Task, TaskBrief, TaskDraft, TaskPatch, TaskStatus,
+    ListFilters, SchedulerDecisionKind, SchedulerExplanation, SpecRef, Task, TaskBrief, TaskDraft,
+    TaskPatch, TaskStatus,
 };
 pub use store::TaskStore;

@@ -17,7 +17,7 @@ use super::ids::next_id;
 use super::index::Index;
 use super::model::{
     AcceptanceBlock, Artifact, ArtifactKind, Artifacts, ClaimResult, HistoryBlock, HistoryEvent,
-    Lease, ListFilters, Notes, Task, TaskDraft, TaskPatch, TaskStatus,
+    Lease, ListFilters, Notes, SchedulerExplanation, Task, TaskDraft, TaskPatch, TaskStatus,
 };
 use super::state_machine::validate_transition;
 use crate::Store;
@@ -274,6 +274,7 @@ impl TaskStore {
             acceptance: AcceptanceBlock { checks },
             artifacts: Artifacts::default(),
             notes: Notes::default(),
+            scheduler_explanation: None,
             history: HistoryBlock {
                 events: vec![HistoryEvent {
                     at: now,
@@ -551,6 +552,49 @@ impl TaskStore {
         let mut artifacts = task.artifacts;
         normalize_artifacts(&task.id, &mut artifacts, &task.updated_by, task.updated_at);
         Ok(artifacts.metadata)
+    }
+
+    /// Store and broadcast the latest scheduler explanation for a task.
+    ///
+    /// The scheduler ticks frequently, so identical explanations are ignored
+    /// even though a fresh explanation carries a new `at` timestamp.
+    pub fn record_scheduler_decision(
+        &self,
+        tid: &str,
+        explanation: SchedulerExplanation,
+    ) -> Result<bool, Error> {
+        let task_id = explanation.task_id.clone();
+        let changed = self.with_locked(tid, &task_id, |task| {
+            if task
+                .scheduler_explanation
+                .as_ref()
+                .is_some_and(|prev| scheduler_explanation_same_reason(prev, &explanation))
+            {
+                return Ok(false);
+            }
+            task.scheduler_explanation = Some(explanation.clone());
+            task.updated_at = explanation.at;
+            task.updated_by = "scheduler".into();
+            Ok(true)
+        })?;
+        if changed {
+            self.emit(
+                tid,
+                TaskEvent::SchedulerDecision {
+                    explanation: explanation.clone(),
+                },
+            );
+            self.emit(
+                tid,
+                TaskEvent::Updated {
+                    task_id,
+                    by: "scheduler".into(),
+                    at: explanation.at,
+                    fields: vec!["scheduler_explanation".into()],
+                },
+            );
+        }
+        Ok(changed)
     }
 
     /// Transition the task to `abandoned` with a reason. Humans only.
@@ -931,6 +975,18 @@ fn reason_changes(task: &Task, fields: &[String]) -> Vec<(String, String)> {
         }
     }
     out
+}
+
+fn scheduler_explanation_same_reason(a: &SchedulerExplanation, b: &SchedulerExplanation) -> bool {
+    a.task_id == b.task_id
+        && a.decision == b.decision
+        && a.reason == b.reason
+        && a.agent_id == b.agent_id
+        && a.previous_holder == b.previous_holder
+        && a.blocked_by == b.blocked_by
+        && a.cooldown_seconds == b.cooldown_seconds
+        && a.max_concurrent == b.max_concurrent
+        && a.queue_depth == b.queue_depth
 }
 
 /// Acquire an exclusive flock, deserialize, mutate, atomically persist.

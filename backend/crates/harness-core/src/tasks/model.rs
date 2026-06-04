@@ -207,6 +207,45 @@ pub struct SpecRef {
     pub version: u64,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[cfg_attr(feature = "ts-export", derive(TS))]
+#[cfg_attr(feature = "ts-export", ts(export, export_to = "../../../bindings/"))]
+#[serde(rename_all = "snake_case")]
+pub enum SchedulerDecisionKind {
+    Ready,
+    AutoUnblocked,
+    Assigned,
+    AssignmentSkipped,
+    ClaimBusy,
+    CooldownAdded,
+    CooldownSkipped,
+    RoutedToEvaluator,
+    EvaluatorSkipped,
+    LeaseExpired,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[cfg_attr(feature = "ts-export", derive(TS))]
+#[cfg_attr(feature = "ts-export", ts(export, export_to = "../../../bindings/"))]
+pub struct SchedulerExplanation {
+    pub task_id: String,
+    pub decision: SchedulerDecisionKind,
+    pub reason: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_holder: Option<String>,
+    #[serde(default)]
+    pub blocked_by: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cooldown_seconds: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_concurrent: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue_depth: Option<usize>,
+    pub at: DateTime<Utc>,
+}
+
 /// Full task document — 1:1 with the on-disk TOML.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[cfg_attr(feature = "ts-export", derive(TS))]
@@ -252,6 +291,8 @@ pub struct Task {
     pub artifacts: Artifacts,
     #[serde(default)]
     pub notes: Notes,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scheduler_explanation: Option<SchedulerExplanation>,
     #[serde(default)]
     pub history: HistoryBlock,
 }

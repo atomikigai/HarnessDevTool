@@ -100,6 +100,10 @@ class TasksState {
             const tid = (data as { task_id?: string })?.task_id;
             if (tid) void this.refreshOne(tid);
           },
+          'task.scheduler.decision': (data) => {
+            const tid = (data as { task_id?: string })?.task_id;
+            if (tid) void this.refreshOne(tid);
+          },
           'task.ready': (data) => {
             const tid = (data as { task_id?: string })?.task_id;
             if (tid) void this.refreshOne(tid);

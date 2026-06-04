@@ -130,6 +130,36 @@
         "feedback": { "type": "array", "items": { "type": "string" } }
       }
     },
+    "scheduler_explanation": {
+      "type": ["object", "null"],
+      "required": ["task_id", "decision", "reason", "at"],
+      "properties": {
+        "task_id": { "type": "string" },
+        "decision": {
+          "type": "string",
+          "enum": [
+            "ready",
+            "auto_unblocked",
+            "assigned",
+            "assignment_skipped",
+            "claim_busy",
+            "cooldown_added",
+            "cooldown_skipped",
+            "routed_to_evaluator",
+            "evaluator_skipped",
+            "lease_expired"
+          ]
+        },
+        "reason": { "type": "string" },
+        "agent_id": { "type": ["string", "null"] },
+        "previous_holder": { "type": ["string", "null"] },
+        "blocked_by": { "type": "array", "items": { "type": "string" } },
+        "cooldown_seconds": { "type": ["integer", "null"], "minimum": 0 },
+        "max_concurrent": { "type": ["integer", "null"], "minimum": 0 },
+        "queue_depth": { "type": ["integer", "null"], "minimum": 0 },
+        "at": { "type": "string", "format": "date-time" }
+      }
+    },
     "history": {
       "type": "object",
       "properties": {

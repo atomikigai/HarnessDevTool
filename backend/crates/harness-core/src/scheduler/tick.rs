@@ -10,7 +10,10 @@ use crate::budget::{
     ActiveSessionsSource, AgentCost, BudgetStore, BudgetWarning, BudgetWarningSink, CostReporter,
 };
 use crate::pause::PauseFlag;
-use crate::tasks::{ClaimResult, ListFilters, TaskEvent, TaskStatus, TaskStore};
+use crate::tasks::{
+    ClaimResult, ListFilters, SchedulerDecisionKind, SchedulerExplanation, TaskEvent, TaskStatus,
+    TaskStore,
+};
 
 use super::spawner::{NoopSpawner, SessionSpawner, SpawnRequest, SpawnResult};
 use super::MAX_CONCURRENT_DEFAULT;
@@ -202,6 +205,15 @@ fn run_ready_pass(
                 TaskStatus::Queued if t.blocked_by.is_empty() => {
                     let key = (tid.clone(), t.id.clone());
                     if announced.insert(key) {
+                        record_scheduler_explanation(
+                            store,
+                            &tid,
+                            scheduler_explanation(
+                                &t.id,
+                                SchedulerDecisionKind::Ready,
+                                "Task is queued and has no blockers",
+                            ),
+                        );
                         store.emit(
                             &tid,
                             TaskEvent::Ready {
@@ -238,6 +250,15 @@ fn run_ready_pass(
                                 by: "scheduler".into(),
                                 at: Utc::now(),
                             },
+                        );
+                        record_scheduler_explanation(
+                            store,
+                            &tid,
+                            scheduler_explanation(
+                                &t.id,
+                                SchedulerDecisionKind::AutoUnblocked,
+                                "All blocking tasks are done",
+                            ),
                         );
                     }
                 }
@@ -320,6 +341,52 @@ pub(crate) fn pick_idle_generator<'a>(
     })
 }
 
+fn scheduler_explanation(
+    task_id: &str,
+    decision: SchedulerDecisionKind,
+    reason: impl Into<String>,
+) -> SchedulerExplanation {
+    SchedulerExplanation {
+        task_id: task_id.to_string(),
+        decision,
+        reason: reason.into(),
+        agent_id: None,
+        previous_holder: None,
+        blocked_by: Vec::new(),
+        cooldown_seconds: None,
+        max_concurrent: None,
+        queue_depth: None,
+        at: Utc::now(),
+    }
+}
+
+fn record_scheduler_explanation(store: &TaskStore, tid: &str, explanation: SchedulerExplanation) {
+    if let Err(e) = store.record_scheduler_decision(tid, explanation) {
+        tracing::warn!(?e, thread = %tid, "scheduler explanation persist failed");
+    }
+}
+
+fn cooldown_skip_seconds(
+    agents: &[Agent],
+    busy: &HashSet<String>,
+    cooldown: &HashMap<CooldownKey, Instant>,
+    tid: &str,
+    task_id: &str,
+    now: Instant,
+) -> Option<u64> {
+    agents
+        .iter()
+        .filter(|a| agent_role(a) == "generator" && !busy.contains(&a.id))
+        .filter_map(|a| {
+            let key = (tid.to_string(), task_id.to_string(), a.id.clone());
+            cooldown
+                .get(&key)
+                .filter(|until| **until > now)
+                .map(|until| until.saturating_duration_since(now).as_secs())
+        })
+        .min()
+}
+
 /// Auto-claim eligible queued tasks for idle generators and route
 /// `pending_verify` tasks to an evaluator. Also tracks verify-fail cooldowns.
 fn run_assign_pass(
@@ -369,6 +436,14 @@ fn run_assign_pass(
                         agent = %gen_id,
                         "scheduling.cooldown"
                     );
+                    let mut explanation = scheduler_explanation(
+                        &t.id,
+                        SchedulerDecisionKind::CooldownAdded,
+                        "Generator was rejected by verification and is cooling down for this task",
+                    );
+                    explanation.agent_id = Some(gen_id.clone());
+                    explanation.cooldown_seconds = Some(COOLDOWN_AFTER_VERIFY_FAIL.as_secs());
+                    record_scheduler_explanation(store, &tid, explanation);
                 }
             }
         }
@@ -424,19 +499,48 @@ fn run_assign_pass(
 
         // --- pass A: queued -> generator ---
         let mut current = busy_ids.len();
+        let queue_depth = queued_unblocked.len();
         for t in queued_unblocked {
             if current >= max_concurrent {
-                break;
+                let mut explanation = scheduler_explanation(
+                    &t.id,
+                    SchedulerDecisionKind::AssignmentSkipped,
+                    "Max concurrency reached for this thread",
+                );
+                explanation.max_concurrent = Some(max_concurrent);
+                explanation.queue_depth = Some(queue_depth);
+                record_scheduler_explanation(store, &tid, explanation);
+                continue;
             }
             let cd_snapshot = cooldown.lock().expect("cooldown mutex").clone();
-            let Some(agent) = pick_idle_generator(
-                &all_agents,
-                &busy_ids,
-                &cd_snapshot,
-                &tid,
-                &t.id,
-                Instant::now(),
-            ) else {
+            let pick_now = Instant::now();
+            let Some(agent) =
+                pick_idle_generator(&all_agents, &busy_ids, &cd_snapshot, &tid, &t.id, pick_now)
+            else {
+                let cooldown_seconds = cooldown_skip_seconds(
+                    &all_agents,
+                    &busy_ids,
+                    &cd_snapshot,
+                    &tid,
+                    &t.id,
+                    pick_now,
+                );
+                let mut explanation = scheduler_explanation(
+                    &t.id,
+                    if cooldown_seconds.is_some() {
+                        SchedulerDecisionKind::CooldownSkipped
+                    } else {
+                        SchedulerDecisionKind::AssignmentSkipped
+                    },
+                    if cooldown_seconds.is_some() {
+                        "All idle generators are cooling down for this task"
+                    } else {
+                        "No idle generator is available"
+                    },
+                );
+                explanation.cooldown_seconds = cooldown_seconds;
+                explanation.queue_depth = Some(queue_depth);
+                record_scheduler_explanation(store, &tid, explanation);
                 continue;
             };
 
@@ -451,9 +555,23 @@ fn run_assign_pass(
                     );
                     busy_ids.insert(agent.id.clone());
                     current += 1;
+                    let mut explanation = scheduler_explanation(
+                        &t.id,
+                        SchedulerDecisionKind::Assigned,
+                        "Assigned to an idle generator",
+                    );
+                    explanation.agent_id = Some(agent.id.clone());
+                    record_scheduler_explanation(store, &tid, explanation);
                     request_spawn(spawner, &tid, agent);
                 }
                 Ok(ClaimResult::Busy { holder, .. }) => {
+                    let mut explanation = scheduler_explanation(
+                        &t.id,
+                        SchedulerDecisionKind::ClaimBusy,
+                        "Task was already claimed before the scheduler could assign it",
+                    );
+                    explanation.previous_holder = Some(holder.clone());
+                    record_scheduler_explanation(store, &tid, explanation);
                     busy_ids.insert(holder);
                 }
                 Err(e) => {
@@ -484,6 +602,15 @@ fn run_assign_pass(
                     && prior.as_deref() != Some(a.id.as_str())
             });
             let Some(evaluator) = evaluator else {
+                record_scheduler_explanation(
+                    store,
+                    &tid,
+                    scheduler_explanation(
+                        &t.id,
+                        SchedulerDecisionKind::EvaluatorSkipped,
+                        "No idle evaluator is available",
+                    ),
+                );
                 continue;
             };
             match store.reassign(
@@ -502,6 +629,14 @@ fn run_assign_pass(
                         "scheduling.route_evaluator"
                     );
                     busy_ids.insert(evaluator.id.clone());
+                    let mut explanation = scheduler_explanation(
+                        &t.id,
+                        SchedulerDecisionKind::RoutedToEvaluator,
+                        "Routed to an idle evaluator",
+                    );
+                    explanation.agent_id = Some(evaluator.id.clone());
+                    explanation.previous_holder = prior;
+                    record_scheduler_explanation(store, &tid, explanation);
                     request_spawn(spawner, &tid, evaluator);
                 }
                 Err(e) => {
@@ -662,10 +797,17 @@ fn run_lease_pass(store: &TaskStore) -> Result<(), crate::Error> {
             store.emit(
                 &tid,
                 TaskEvent::LeaseExpired {
-                    task_id: t.id,
-                    previous_holder: prev_holder,
+                    task_id: t.id.clone(),
+                    previous_holder: prev_holder.clone(),
                 },
             );
+            let mut explanation = scheduler_explanation(
+                &t.id,
+                SchedulerDecisionKind::LeaseExpired,
+                "Claim lease expired and the task was released",
+            );
+            explanation.previous_holder = Some(prev_holder);
+            record_scheduler_explanation(store, &tid, explanation);
         }
     }
     Ok(())
@@ -784,6 +926,69 @@ mod tests {
         let t = store.get("thr-1", "T-0001").unwrap();
         assert_eq!(t.assignee.as_deref(), Some(gen.id.as_str()));
         assert_ne!(t.assignee.as_deref(), Some(planner.id.as_str()));
+        let explanation = t.scheduler_explanation.expect("scheduler explanation");
+        assert_eq!(explanation.decision, SchedulerDecisionKind::Assigned);
+        assert_eq!(explanation.agent_id.as_deref(), Some(gen.id.as_str()));
+    }
+
+    #[test]
+    fn assign_pass_explains_max_concurrency_skip() {
+        use crate::agents::{AgentDraft, AgentsRegistry};
+        use crate::pause::PauseFlag;
+        use crate::tasks::{TaskDraft, TaskStore};
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let store = TaskStore::new(dir.path()).unwrap();
+        let agents = AgentsRegistry::new(dir.path()).unwrap();
+        let pause = PauseFlag::load(dir.path()).unwrap();
+        agents
+            .create(AgentDraft {
+                kind: AgentKind::Claude,
+                label: "g1".into(),
+                role: Some("generator".into()),
+            })
+            .unwrap();
+        agents
+            .create(AgentDraft {
+                kind: AgentKind::Claude,
+                label: "g2".into(),
+                role: Some("generator".into()),
+            })
+            .unwrap();
+
+        for title in ["first", "second"] {
+            store
+                .create(
+                    "thr-max",
+                    TaskDraft {
+                        title: title.into(),
+                        parent: None,
+                        depends_on: vec![],
+                        brief: None,
+                        acceptance: vec![],
+                        labels: vec![],
+                        spec_refs: vec![],
+                        created_by: "human".into(),
+                    },
+                )
+                .unwrap();
+        }
+
+        let mut prev = StatusSnapshot::new();
+        let cd = Mutex::new(HashMap::new());
+        run_assign_pass(&store, &agents, &pause, 1, &mut prev, &cd, &NoopSpawner).unwrap();
+
+        let skipped = store.get("thr-max", "T-0002").unwrap();
+        let explanation = skipped
+            .scheduler_explanation
+            .expect("scheduler explanation");
+        assert_eq!(
+            explanation.decision,
+            SchedulerDecisionKind::AssignmentSkipped
+        );
+        assert_eq!(explanation.max_concurrent, Some(1));
+        assert_eq!(explanation.queue_depth, Some(2));
     }
 
     #[test]

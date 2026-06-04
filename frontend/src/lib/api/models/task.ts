@@ -69,6 +69,31 @@ export interface SpecRef {
   version: number;
 }
 
+export type SchedulerDecisionKind =
+  | 'ready'
+  | 'auto_unblocked'
+  | 'assigned'
+  | 'assignment_skipped'
+  | 'claim_busy'
+  | 'cooldown_added'
+  | 'cooldown_skipped'
+  | 'routed_to_evaluator'
+  | 'evaluator_skipped'
+  | 'lease_expired';
+
+export interface SchedulerExplanation {
+  task_id: string;
+  decision: SchedulerDecisionKind;
+  reason: string;
+  agent_id?: string;
+  previous_holder?: string;
+  blocked_by: string[];
+  cooldown_seconds?: number;
+  max_concurrent?: number;
+  queue_depth?: number;
+  at: string;
+}
+
 export interface Task {
   schema_version: number;
   id: string;
@@ -91,6 +116,7 @@ export interface Task {
   acceptance: { checks: AcceptanceCheck[] };
   artifacts: TaskArtifacts;
   notes: TaskNotes;
+  scheduler_explanation?: SchedulerExplanation;
   history: { events: TaskHistoryEvent[] };
 }
 

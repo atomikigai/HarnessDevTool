@@ -66,6 +66,13 @@
   const hasLegacyArtifacts = $derived(
     task.artifacts.files.length > 0 || task.artifacts.turns.length > 0 || !!task.artifacts.diff
   );
+  function schedulerDecisionLabel(decision: string): string {
+    return decision
+      .split('_')
+      .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+      .join(' ');
+  }
+
   const reasonItems = $derived.by(() => {
     const notes = task.notes;
     const items: { label: string; value: string; urgent?: boolean }[] = [];
@@ -87,6 +94,16 @@
     }
     if (notes.needs_human) {
       items.push({ label: 'Needs human', value: 'Human input required', urgent: true });
+    }
+    const scheduler = task.scheduler_explanation;
+    if (scheduler?.reason?.trim()) {
+      items.push({
+        label: `Scheduler ${schedulerDecisionLabel(scheduler.decision)}`,
+        value: scheduler.reason,
+        urgent: ['assignment_skipped', 'cooldown_skipped', 'evaluator_skipped', 'claim_busy'].includes(
+          scheduler.decision
+        )
+      });
     }
     return items;
   });

@@ -86,6 +86,7 @@
       notes.blocked_reason?.trim() ||
       notes.paused_reason?.trim() ||
       notes.why_paused?.trim() ||
+      task.scheduler_explanation?.reason?.trim() ||
       (notes.needs_human ? 'Human input required' : '')
     );
   }

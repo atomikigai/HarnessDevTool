@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::events::Event;
 
-use super::model::TaskStatus;
+use super::model::{SchedulerExplanation, TaskStatus};
 
 #[cfg(feature = "ts-export")]
 use ts_rs::TS;
@@ -44,6 +44,11 @@ pub enum TaskEvent {
         value: String,
         by: String,
         at: DateTime<Utc>,
+    },
+    #[serde(rename = "task.scheduler.decision")]
+    SchedulerDecision {
+        #[serde(flatten)]
+        explanation: SchedulerExplanation,
     },
     #[serde(rename = "task.ready")]
     Ready { task_id: String },
@@ -88,6 +93,7 @@ impl TaskEvent {
             TaskEvent::Changed { .. } => "task.changed",
             TaskEvent::Updated { .. } => "task.updated",
             TaskEvent::ReasonChanged { .. } => "task.reason.changed",
+            TaskEvent::SchedulerDecision { .. } => "task.scheduler.decision",
             TaskEvent::Ready { .. } => "task.ready",
             TaskEvent::LeaseExpired { .. } => "task.lease-expired",
             TaskEvent::SpecChanged { .. } => "spec.changed",
@@ -101,6 +107,7 @@ impl TaskEvent {
             | TaskEvent::Changed { by, .. }
             | TaskEvent::Updated { by, .. }
             | TaskEvent::ReasonChanged { by, .. } => Some(by.as_str()),
+            TaskEvent::SchedulerDecision { .. } => Some("scheduler"),
             TaskEvent::Ready { .. } => Some("scheduler"),
             TaskEvent::LeaseExpired {
                 previous_holder, ..
@@ -131,6 +138,9 @@ impl TaskEvent {
             | TaskEvent::Changed { task_id, .. }
             | TaskEvent::Updated { task_id, .. }
             | TaskEvent::ReasonChanged { task_id, .. }
+            | TaskEvent::SchedulerDecision {
+                explanation: SchedulerExplanation { task_id, .. },
+            }
             | TaskEvent::Ready { task_id }
             | TaskEvent::LeaseExpired { task_id, .. } => task_id,
             TaskEvent::SpecChanged { .. } => "",
@@ -177,6 +187,31 @@ mod tests {
         let decoded: TaskEvent = serde_json::from_str(&json).unwrap();
         assert_eq!(decoded, ev);
         assert_eq!(decoded.task_id(), "T-0001");
+    }
+
+    #[test]
+    fn scheduler_decision_round_trips() {
+        let ev = TaskEvent::SchedulerDecision {
+            explanation: SchedulerExplanation {
+                task_id: "T-0001".to_string(),
+                decision: super::super::model::SchedulerDecisionKind::AssignmentSkipped,
+                reason: "Max concurrency reached".to_string(),
+                agent_id: None,
+                previous_holder: None,
+                blocked_by: vec![],
+                cooldown_seconds: None,
+                max_concurrent: Some(1),
+                queue_depth: Some(2),
+                at: Utc::now(),
+            },
+        };
+
+        let json = serde_json::to_string(&ev).unwrap();
+        assert!(json.contains("\"type\":\"task.scheduler.decision\""));
+        let decoded: TaskEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded, ev);
+        assert_eq!(decoded.task_id(), "T-0001");
+        assert_eq!(decoded.actor(), Some("scheduler"));
     }
 
     #[test]

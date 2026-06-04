@@ -83,6 +83,7 @@ fn task_event_sse_name(ev: &harness_core::TaskEvent) -> &'static str {
         harness_core::TaskEvent::Changed { .. } => "task.changed",
         harness_core::TaskEvent::Updated { .. } => "task.updated",
         harness_core::TaskEvent::ReasonChanged { .. } => "task.reason.changed",
+        harness_core::TaskEvent::SchedulerDecision { .. } => "task.scheduler.decision",
         harness_core::TaskEvent::Ready { .. } => "task.ready",
         harness_core::TaskEvent::LeaseExpired { .. } => "task.lease-expired",
         harness_core::TaskEvent::SpecChanged { .. } => "spec.changed",
@@ -168,7 +169,7 @@ fn session_stream(
 mod tests {
     use super::*;
     use chrono::Utc;
-    use harness_core::{TaskEvent, TaskStatus};
+    use harness_core::{SchedulerDecisionKind, SchedulerExplanation, TaskEvent, TaskStatus};
 
     #[test]
     fn task_event_sse_names_are_unchanged() {
@@ -209,6 +210,23 @@ mod tests {
                     at: Utc::now(),
                 },
                 "task.reason.changed",
+            ),
+            (
+                TaskEvent::SchedulerDecision {
+                    explanation: SchedulerExplanation {
+                        task_id: "T-0001".into(),
+                        decision: SchedulerDecisionKind::AssignmentSkipped,
+                        reason: "No idle generator is available".into(),
+                        agent_id: None,
+                        previous_holder: None,
+                        blocked_by: vec![],
+                        cooldown_seconds: None,
+                        max_concurrent: None,
+                        queue_depth: Some(1),
+                        at: Utc::now(),
+                    },
+                },
+                "task.scheduler.decision",
             ),
             (
                 TaskEvent::Ready {

@@ -71,10 +71,10 @@ Nota F3 2026-06-04:
   `cargo check --workspace` y `git diff --check`.
 - Al retomar F3, no implementar sandbox duplicado sobre `shell.exec` de los CLIs:
   N3 dice confiar en el sandbox de `claude`/`codex`/`cursor`/`agy` y envolver solo
-  procesos directos del bridge. Siguiente slice recomendado: ajustar el checklist
-  F3 a N3 y cerrar los padres de fallback `quota_exceeded`/`runtime_error` con
-  una prueba de flujo que no dependa de un PTY real, o marcar explícitamente el
-  alcance ya cubierto por helpers y synthetic acceptance test.
+  procesos directos del bridge. Slice posterior: checklist F3 ajustado a N3 y
+  padres de fallback `quota_exceeded`/`runtime_error` cerrados; la cobertura
+  incluye clasificación, selección de Claude, evento append-only de runtime y
+  acceptance sintético con audit de quota.
 
 ## A1. Readiness check + execution mode
 

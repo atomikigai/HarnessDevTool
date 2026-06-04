@@ -893,6 +893,41 @@ mod tests {
     }
 
     #[test]
+    fn runtime_fallback_event_is_append_only() {
+        let mut binaries = HashMap::new();
+        binaries.insert(AgentKind::Claude, PathBuf::from("/bin/claude"));
+        binaries.insert(AgentKind::Codex, PathBuf::from("/bin/codex"));
+        let (spawner, _dir) = test_spawner(binaries);
+        let thread = spawner
+            .store
+            .create_thread(Some("runtime fallback test".to_string()))
+            .unwrap();
+        let req = SpawnRequest {
+            thread_id: thread.id.clone(),
+            agent_id: "agent:generator-1".to_string(),
+            kind: "codex".to_string(),
+            role: "generator".to_string(),
+            task_id: Some("T-0002".to_string()),
+            cwd: None,
+        };
+        let (_binary, fallback) = spawner
+            .fallback_for_spawn_failure(AgentKind::Codex, "manager.spawn: pty error: crash")
+            .expect("runtime fallback");
+
+        spawner.append_spawn_fallback_event(&req, &fallback);
+
+        let events = spawner.store.read_events(&thread.id).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, "scheduler.spawn.fallback");
+        assert_eq!(events[0].actor.as_deref(), Some("scheduler"));
+        let payload = events[0].payload.as_ref().unwrap();
+        assert_eq!(payload["from"], "codex");
+        assert_eq!(payload["to"], "claude");
+        assert_eq!(payload["reason"], "runtime_error");
+        assert_eq!(payload["task_id"], "T-0002");
+    }
+
+    #[test]
     fn synthetic_goal_routes_roles_to_expected_cli_and_audits_blocked_primary_fallback() {
         let mut binaries = HashMap::new();
         binaries.insert(AgentKind::Claude, PathBuf::from("/bin/claude"));

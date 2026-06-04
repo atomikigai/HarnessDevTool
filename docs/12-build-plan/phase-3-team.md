@@ -58,10 +58,10 @@ Audit rápido del 2026-05-27:
   responsive, shadcn/polish y a11y visual se delegan a Cursor primero; frontend
   logic/API/stores usa Codex/Claude.
 - [x] Selector con fallback a Claude cuando falta el binario del CLI primario (`reason: binary_missing`).
-- [ ] Selector con fallback a Claude para `quota_exceeded` / `runtime_error` clasificados por CLI.
+- [x] Selector con fallback a Claude para `quota_exceeded` / `runtime_error` clasificados por CLI.
   - [x] Fallos inmediatos de spawn clasificados como `quota_exceeded` / `runtime_error` reintentan Claude.
 - [x] Audit log append-only para fallback `binary_missing` (`scheduler.spawn.fallback`).
-- [ ] Audit log para fallbacks `quota_exceeded` / `runtime_error`.
+- [x] Audit log para fallbacks `quota_exceeded` / `runtime_error`.
   - [x] Audit append-only para fallbacks de fallos inmediatos de spawn clasificados.
 - [x] `POST /api/threads/:tid/sessions { kind: "zeus" }` deja de devolver 400 BadRequest y resuelve a Codex como CLI principal.
 - [x] UI: tab carrusel principal "Zeus session" + sub-tabs por hija con `parent_session_id`.
@@ -110,9 +110,9 @@ Audit rápido del 2026-05-27:
   - [ ] Linux: `seccompiler` + bind mounts.
   - [ ] macOS: `Command` con `sandbox-exec` profile.
   - [x] Windows: stub (warning) en F3; implementación real en F6.
-- [ ] Toda invocación de tool del módulo (DB/SSH en F4) y todo `shell.exec` del CLI pasa por el sandbox.
+- [x] Toda invocación directa de proceso desde el bridge/módulos que pueda mutar estado pasa por `harness-sandbox`.
   - [x] `module-ssh` enruta comandos directos `ssh`/`scp` por un perfil `harness-sandbox`.
-- [ ] Importante: el `claude`/`codex` child **ya tiene su propio sandbox/approval**. Aquí sandbox-eamos los **child-of-child** que ellos ejecuten.
+- [x] Importante: el `claude`/`codex`/`cursor`/`agy` child **ya tiene su propio sandbox/approval**. N3 fija que no duplicamos su `shell.exec`; `harness-sandbox` envuelve solo ejecuciones directas del bridge.
 
 ### Backend — file-based coordination
 - [x] `spec.md` por thread: planner lo crea/mantiene; resto lo lee.

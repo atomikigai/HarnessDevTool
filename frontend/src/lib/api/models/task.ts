@@ -1,124 +1,40 @@
 /**
- * Task and Agent types — mirrors the backend contracts for F2.
- * Hand-rolled until `ts-rs` exports land; once they do, this file can be
- * replaced with the generated bindings.
+ * Public task model surface for the frontend.
+ *
+ * Canonical task documents come from Rust via `ts-rs` under `../types`.
+ * Keep only frontend/API request helpers here.
  */
 
-import type { Artifact } from '../types/Artifact';
-import type { ArtifactKind } from '../types/ArtifactKind';
+export type { AcceptanceBlock } from '../types/AcceptanceBlock';
+export type { AcceptanceCheck } from '../types/AcceptanceCheck';
+export type { Agent } from '../types/Agent';
+export type { AgentKind } from '../types/AgentKind';
+export type { Artifact } from '../types/Artifact';
+export type { ArtifactKind } from '../types/ArtifactKind';
+export type { Artifacts } from '../types/Artifacts';
+export type { HistoryBlock } from '../types/HistoryBlock';
+export type { HistoryEvent } from '../types/HistoryEvent';
+export type { Lease } from '../types/Lease';
+export type { Notes } from '../types/Notes';
+export type { ReconcileEntity } from '../types/ReconcileEntity';
+export type { ReconcileIssue } from '../types/ReconcileIssue';
+export type { ReconcileReport } from '../types/ReconcileReport';
+export type { ReconcileSeverity } from '../types/ReconcileSeverity';
+export type { SchedulerDecisionKind } from '../types/SchedulerDecisionKind';
+export type { SchedulerExplanation } from '../types/SchedulerExplanation';
+export type { SpecRef } from '../types/SpecRef';
+export type { Task } from '../types/Task';
+export type { TaskBrief } from '../types/TaskBrief';
+export type { TaskStatus } from '../types/TaskStatus';
+export type { TimelineEntity } from '../types/TimelineEntity';
+export type { TimelineItem } from '../types/TimelineItem';
+export type { TimelineReport } from '../types/TimelineReport';
 
-export type { Artifact, ArtifactKind };
-
-export type TaskStatus =
-  | 'proposed'
-  | 'queued'
-  | 'in_progress'
-  | 'pending_verify'
-  | 'done'
-  | 'paused'
-  | 'blocked'
-  | 'abandoned';
-
-export interface AcceptanceCheck {
-  id: string;
-  text: string;
-  verified: boolean;
-  verified_by?: string;
-}
-
-export interface Lease {
-  holder: string;
-  until: string;
-}
-
-export interface TaskHistoryEvent {
-  at: string;
-  by: string;
-  from: string;
-  to: string;
-}
-
-export interface TaskArtifacts {
-  files: string[];
-  turns: string[];
-  diff?: string;
-  metadata?: Artifact[];
-}
-
-export interface TaskNotes {
-  why_paused?: string;
-  why_abandoned?: string;
-  blocked_reason?: string;
-  paused_reason?: string;
-  rejected_reason?: string;
-  last_failure?: string;
-  needs_human?: boolean;
-  feedback?: unknown[];
-}
-
-export interface TaskBrief {
-  objective: string;
-  context: string;
-  tasks: string[];
-  rules: string[];
-  expected_result: string;
-}
-
-export interface SpecRef {
-  section: string;
-  version: number;
-}
-
-export type SchedulerDecisionKind =
-  | 'ready'
-  | 'auto_unblocked'
-  | 'assigned'
-  | 'assignment_skipped'
-  | 'claim_busy'
-  | 'cooldown_added'
-  | 'cooldown_skipped'
-  | 'routed_to_evaluator'
-  | 'evaluator_skipped'
-  | 'lease_expired';
-
-export interface SchedulerExplanation {
-  task_id: string;
-  decision: SchedulerDecisionKind;
-  reason: string;
-  agent_id?: string;
-  previous_holder?: string;
-  blocked_by: string[];
-  cooldown_seconds?: number;
-  max_concurrent?: number;
-  queue_depth?: number;
-  at: string;
-}
-
-export interface Task {
-  schema_version: number;
-  id: string;
-  title: string;
-  status: TaskStatus;
-  created_at: string;
-  created_by: string;
-  updated_at: string;
-  updated_by: string;
-  parent?: string;
-  children: string[];
-  blocked_by: string[];
-  unblocks: string[];
-  assignee?: string;
-  claim_lease?: Lease;
-  previous_assignees: string[];
-  labels: string[];
-  spec_refs: SpecRef[];
-  brief?: TaskBrief;
-  acceptance: { checks: AcceptanceCheck[] };
-  artifacts: TaskArtifacts;
-  notes: TaskNotes;
-  scheduler_explanation?: SchedulerExplanation;
-  history: { events: TaskHistoryEvent[] };
-}
+import type { AcceptanceCheck } from '../types/AcceptanceCheck';
+import type { Notes } from '../types/Notes';
+import type { SpecRef } from '../types/SpecRef';
+import type { TaskBrief } from '../types/TaskBrief';
+import type { TaskStatus } from '../types/TaskStatus';
 
 export interface CreateTaskRequest {
   title: string;
@@ -126,7 +42,7 @@ export interface CreateTaskRequest {
   parent?: string;
   depends_on?: string[];
   brief?: TaskBrief;
-  acceptance?: { checks: { text: string }[] };
+  acceptance?: { checks: { id?: string; text: string }[] };
   labels?: string[];
   spec_refs?: SpecRef[];
   created_by: string;
@@ -138,13 +54,22 @@ export interface PatchTaskRequest {
   assignee?: string | null;
   labels?: string[];
   spec_refs?: SpecRef[];
+  blocked_by?: string[];
+  acceptance_checks?: AcceptanceCheck[];
+  /**
+   * Back-compat frontend alias. `api.tasks.patch` translates this to
+   * `acceptance_checks` before sending to the Rust `TaskPatch`.
+   */
   acceptance?: { checks: AcceptanceCheck[] };
   blocked_reason?: string;
   paused_reason?: string;
   rejected_reason?: string;
   last_failure?: string;
   needs_human?: boolean;
-  notes?: TaskNotes;
+  notes?: Partial<Notes>;
+  why_paused?: string;
+  why_abandoned?: string;
+  feedback?: string;
   by: 'human' | string;
 }
 
@@ -153,67 +78,12 @@ export interface DeleteTaskRequest {
   by: 'human' | string;
 }
 
-export type AgentKind = 'claude' | 'codex' | string;
-
-export interface Agent {
-  id: string;
-  kind: AgentKind;
-  label: string;
-  created_at: string;
-}
-
 export interface CreateAgentRequest {
   kind: string;
   label: string;
 }
 
-export type ReconcileSeverity = 'info' | 'warning' | 'error';
-
-export interface ReconcileEntity {
-  kind: string;
-  id: string;
-}
-
-export interface ReconcileIssue {
-  kind: string;
-  severity: ReconcileSeverity;
-  entity: ReconcileEntity;
-  message: string;
-  related: ReconcileEntity[];
-}
-
-export interface ReconcileReport {
-  thread_id: string;
-  generated_at: string;
-  task_count: number;
-  session_count: number;
-  artifact_count: number;
-  issues: ReconcileIssue[];
-}
-
-export interface TimelineEntity {
-  kind: string;
-  id: string;
-}
-
-export interface TimelineItem {
-  seq: number;
-  at: number;
-  type: string;
-  actor?: string | null;
-  summary: string;
-  entity?: TimelineEntity | null;
-  payload?: unknown;
-}
-
-export interface TimelineReport {
-  thread_id: string;
-  generated_at: number;
-  event_count: number;
-  items: TimelineItem[];
-}
-
-/** Convenience: status → tone (color category) for badges. */
+/** Convenience: status -> tone (color category) for badges. */
 export function statusTone(s: TaskStatus): 'neutral' | 'accent' | 'warn' | 'success' | 'danger' {
   switch (s) {
     case 'proposed':

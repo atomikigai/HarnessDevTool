@@ -21,7 +21,13 @@ pub fn reconcile_tasks(
 
     for task in tasks {
         check_task_refs(task, &tasks_by_id, &task_ids, &mut issues);
-        check_artifacts(task, &task_ids, &mut artifact_ids, &mut artifact_count, &mut issues);
+        check_artifacts(
+            task,
+            &task_ids,
+            &mut artifact_ids,
+            &mut artifact_count,
+            &mut issues,
+        );
     }
 
     for session in sessions {
@@ -76,7 +82,10 @@ fn check_task_refs(
                     "task_child_not_reciprocal",
                     ReconcileSeverity::Warning,
                     owner_entity.clone(),
-                    format!("task {} lists child {child}, but child does not reference it as parent", task.id),
+                    format!(
+                        "task {} lists child {child}, but child does not reference it as parent",
+                        task.id
+                    ),
                     vec![task_entity(child)],
                 ));
             }
@@ -110,7 +119,10 @@ fn check_task_refs(
                     "task_unblocks_not_reciprocal",
                     ReconcileSeverity::Warning,
                     owner_entity.clone(),
-                    format!("task {} claims to unblock {unblocks}, but target is not blocked by it", task.id),
+                    format!(
+                        "task {} claims to unblock {unblocks}, but target is not blocked by it",
+                        task.id
+                    ),
                     vec![task_entity(unblocks)],
                 ));
             }
@@ -142,7 +154,10 @@ fn check_artifacts(
             "artifact_legacy_without_metadata",
             ReconcileSeverity::Info,
             task_entity(&task.id),
-            format!("task {} has legacy artifacts without materialized metadata", task.id),
+            format!(
+                "task {} has legacy artifacts without materialized metadata",
+                task.id
+            ),
             vec![],
         ));
     }
@@ -155,15 +170,23 @@ fn check_artifacts(
                 "artifact_id_empty",
                 ReconcileSeverity::Error,
                 entity.clone(),
-                format!("task {} has artifact metadata with an empty artifact_id", task.id),
+                format!(
+                    "task {} has artifact metadata with an empty artifact_id",
+                    task.id
+                ),
                 vec![task_entity(&task.id)],
             ));
-        } else if let Some(first) = artifact_ids.insert(artifact.artifact_id.clone(), entity.clone()) {
+        } else if let Some(first) =
+            artifact_ids.insert(artifact.artifact_id.clone(), entity.clone())
+        {
             issues.push(issue(
                 "artifact_id_duplicate",
                 ReconcileSeverity::Error,
                 entity.clone(),
-                format!("artifact_id {} appears more than once", artifact.artifact_id),
+                format!(
+                    "artifact_id {} appears more than once",
+                    artifact.artifact_id
+                ),
                 vec![first],
             ));
         }
@@ -225,14 +248,20 @@ fn check_session_refs(
                 "session_task_missing",
                 ReconcileSeverity::Error,
                 entity.clone(),
-                format!("session {} references missing task {task_id}", session.session_id),
+                format!(
+                    "session {} references missing task {task_id}",
+                    session.session_id
+                ),
                 vec![task_entity(task_id)],
             ));
         }
     }
 
     for (kind, value) in [
-        ("session_parent_missing", session.parent_session_id.as_deref()),
+        (
+            "session_parent_missing",
+            session.parent_session_id.as_deref(),
+        ),
         ("session_owner_missing", session.owner_session_id.as_deref()),
         ("session_root_missing", session.root_session_id.as_deref()),
     ] {
@@ -242,7 +271,10 @@ fn check_session_refs(
                     kind,
                     ReconcileSeverity::Warning,
                     entity.clone(),
-                    format!("session {} references missing session {id}", session.session_id),
+                    format!(
+                        "session {} references missing session {id}",
+                        session.session_id
+                    ),
                     vec![session_entity(id)],
                 ));
             }
@@ -259,8 +291,16 @@ fn check_session_refs(
             "session_root_not_self",
             ReconcileSeverity::Warning,
             entity,
-            format!("root session {} has a different root_session_id", session.session_id),
-            session.root_session_id.as_deref().map(session_entity).into_iter().collect(),
+            format!(
+                "root session {} has a different root_session_id",
+                session.session_id
+            ),
+            session
+                .root_session_id
+                .as_deref()
+                .map(session_entity)
+                .into_iter()
+                .collect(),
         ));
     }
 }
@@ -277,14 +317,19 @@ fn check_active_task_sessions(
         .collect();
 
     for task in tasks {
-        if matches!(task.status, TaskStatus::InProgress | TaskStatus::PendingVerify)
-            && !running_task_ids.contains(task.id.as_str())
+        if matches!(
+            task.status,
+            TaskStatus::InProgress | TaskStatus::PendingVerify
+        ) && !running_task_ids.contains(task.id.as_str())
         {
             issues.push(issue(
                 "active_task_without_running_session",
                 ReconcileSeverity::Warning,
                 task_entity(&task.id),
-                format!("active task {} has no running session scoped to it", task.id),
+                format!(
+                    "active task {} has no running session scoped to it",
+                    task.id
+                ),
                 vec![],
             ));
         }
@@ -323,8 +368,8 @@ fn artifact_entity(artifact: &Artifact) -> ReconcileEntity {
 mod tests {
     use chrono::Utc;
 
-    use super::*;
     use super::super::model::{AcceptanceBlock, Artifacts, HistoryBlock, Notes};
+    use super::*;
     use crate::tasks::TaskBrief;
 
     fn task(id: &str) -> Task {
@@ -347,6 +392,8 @@ mod tests {
             previous_assignees: vec![],
             labels: vec![],
             spec_refs: vec![],
+            write_paths: vec![],
+            forbidden_paths: vec![],
             brief: Some(TaskBrief::default()),
             acceptance: AcceptanceBlock::default(),
             artifacts: Artifacts::default(),

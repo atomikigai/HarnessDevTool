@@ -75,6 +75,10 @@ pub struct CreateBody {
     pub labels: Vec<String>,
     #[serde(default)]
     pub spec_refs: Vec<SpecRef>,
+    #[serde(default)]
+    pub write_paths: Vec<String>,
+    #[serde(default)]
+    pub forbidden_paths: Vec<String>,
     pub created_by: String,
 }
 
@@ -118,6 +122,8 @@ async fn create(
         acceptance,
         labels: body.labels,
         spec_refs: body.spec_refs,
+        write_paths: body.write_paths,
+        forbidden_paths: body.forbidden_paths,
         created_by: body.created_by,
     };
     let requested_status = body.status.unwrap_or(TaskStatus::Queued);

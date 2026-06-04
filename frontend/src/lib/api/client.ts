@@ -202,7 +202,7 @@ export type SessionKind =
   | 'antigravity'
   /**
    * Zeus is a virtual orchestrator (not a real CLI). Creating a Zeus session
-   * runs a Claude PTY under the hood with a Zeus orchestrator system prompt;
+   * runs a Codex PTY under the hood with a Zeus orchestrator system prompt;
    * full multi-CLI delegation lands with F3. See
    * docs/13-agents/zeus-orchestrator.md.
    */
@@ -236,8 +236,7 @@ export interface SessionMeta {
   root_session_id?: string;
   /** Heuristic detector — null until the first detection pass completes. */
   detected_state?: AgentState | null;
-  /** Whether the harness is tailing a structured JSONL transcript for this
-   *  session (= Chat view is available). True for Claude/Zeus today. */
+  /** Whether the harness is tailing a structured JSONL transcript for this session. */
   has_transcript?: boolean;
 }
 
@@ -431,12 +430,18 @@ export const api = {
       apiRequest<Task>(`/threads/${threadId}/tasks/${taskId}`, { signal }),
     create: (threadId: string, body: CreateTaskRequest, signal?: AbortSignal) =>
       apiRequest<Task>(`/threads/${threadId}/tasks`, { method: 'POST', body, signal }),
-    patch: (threadId: string, taskId: string, body: PatchTaskRequest, signal?: AbortSignal) =>
-      apiRequest<Task>(`/threads/${threadId}/tasks/${taskId}`, {
+    patch: (threadId: string, taskId: string, body: PatchTaskRequest, signal?: AbortSignal) => {
+      const { acceptance, ...rest } = body;
+      const patchBody =
+        acceptance && !rest.acceptance_checks
+          ? { ...rest, acceptance_checks: acceptance.checks }
+          : rest;
+      return apiRequest<Task>(`/threads/${threadId}/tasks/${taskId}`, {
         method: 'PATCH',
-        body,
+        body: patchBody,
         signal
-      }),
+      });
+    },
     remove: (threadId: string, taskId: string, body: DeleteTaskRequest, signal?: AbortSignal) =>
       apiRequest<null>(`/threads/${threadId}/tasks/${taskId}`, {
         method: 'DELETE',
@@ -507,12 +512,24 @@ export const api = {
   },
   getBudget: (threadId: string, signal?: AbortSignal) =>
     apiRequest<BudgetView>(`/threads/${threadId}/budget`, { signal }),
-  setBudget: (threadId: string, limitUsd: number, signal?: AbortSignal) =>
-    apiRequest<BudgetView>(`/threads/${threadId}/budget`, {
+  setBudget: (
+    threadId: string,
+    limitUsd: number,
+    maxConcurrentWorkers?: number | null,
+    signal?: AbortSignal
+  ) => {
+    const body = {
+      limit_usd: limitUsd,
+      ...(maxConcurrentWorkers !== undefined
+        ? { max_concurrent_workers: maxConcurrentWorkers }
+        : {})
+    } as SetBudgetRequest;
+    return apiRequest<BudgetView>(`/threads/${threadId}/budget`, {
       method: 'POST',
-      body: { limit_usd: limitUsd } satisfies SetBudgetRequest,
+      body,
       signal
-    }),
+    });
+  },
   sessions: {
     create: (threadId: string, req: CreateSessionRequest, signal?: AbortSignal) =>
       apiRequest<CreateSessionResponse>(`/threads/${threadId}/sessions`, {

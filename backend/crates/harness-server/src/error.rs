@@ -46,6 +46,18 @@ impl From<SessionError> for ApiError {
     }
 }
 
+impl From<module_ssh::SshError> for ApiError {
+    fn from(e: module_ssh::SshError) -> Self {
+        match e {
+            module_ssh::SshError::HostNotFound(id) => ApiError::NotFound(id),
+            module_ssh::SshError::SessionNotFound(id) => ApiError::NotFound(id),
+            module_ssh::SshError::Validation(msg) => ApiError::BadRequest(msg),
+            module_ssh::SshError::NotImplemented(op) => ApiError::BadRequest(op.to_string()),
+            other => ApiError::Internal(other.to_string()),
+        }
+    }
+}
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, body) = match &self {

@@ -193,3 +193,100 @@ pub fn read_child_summary(
         .into_json::<Value>()
         .map_err(|e| e.to_string())
 }
+
+/// `session_mailbox_send` — append an auditable mailbox message for a
+/// descendant session. Unlike `session_send_input`, this does not write to
+/// the PTY; the worker can read/ack it through mailbox tools.
+pub fn mailbox_send(
+    session_id: Option<&str>,
+    server_url: Option<&str>,
+    api_token: Option<&str>,
+    args: &Value,
+) -> Result<Value, String> {
+    let parent_sid =
+        session_id.ok_or_else(|| "session.mailbox_send requires --session-id".to_string())?;
+    let server = server_url.ok_or_else(|| "session.mailbox_send needs --server-url".to_string())?;
+    let to_session_id = str_arg(args, "to_session_id")?;
+    let body = str_arg(args, "body")?;
+    let task_id = opt_str(args, "task_id");
+    let scopes = args
+        .get("scopes")
+        .and_then(|value| value.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str().map(str::to_string))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    let url = format!(
+        "{}/api/sessions/{}/mailbox",
+        server.trim_end_matches('/'),
+        parent_sid
+    );
+    let body = json!({
+        "to_session_id": to_session_id,
+        "body": body,
+        "task_id": task_id,
+        "scopes": scopes,
+    });
+    let mut req = ureq::post(&url).timeout(Duration::from_secs(5));
+    if let Some(token) = api_token {
+        req = req.set("Authorization", &format!("Bearer {token}"));
+    }
+    req.send_json(&body)
+        .map_err(|e| e.to_string())?
+        .into_json::<Value>()
+        .map_err(|e| e.to_string())
+}
+
+/// `session_mailbox_list` — list messages addressed to the current session.
+pub fn mailbox_list(
+    session_id: Option<&str>,
+    server_url: Option<&str>,
+    api_token: Option<&str>,
+) -> Result<Value, String> {
+    let sid = session_id.ok_or_else(|| "session.mailbox_list requires --session-id".to_string())?;
+    let server = server_url.ok_or_else(|| "session.mailbox_list needs --server-url".to_string())?;
+    let url = format!(
+        "{}/api/sessions/{}/mailbox",
+        server.trim_end_matches('/'),
+        sid
+    );
+    let mut req = ureq::get(&url).timeout(Duration::from_secs(5));
+    if let Some(token) = api_token {
+        req = req.set("Authorization", &format!("Bearer {token}"));
+    }
+    req.call()
+        .map_err(|e| e.to_string())?
+        .into_json::<Value>()
+        .map_err(|e| e.to_string())
+}
+
+/// `session_mailbox_ack` — append an ack event for a message addressed to the
+/// current session.
+pub fn mailbox_ack(
+    session_id: Option<&str>,
+    server_url: Option<&str>,
+    api_token: Option<&str>,
+    args: &Value,
+) -> Result<Value, String> {
+    let sid = session_id.ok_or_else(|| "session.mailbox_ack requires --session-id".to_string())?;
+    let server = server_url.ok_or_else(|| "session.mailbox_ack needs --server-url".to_string())?;
+    let message_id = str_arg(args, "message_id")?;
+    let url = format!(
+        "{}/api/sessions/{}/mailbox/{}/ack",
+        server.trim_end_matches('/'),
+        sid,
+        message_id
+    );
+    let mut req = ureq::post(&url).timeout(Duration::from_secs(5));
+    if let Some(token) = api_token {
+        req = req.set("Authorization", &format!("Bearer {token}"));
+    }
+    req.call()
+        .map_err(|e| e.to_string())?
+        .into_json::<Value>()
+        .map_err(|e| e.to_string())
+}

@@ -5,6 +5,7 @@
 
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
+use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
@@ -113,12 +114,90 @@ pub fn read_file(root: &Path, args: &Value) -> Result<Value, String> {
     }))
 }
 
+pub fn write_file(
+    root: &Path,
+    args: &Value,
+    write_paths: &[String],
+    forbidden_paths: &[String],
+) -> Result<Value, String> {
+    let path_arg = str_arg(args, "path")?;
+    let content = str_arg(args, "content")?;
+    let root = canonical_root(root)?;
+    let path = resolve_under_root(&root, path_arg)?;
+    ensure_write_allowed(&root, &path, write_paths, forbidden_paths)?;
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("create parent {}: {e}", parent.display()))?;
+    }
+    let tmp = path.with_extension(format!(
+        "{}.tmp",
+        path.extension()
+            .and_then(|ext| ext.to_str())
+            .unwrap_or("harness")
+    ));
+    {
+        let mut file = std::fs::File::create(&tmp)
+            .map_err(|e| format!("create temp {}: {e}", tmp.display()))?;
+        file.write_all(content.as_bytes())
+            .map_err(|e| format!("write temp {}: {e}", tmp.display()))?;
+        file.sync_all()
+            .map_err(|e| format!("fsync temp {}: {e}", tmp.display()))?;
+    }
+    std::fs::rename(&tmp, &path)
+        .map_err(|e| format!("rename {} -> {}: {e}", tmp.display(), path.display()))?;
+
+    Ok(json!({
+        "ok": true,
+        "path": relative_to(&root, &path).unwrap_or_else(|| path.display().to_string()),
+        "bytes": content.len(),
+    }))
+}
+
 fn truncate_utf8_safe(content: &mut String, max_bytes: usize) {
     let mut end = max_bytes.min(content.len());
     while !content.is_char_boundary(end) {
         end -= 1;
     }
     content.truncate(end);
+}
+
+fn ensure_write_allowed(
+    root: &Path,
+    path: &Path,
+    write_paths: &[String],
+    forbidden_paths: &[String],
+) -> Result<(), String> {
+    if write_paths.is_empty() {
+        return Err("repo_write_file denied: current task has no write_paths".into());
+    }
+    for forbidden in forbidden_paths {
+        let forbidden_path = resolve_under_root(root, forbidden)?;
+        if path_is_or_under(path, &forbidden_path) {
+            return Err(format!(
+                "repo_write_file denied: {} is forbidden by task scope {}",
+                relative_to(root, path).unwrap_or_else(|| path.display().to_string()),
+                forbidden
+            ));
+        }
+    }
+    let allowed = write_paths.iter().any(|allowed| {
+        resolve_under_root(root, allowed)
+            .map(|allowed_path| path_is_or_under(path, &allowed_path))
+            .unwrap_or(false)
+    });
+    if allowed {
+        Ok(())
+    } else {
+        Err(format!(
+            "repo_write_file denied: {} is outside task write_paths",
+            relative_to(root, path).unwrap_or_else(|| path.display().to_string())
+        ))
+    }
+}
+
+fn path_is_or_under(path: &Path, base: &Path) -> bool {
+    path == base || path.starts_with(base)
 }
 
 pub fn git_status(root: &Path, _args: &Value) -> Result<Value, String> {
@@ -405,7 +484,10 @@ fn git_summary(root: &Path) -> Value {
                         .to_string()
                 })
             });
-            let head = repo.head_id().ok().map(|id| id.to_hex_with_len(8).to_string());
+            let head = repo
+                .head_id()
+                .ok()
+                .map(|id| id.to_hex_with_len(8).to_string());
             let is_dirty = run_git(root, &["status", "--short"], 4096)
                 .map(|s| !s.trim().is_empty())
                 .unwrap_or(false);
@@ -425,17 +507,22 @@ fn code_stats(root: &Path) -> Value {
     let mut stats: Vec<(String, Value)> = langs
         .iter()
         .map(|(lang, ls)| {
-            (lang.to_string(), json!({
-                "files": ls.reports.len(),
-                "lines": ls.lines(),
-                "code": ls.code,
-                "comments": ls.comments,
-                "blanks": ls.blanks,
-            }))
+            (
+                lang.to_string(),
+                json!({
+                    "files": ls.reports.len(),
+                    "lines": ls.lines(),
+                    "code": ls.code,
+                    "comments": ls.comments,
+                    "blanks": ls.blanks,
+                }),
+            )
         })
         .collect();
     stats.sort_by(|a, b| {
-        b.1["code"].as_u64().unwrap_or(0)
+        b.1["code"]
+            .as_u64()
+            .unwrap_or(0)
             .cmp(&a.1["code"].as_u64().unwrap_or(0))
     });
     let top10: serde_json::Map<String, Value> = stats.into_iter().take(10).collect();

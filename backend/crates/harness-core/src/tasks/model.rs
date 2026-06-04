@@ -204,6 +204,7 @@ pub struct TaskBrief {
 #[cfg_attr(feature = "ts-export", ts(export, export_to = "../../../bindings/"))]
 pub struct SpecRef {
     pub section: String,
+    #[cfg_attr(feature = "ts-export", ts(type = "number"))]
     pub version: u64,
 }
 
@@ -352,6 +353,14 @@ pub struct Task {
     pub labels: Vec<String>,
     #[serde(default)]
     pub spec_refs: Vec<SpecRef>,
+    /// Workspace-relative paths this task is allowed to write through harness
+    /// repo tools. Empty means no repo writes are allowed for scoped workers.
+    #[serde(default)]
+    pub write_paths: Vec<String>,
+    /// Workspace-relative paths this task must not write even if an allow path
+    /// would otherwise match.
+    #[serde(default)]
+    pub forbidden_paths: Vec<String>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub brief: Option<TaskBrief>,
@@ -392,7 +401,7 @@ pub struct ListFilters {
 }
 
 /// Input to [`TaskStore::create`].
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct TaskDraft {
     pub title: String,
     pub parent: Option<String>,
@@ -401,6 +410,8 @@ pub struct TaskDraft {
     pub acceptance: Vec<AcceptanceCheck>,
     pub labels: Vec<String>,
     pub spec_refs: Vec<SpecRef>,
+    pub write_paths: Vec<String>,
+    pub forbidden_paths: Vec<String>,
     pub created_by: String,
 }
 
@@ -412,6 +423,8 @@ pub struct TaskPatch {
     pub assignee: Option<Option<String>>,
     pub labels: Option<Vec<String>>,
     pub spec_refs: Option<Vec<SpecRef>>,
+    pub write_paths: Option<Vec<String>>,
+    pub forbidden_paths: Option<Vec<String>>,
     pub blocked_by: Option<Vec<String>>,
     pub acceptance_checks: Option<Vec<AcceptanceCheck>>,
     pub artifacts: Option<Artifacts>,

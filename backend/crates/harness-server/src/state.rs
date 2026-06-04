@@ -41,6 +41,7 @@ pub struct AppState {
     pub policy: Arc<PolicyEngine>,
     pub approvals: Arc<ApprovalStore>,
     pub db: Arc<module_db::Manager>,
+    pub ssh: Arc<module_ssh::Manager>,
     #[allow(dead_code)]
     pub scheduler: Arc<Scheduler>,
     /// Detected absolute paths for agent CLIs. Missing entries mean the binary
@@ -68,8 +69,8 @@ pub struct AppState {
     /// where `<id>` is a UUID we generate at config-write time (NOT the session id).
     pub mcp_configs: Arc<DashMap<String, PathBuf>>,
     /// Per-session transcript stream wiring. Keyed by session id. Present
-    /// only when the underlying CLI emits a JSONL transcript we can parse
-    /// (Claude/Zeus today). Each entry holds the store (for replay), the
+    /// only when the underlying CLI emits a JSONL transcript we can parse.
+    /// Each entry holds the store (for replay), the
     /// live broadcast bus, and a handle to abort the watcher on kill.
     pub transcripts: Arc<DashMap<String, TranscriptSlot>>,
     pub start_time: Instant,
@@ -106,6 +107,10 @@ impl AppState {
             module_db::Manager::new(&cfg.home, profile)
                 .map_err(|e| anyhow::anyhow!("module-db init: {e}"))?,
         );
+        let ssh = Arc::new(
+            module_ssh::Manager::new(&cfg.home, profile)
+                .map_err(|e| anyhow::anyhow!("module-ssh init: {e}"))?,
+        );
         let (tick_tx, _) = broadcast::channel(64);
 
         // Per-agent-kind cost reporter wiring. Keyed by `AgentKind::as_str()`
@@ -127,8 +132,8 @@ impl AppState {
             AgentKind::Antigravity.as_str().to_string(),
             Arc::new(StubReporter::new("antigravity")),
         );
-        // Zeus is virtual — no PTY of its own. Its underlying CLI today is
-        // Claude, so the Claude reporter already accounts for its usage.
+        // Zeus is virtual — no PTY of its own. Its underlying CLI is accounted
+        // under the resolved concrete kind at spawn time.
 
         let budget_wiring = BudgetWiring {
             store: (*budgets).clone(),
@@ -192,6 +197,7 @@ impl AppState {
             policy,
             approvals,
             db,
+            ssh,
             scheduler,
             binaries,
             harness_home: cfg.home.clone(),
@@ -465,6 +471,14 @@ impl SessionSpawner for ManagerSpawner {
                 ];
                 mcp_args.push("--role".to_string());
                 mcp_args.push(req.role.clone());
+                if let Some(task_id) = req.task_id.as_deref() {
+                    mcp_args.push("--task-id".to_string());
+                    mcp_args.push(task_id.to_string());
+                }
+                for scope in &opts.scopes {
+                    mcp_args.push("--scope".to_string());
+                    mcp_args.push(scope.to_string());
+                }
                 if let Some(token) = self.api_token.as_ref() {
                     mcp_args.push("--api-token".to_string());
                     mcp_args.push(token.clone());

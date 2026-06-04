@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -11,8 +12,8 @@ use crate::budget::{
 };
 use crate::pause::PauseFlag;
 use crate::tasks::{
-    ClaimResult, ListFilters, SchedulerDecisionKind, SchedulerExplanation, TaskEvent, TaskStatus,
-    TaskStore,
+    ClaimResult, ListFilters, SchedulerDecisionKind, SchedulerExplanation, Task, TaskEvent,
+    TaskPatch, TaskStatus, TaskStore,
 };
 
 use super::spawner::{NoopSpawner, SessionSpawner, SpawnRequest, SpawnResult};
@@ -144,6 +145,7 @@ impl Scheduler {
                             &agents,
                             &pause,
                             max_concurrent,
+                            budget.as_ref().map(|b| &b.store),
                             &mut prev_status,
                             &cooldown,
                             spawner.as_ref(),
@@ -154,6 +156,7 @@ impl Scheduler {
                             if let Err(e) = run_budget_pass(
                                 b,
                                 &pause_for_budget,
+                                &store,
                                 &mut last_warned_band,
                             ) {
                                 tracing::warn!(?e, "scheduler budget pass failed");
@@ -325,6 +328,7 @@ fn request_spawn(spawner: &dyn SessionSpawner, tid: &str, task_id: &str, agent: 
 ///
 /// Pure helper so it can be unit-tested without touching the store. `now` is
 /// injected for deterministic cooldown expiry.
+#[cfg(test)]
 pub(crate) fn pick_idle_generator<'a>(
     agents: &'a [Agent],
     busy: &HashSet<String>,
@@ -333,7 +337,19 @@ pub(crate) fn pick_idle_generator<'a>(
     task_id: &str,
     now: Instant,
 ) -> Option<&'a Agent> {
-    agents.iter().find(|a| {
+    pick_idle_generator_preferred(agents, busy, cooldown, tid, task_id, now, None)
+}
+
+fn pick_idle_generator_preferred<'a>(
+    agents: &'a [Agent],
+    busy: &HashSet<String>,
+    cooldown: &HashMap<CooldownKey, Instant>,
+    tid: &str,
+    task_id: &str,
+    now: Instant,
+    preferred_agent_id: Option<&str>,
+) -> Option<&'a Agent> {
+    let eligible = |a: &&Agent| {
         if agent_role(a) != "generator" {
             return false;
         }
@@ -342,7 +358,111 @@ pub(crate) fn pick_idle_generator<'a>(
         }
         let key = (tid.to_string(), task_id.to_string(), a.id.clone());
         !matches!(cooldown.get(&key), Some(until) if *until > now)
-    })
+    };
+
+    if let Some(preferred) = preferred_agent_id {
+        if let Some(agent) = agents
+            .iter()
+            .filter(eligible)
+            .find(|a| a.id.as_str() == preferred)
+        {
+            return Some(agent);
+        }
+    }
+
+    agents.iter().filter(eligible).next()
+}
+
+fn artifact_paths(task: &Task) -> impl Iterator<Item = &str> {
+    task.artifacts
+        .files
+        .iter()
+        .map(String::as_str)
+        .chain(task.artifacts.metadata.iter().map(|a| a.path.as_str()))
+        .filter(|p| !p.trim().is_empty())
+}
+
+fn producing_agent_for(task: &Task) -> Option<&str> {
+    task.artifacts
+        .metadata
+        .iter()
+        .rev()
+        .find_map(|artifact| {
+            let produced_by = artifact.produced_by.trim();
+            (!produced_by.is_empty()).then_some(produced_by)
+        })
+        .or_else(|| task.assignee.as_deref())
+        .or_else(|| task.previous_assignees.last().map(String::as_str))
+}
+
+fn recent_file_affinity(tasks: &[Task]) -> HashMap<String, String> {
+    let mut affinity = HashMap::new();
+    for task in tasks {
+        let Some(agent) = producing_agent_for(task) else {
+            continue;
+        };
+        for path in artifact_paths(task) {
+            affinity.insert(path.to_string(), agent.to_string());
+        }
+    }
+    affinity
+}
+
+fn task_text(task: &Task) -> String {
+    let mut text = String::new();
+    text.push_str(&task.title);
+    text.push('\n');
+    for label in &task.labels {
+        text.push_str(label);
+        text.push('\n');
+    }
+    for spec in &task.spec_refs {
+        text.push_str(&spec.section);
+        text.push('\n');
+    }
+    for check in &task.acceptance.checks {
+        text.push_str(&check.text);
+        text.push('\n');
+    }
+    if let Some(brief) = &task.brief {
+        text.push_str(&brief.objective);
+        text.push('\n');
+        text.push_str(&brief.context);
+        text.push('\n');
+        for step in &brief.tasks {
+            text.push_str(step);
+            text.push('\n');
+        }
+        for rule in &brief.rules {
+            text.push_str(rule);
+            text.push('\n');
+        }
+        text.push_str(&brief.expected_result);
+    }
+    text.to_ascii_lowercase()
+}
+
+fn path_matches_task_text(path: &str, text: &str) -> bool {
+    let path = path.trim();
+    if path.is_empty() {
+        return false;
+    }
+    let lowered = path.to_ascii_lowercase();
+    if text.contains(&lowered) {
+        return true;
+    }
+    Path::new(path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| !name.is_empty() && text.contains(&name.to_ascii_lowercase()))
+        .unwrap_or(false)
+}
+
+fn preferred_generator_for_task(task: &Task, affinity: &HashMap<String, String>) -> Option<String> {
+    let text = task_text(task);
+    affinity
+        .iter()
+        .find_map(|(path, agent)| path_matches_task_text(path, &text).then(|| agent.clone()))
 }
 
 fn scheduler_explanation(
@@ -398,6 +518,7 @@ fn run_assign_pass(
     agents: &AgentsRegistry,
     pause: &PauseFlag,
     max_concurrent: usize,
+    budget_store: Option<&BudgetStore>,
     prev_status: &mut StatusSnapshot,
     cooldown: &Mutex<HashMap<CooldownKey, Instant>>,
     spawner: &dyn SessionSpawner,
@@ -420,6 +541,11 @@ fn run_assign_pass(
 
     for tid in store.known_threads()? {
         let tasks = store.list(&tid, ListFilters::default())?;
+        let thread_max_concurrent = budget_store
+            .and_then(|store| store.get(&tid).max_concurrent_workers)
+            .unwrap_or(max_concurrent)
+            .max(1);
+        let affinity = recent_file_affinity(&tasks);
 
         // Detect verify-fail transitions (pending_verify -> in_progress) and
         // record cooldown for the generator that just got rejected. The
@@ -505,22 +631,29 @@ fn run_assign_pass(
         let mut current = busy_ids.len();
         let queue_depth = queued_unblocked.len();
         for t in queued_unblocked {
-            if current >= max_concurrent {
+            if current >= thread_max_concurrent {
                 let mut explanation = scheduler_explanation(
                     &t.id,
                     SchedulerDecisionKind::AssignmentSkipped,
                     "Max concurrency reached for this thread",
                 );
-                explanation.max_concurrent = Some(max_concurrent);
+                explanation.max_concurrent = Some(thread_max_concurrent);
                 explanation.queue_depth = Some(queue_depth);
                 record_scheduler_explanation(store, &tid, explanation);
                 continue;
             }
             let cd_snapshot = cooldown.lock().expect("cooldown mutex").clone();
             let pick_now = Instant::now();
-            let Some(agent) =
-                pick_idle_generator(&all_agents, &busy_ids, &cd_snapshot, &tid, &t.id, pick_now)
-            else {
+            let preferred = preferred_generator_for_task(t, &affinity);
+            let Some(agent) = pick_idle_generator_preferred(
+                &all_agents,
+                &busy_ids,
+                &cd_snapshot,
+                &tid,
+                &t.id,
+                pick_now,
+                preferred.as_deref(),
+            ) else {
                 let cooldown_seconds = cooldown_skip_seconds(
                     &all_agents,
                     &busy_ids,
@@ -562,7 +695,11 @@ fn run_assign_pass(
                     let mut explanation = scheduler_explanation(
                         &t.id,
                         SchedulerDecisionKind::Assigned,
-                        "Assigned to an idle generator",
+                        if preferred.as_deref() == Some(agent.id.as_str()) {
+                            "Assigned to preferred generator by file affinity"
+                        } else {
+                            "Assigned to an idle generator"
+                        },
                     );
                     explanation.agent_id = Some(agent.id.clone());
                     record_scheduler_explanation(store, &tid, explanation);
@@ -664,6 +801,7 @@ fn run_assign_pass(
 pub fn run_budget_pass(
     wiring: &BudgetWiring,
     pause: &PauseFlag,
+    store: &TaskStore,
     last_warned_band: &mut HashMap<String, u8>,
 ) -> Result<(), crate::Error> {
     let sessions = wiring.sessions.snapshot();
@@ -761,6 +899,43 @@ pub fn run_budget_pass(
                 );
             }
         }
+        if budget.over_hard() {
+            pause_in_progress_tasks_for_budget(store, &thread_id, &budget)?;
+        }
+    }
+    Ok(())
+}
+
+fn pause_in_progress_tasks_for_budget(
+    store: &TaskStore,
+    thread_id: &str,
+    budget: &crate::budget::Budget,
+) -> Result<(), crate::Error> {
+    let reason = format!(
+        "budget cap reached: ${:.4} spent of ${:.4} limit ({}%)",
+        budget.spent_usd,
+        budget.limit_usd,
+        budget.pct_spent()
+    );
+    let tasks = store.list(thread_id, ListFilters::default())?;
+    for task in tasks
+        .into_iter()
+        .filter(|task| task.status == TaskStatus::InProgress)
+    {
+        let patch = TaskPatch {
+            status: Some(TaskStatus::Paused),
+            paused_reason: Some(reason.clone()),
+            why_paused: Some(reason.clone()),
+            ..Default::default()
+        };
+        if let Err(e) = store.patch(thread_id, &task.id, patch, "scheduler") {
+            tracing::warn!(
+                ?e,
+                thread = %thread_id,
+                task = %task.id,
+                "budget hard cap task pause failed"
+            );
+        }
     }
     Ok(())
 }
@@ -821,6 +996,7 @@ fn run_lease_pass(store: &TaskStore) -> Result<(), crate::Error> {
 mod tests {
     use super::*;
     use crate::agents::{Agent, AgentKind};
+    use crate::threads::Handoff;
     use chrono::Utc;
 
     fn mk_agent(id: &str, role: Option<&str>) -> Agent {
@@ -831,6 +1007,30 @@ mod tests {
             created_at: Utc::now(),
             role: role.map(|s| s.into()),
         }
+    }
+
+    fn append_handoff(home: &std::path::Path, thread_id: &str, task_id: &str, from: &str) {
+        let store = crate::Store::new(home).unwrap();
+        store
+            .append_handoff(
+                thread_id,
+                &Handoff {
+                    at: Utc::now().timestamp_millis(),
+                    from: from.to_string(),
+                    to_role: "evaluator".to_string(),
+                    task_id: task_id.to_string(),
+                    status: "ready_for_verification".to_string(),
+                    goal: "Verify submitted artifacts".to_string(),
+                    assumptions: vec![],
+                    files_changed: vec!["src/lib.rs".to_string()],
+                    commands_run: vec!["cargo test".to_string()],
+                    verification_passed: vec![],
+                    verification_not_run: vec![],
+                    blocked_on: vec![],
+                    next_agent_action: "Evaluator reviews acceptance checks".to_string(),
+                },
+            )
+            .unwrap();
     }
 
     #[test]
@@ -918,6 +1118,8 @@ mod tests {
                     acceptance: vec![],
                     labels: vec![],
                     spec_refs: vec![],
+                    write_paths: vec![],
+                    forbidden_paths: vec![],
                     created_by: "human".into(),
                 },
             )
@@ -925,7 +1127,17 @@ mod tests {
 
         let mut prev = StatusSnapshot::new();
         let cd = Mutex::new(HashMap::new());
-        run_assign_pass(&store, &agents, &pause, 3, &mut prev, &cd, &NoopSpawner).unwrap();
+        run_assign_pass(
+            &store,
+            &agents,
+            &pause,
+            3,
+            None,
+            &mut prev,
+            &cd,
+            &NoopSpawner,
+        )
+        .unwrap();
 
         let t = store.get("thr-1", "T-0001").unwrap();
         assert_eq!(t.assignee.as_deref(), Some(gen.id.as_str()));
@@ -973,6 +1185,8 @@ mod tests {
                         acceptance: vec![],
                         labels: vec![],
                         spec_refs: vec![],
+                        write_paths: vec![],
+                        forbidden_paths: vec![],
                         created_by: "human".into(),
                     },
                 )
@@ -981,7 +1195,17 @@ mod tests {
 
         let mut prev = StatusSnapshot::new();
         let cd = Mutex::new(HashMap::new());
-        run_assign_pass(&store, &agents, &pause, 1, &mut prev, &cd, &NoopSpawner).unwrap();
+        run_assign_pass(
+            &store,
+            &agents,
+            &pause,
+            1,
+            None,
+            &mut prev,
+            &cd,
+            &NoopSpawner,
+        )
+        .unwrap();
 
         let skipped = store.get("thr-max", "T-0002").unwrap();
         let explanation = skipped
@@ -993,6 +1217,171 @@ mod tests {
         );
         assert_eq!(explanation.max_concurrent, Some(1));
         assert_eq!(explanation.queue_depth, Some(2));
+    }
+
+    #[test]
+    fn assign_pass_uses_thread_budget_max_concurrent_workers() {
+        use crate::agents::{AgentDraft, AgentsRegistry};
+        use crate::budget::BudgetStore;
+        use crate::pause::PauseFlag;
+        use crate::tasks::{TaskDraft, TaskStore};
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let store = TaskStore::new(dir.path()).unwrap();
+        let budget = BudgetStore::load(dir.path()).unwrap();
+        budget
+            .set_max_concurrent_workers("thr-budget-cap", Some(1))
+            .unwrap();
+        let agents = AgentsRegistry::new(dir.path()).unwrap();
+        let pause = PauseFlag::load(dir.path()).unwrap();
+        for label in ["g1", "g2"] {
+            agents
+                .create(AgentDraft {
+                    kind: AgentKind::Claude,
+                    label: label.into(),
+                    role: Some("generator".into()),
+                })
+                .unwrap();
+        }
+
+        for title in ["first", "second"] {
+            store
+                .create(
+                    "thr-budget-cap",
+                    TaskDraft {
+                        title: title.into(),
+                        parent: None,
+                        depends_on: vec![],
+                        brief: None,
+                        acceptance: vec![],
+                        labels: vec![],
+                        spec_refs: vec![],
+                        write_paths: vec![],
+                        forbidden_paths: vec![],
+                        created_by: "human".into(),
+                    },
+                )
+                .unwrap();
+        }
+
+        let mut prev = StatusSnapshot::new();
+        let cd = Mutex::new(HashMap::new());
+        run_assign_pass(
+            &store,
+            &agents,
+            &pause,
+            3,
+            Some(&budget),
+            &mut prev,
+            &cd,
+            &NoopSpawner,
+        )
+        .unwrap();
+
+        let second = store.get("thr-budget-cap", "T-0002").unwrap();
+        let explanation = second.scheduler_explanation.expect("scheduler explanation");
+        assert_eq!(
+            explanation.decision,
+            SchedulerDecisionKind::AssignmentSkipped
+        );
+        assert_eq!(explanation.max_concurrent, Some(1));
+    }
+
+    #[test]
+    fn assign_pass_prefers_recent_generator_for_matching_file() {
+        use crate::agents::{AgentDraft, AgentsRegistry};
+        use crate::pause::PauseFlag;
+        use crate::tasks::{Artifacts, TaskDraft, TaskStore};
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let store = TaskStore::new(dir.path()).unwrap();
+        let agents = AgentsRegistry::new(dir.path()).unwrap();
+        let pause = PauseFlag::load(dir.path()).unwrap();
+        let g1 = agents
+            .create(AgentDraft {
+                kind: AgentKind::Claude,
+                label: "g1".into(),
+                role: Some("generator".into()),
+            })
+            .unwrap();
+        let g2 = agents
+            .create(AgentDraft {
+                kind: AgentKind::Claude,
+                label: "g2".into(),
+                role: Some("generator".into()),
+            })
+            .unwrap();
+
+        store
+            .create(
+                "thr-affinity",
+                TaskDraft {
+                    title: "prior work".into(),
+                    parent: None,
+                    depends_on: vec![],
+                    brief: None,
+                    acceptance: vec![],
+                    labels: vec![],
+                    spec_refs: vec![],
+                    write_paths: vec![],
+                    forbidden_paths: vec![],
+                    created_by: "human".into(),
+                },
+            )
+            .unwrap();
+        store
+            .with_locked("thr-affinity", "T-0001", |task| {
+                task.status = TaskStatus::Done;
+                task.assignee = Some(g2.id.clone());
+                task.artifacts = Artifacts {
+                    files: vec!["src/lib.rs".into()],
+                    ..Default::default()
+                };
+                Ok(())
+            })
+            .unwrap();
+
+        store
+            .create(
+                "thr-affinity",
+                TaskDraft {
+                    title: "adjust src/lib.rs behavior".into(),
+                    parent: None,
+                    depends_on: vec![],
+                    brief: None,
+                    acceptance: vec![],
+                    labels: vec![],
+                    spec_refs: vec![],
+                    write_paths: vec![],
+                    forbidden_paths: vec![],
+                    created_by: "human".into(),
+                },
+            )
+            .unwrap();
+
+        let mut prev = StatusSnapshot::new();
+        let cd = Mutex::new(HashMap::new());
+        run_assign_pass(
+            &store,
+            &agents,
+            &pause,
+            3,
+            None,
+            &mut prev,
+            &cd,
+            &NoopSpawner,
+        )
+        .unwrap();
+
+        let assigned = store.get("thr-affinity", "T-0002").unwrap();
+        assert_eq!(assigned.assignee.as_deref(), Some(g2.id.as_str()));
+        assert_ne!(assigned.assignee.as_deref(), Some(g1.id.as_str()));
+        assert_eq!(
+            assigned.scheduler_explanation.unwrap().reason,
+            "Assigned to preferred generator by file affinity"
+        );
     }
 
     #[test]
@@ -1039,6 +1428,8 @@ mod tests {
                     acceptance: vec![],
                     labels: vec![],
                     spec_refs: vec![],
+                    write_paths: vec![],
+                    forbidden_paths: vec![],
                     created_by: "human".into(),
                 },
             )
@@ -1048,7 +1439,17 @@ mod tests {
         let cd = Mutex::new(HashMap::new());
 
         // Tick 1: assign queued -> g1 (lowest id picked first).
-        run_assign_pass(&store, &agents, &pause, 3, &mut prev, &cd, &NoopSpawner).unwrap();
+        run_assign_pass(
+            &store,
+            &agents,
+            &pause,
+            3,
+            None,
+            &mut prev,
+            &cd,
+            &NoopSpawner,
+        )
+        .unwrap();
         let t = store.get("thr", "T-0001").unwrap();
         let first_gen = t.assignee.clone().unwrap();
         assert!(first_gen == g1.id || first_gen == g2.id);
@@ -1066,6 +1467,7 @@ mod tests {
                 &first_gen,
             )
             .unwrap();
+        append_handoff(dir.path(), "thr", "T-0001", &first_gen);
         store
             .patch(
                 "thr",
@@ -1084,7 +1486,17 @@ mod tests {
 
         // Tick 2: should route pending_verify -> evaluator e1, push first_gen
         // onto previous_assignees.
-        run_assign_pass(&store, &agents, &pause, 3, &mut prev, &cd, &NoopSpawner).unwrap();
+        run_assign_pass(
+            &store,
+            &agents,
+            &pause,
+            3,
+            None,
+            &mut prev,
+            &cd,
+            &NoopSpawner,
+        )
+        .unwrap();
         let t = store.get("thr", "T-0001").unwrap();
         assert_eq!(t.assignee.as_deref(), Some(e1.id.as_str()));
         assert_eq!(
@@ -1107,7 +1519,17 @@ mod tests {
 
         // Tick 3: must observe the verify-fail transition and record cooldown
         // for first_gen on this task.
-        run_assign_pass(&store, &agents, &pause, 3, &mut prev, &cd, &NoopSpawner).unwrap();
+        run_assign_pass(
+            &store,
+            &agents,
+            &pause,
+            3,
+            None,
+            &mut prev,
+            &cd,
+            &NoopSpawner,
+        )
+        .unwrap();
         let key = ("thr".to_string(), "T-0001".to_string(), first_gen.clone());
         assert!(
             cd.lock().unwrap().contains_key(&key),
@@ -1125,7 +1547,17 @@ mod tests {
             })
             .unwrap();
 
-        run_assign_pass(&store, &agents, &pause, 3, &mut prev, &cd, &NoopSpawner).unwrap();
+        run_assign_pass(
+            &store,
+            &agents,
+            &pause,
+            3,
+            None,
+            &mut prev,
+            &cd,
+            &NoopSpawner,
+        )
+        .unwrap();
         let t = store.get("thr", "T-0001").unwrap();
         let second_gen = t.assignee.clone().unwrap();
         let other = if first_gen == g1.id {
@@ -1205,6 +1637,10 @@ mod tests {
         }
     }
 
+    fn budget_task_store(dir: &Path) -> TaskStore {
+        TaskStore::new(dir).unwrap()
+    }
+
     #[test]
     fn budget_pass_emits_warning_on_soft_crossing_only_once() {
         let dir = tempdir().unwrap();
@@ -1228,8 +1664,9 @@ mod tests {
         wiring.store.set_limit("thr-1", 10.0).unwrap();
 
         let mut bands: HashMap<String, u8> = HashMap::new();
-        run_budget_pass(&wiring, &pause, &mut bands).unwrap();
-        run_budget_pass(&wiring, &pause, &mut bands).unwrap();
+        let tasks = budget_task_store(dir.path());
+        run_budget_pass(&wiring, &pause, &tasks, &mut bands).unwrap();
+        run_budget_pass(&wiring, &pause, &tasks, &mut bands).unwrap();
 
         let emitted = sink.0.lock().unwrap();
         assert_eq!(
@@ -1264,12 +1701,78 @@ mod tests {
         wiring.store.set_limit("thr-x", 10.0).unwrap();
 
         let mut bands: HashMap<String, u8> = HashMap::new();
-        run_budget_pass(&wiring, &pause, &mut bands).unwrap();
+        let tasks = budget_task_store(dir.path());
+        run_budget_pass(&wiring, &pause, &tasks, &mut bands).unwrap();
 
         assert!(pause.is_paused(), "hard cap must trip global pause");
         let emitted = sink.0.lock().unwrap();
         assert_eq!(emitted.len(), 1);
         assert_eq!(emitted[0].pct, 100);
+    }
+
+    #[test]
+    fn budget_pass_pauses_in_progress_tasks_at_hard_cap() {
+        use crate::tasks::TaskDraft;
+
+        let dir = tempdir().unwrap();
+        let pause = PauseFlag::load(dir.path()).unwrap();
+        let sink = Arc::new(RecordingSink::default());
+        let tasks = TaskStore::new(dir.path()).unwrap();
+        tasks
+            .create(
+                "thr-budget",
+                TaskDraft {
+                    title: "expensive work".into(),
+                    parent: None,
+                    depends_on: vec![],
+                    brief: None,
+                    acceptance: vec![],
+                    labels: vec![],
+                    spec_refs: vec![],
+                    write_paths: vec![],
+                    forbidden_paths: vec![],
+                    created_by: "human".into(),
+                },
+            )
+            .unwrap();
+        tasks
+            .claim("thr-budget", "T-0001", "agent:g1", Duration::from_secs(60))
+            .unwrap();
+        tasks
+            .patch(
+                "thr-budget",
+                "T-0001",
+                TaskPatch {
+                    status: Some(TaskStatus::InProgress),
+                    ..Default::default()
+                },
+                "agent:g1",
+            )
+            .unwrap();
+
+        let sessions = vec![ActiveSession {
+            thread_id: "thr-budget".into(),
+            session_id: "sid-budget".into(),
+            cwd: dir.path().to_path_buf(),
+            kind: "claude".into(),
+            agent_id: Some("agent:g1".into()),
+            role: Some("generator".into()),
+            task_id: Some("T-0001".into()),
+            owner_session_id: None,
+            parent_session_id: None,
+            root_session_id: None,
+        }];
+        let wiring = mk_wiring(dir.path(), 10.0, sessions, sink);
+        wiring.store.set_limit("thr-budget", 10.0).unwrap();
+
+        let mut bands: HashMap<String, u8> = HashMap::new();
+        run_budget_pass(&wiring, &pause, &tasks, &mut bands).unwrap();
+
+        let task = tasks.get("thr-budget", "T-0001").unwrap();
+        assert_eq!(task.status, TaskStatus::Paused);
+        assert!(task.notes.pause_reason().contains("budget cap reached"));
+        assert_eq!(task.updated_by, "scheduler");
+        assert!(pause.is_paused(), "hard cap must also trip global pause");
     }
 
     #[test]
@@ -1293,7 +1796,8 @@ mod tests {
         wiring.store.set_limit("thr-c", 10.0).unwrap();
 
         let mut bands: HashMap<String, u8> = HashMap::new();
-        run_budget_pass(&wiring, &pause, &mut bands).unwrap();
+        let tasks = budget_task_store(dir.path());
+        run_budget_pass(&wiring, &pause, &tasks, &mut bands).unwrap();
         assert!(sink.0.lock().unwrap().is_empty());
         assert!(!pause.is_paused());
     }
@@ -1359,7 +1863,8 @@ mod tests {
         };
 
         let mut bands: HashMap<String, u8> = HashMap::new();
-        run_budget_pass(&wiring, &pause, &mut bands).unwrap();
+        let tasks = budget_task_store(dir.path());
+        run_budget_pass(&wiring, &pause, &tasks, &mut bands).unwrap();
 
         let agents = wiring.store.agents_for("thr-1");
         assert_eq!(agents.len(), 2);
@@ -1435,6 +1940,8 @@ mod tests {
                     acceptance: vec![],
                     labels: vec![],
                     spec_refs: vec![],
+                    write_paths: vec![],
+                    forbidden_paths: vec![],
                     created_by: "human".into(),
                 },
             )
@@ -1443,7 +1950,7 @@ mod tests {
         let spawner = RecordingSpawner::default();
         let mut prev = StatusSnapshot::new();
         let cd = Mutex::new(HashMap::new());
-        run_assign_pass(&store, &agents, &pause, 3, &mut prev, &cd, &spawner).unwrap();
+        run_assign_pass(&store, &agents, &pause, 3, None, &mut prev, &cd, &spawner).unwrap();
 
         let calls = spawner.0.lock().unwrap();
         assert_eq!(calls.len(), 1, "spawner should be called exactly once");
@@ -1492,6 +1999,8 @@ mod tests {
                     acceptance: vec![],
                     labels: vec![],
                     spec_refs: vec![],
+                    write_paths: vec![],
+                    forbidden_paths: vec![],
                     created_by: "human".into(),
                 },
             )
@@ -1502,7 +2011,7 @@ mod tests {
         let cd = Mutex::new(HashMap::new());
 
         // Tick 1: queued -> claim by generator (1 spawn).
-        run_assign_pass(&store, &agents, &pause, 3, &mut prev, &cd, &spawner).unwrap();
+        run_assign_pass(&store, &agents, &pause, 3, None, &mut prev, &cd, &spawner).unwrap();
         // Generator submits.
         store
             .patch(
@@ -1515,6 +2024,7 @@ mod tests {
                 &gen.id,
             )
             .unwrap();
+        append_handoff(dir.path(), "thr-eval", "T-0001", &gen.id);
         store
             .patch(
                 "thr-eval",
@@ -1531,7 +2041,7 @@ mod tests {
             )
             .unwrap();
         // Tick 2: should route to evaluator AND request a spawn for them.
-        run_assign_pass(&store, &agents, &pause, 3, &mut prev, &cd, &spawner).unwrap();
+        run_assign_pass(&store, &agents, &pause, 3, None, &mut prev, &cd, &spawner).unwrap();
 
         let calls = spawner.0.lock().unwrap();
         let roles: Vec<&str> = calls.iter().map(|c| c.role.as_str()).collect();
@@ -1547,5 +2057,170 @@ mod tests {
         assert_eq!(eval_call.agent_id, evaluator.id);
         assert_eq!(eval_call.thread_id, "thr-eval");
         assert_eq!(eval_call.task_id.as_deref(), Some("T-0001"));
+    }
+
+    #[test]
+    fn small_planner_worker_evaluator_flow_finishes_and_unblocks_dependency() {
+        use crate::agents::{AgentDraft, AgentsRegistry};
+        use crate::pause::PauseFlag;
+        use crate::tasks::{
+            AcceptanceCheck, Artifacts, TaskDraft, TaskPatch, TaskStatus, TaskStore,
+        };
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let store = TaskStore::new(dir.path()).unwrap();
+        let agents = AgentsRegistry::new(dir.path()).unwrap();
+        let pause = PauseFlag::load(dir.path()).unwrap();
+        agents
+            .create(AgentDraft {
+                kind: AgentKind::Claude,
+                label: "planner".into(),
+                role: Some("planner".into()),
+            })
+            .unwrap();
+        let generator = agents
+            .create(AgentDraft {
+                kind: AgentKind::Codex,
+                label: "generator".into(),
+                role: Some("generator".into()),
+            })
+            .unwrap();
+        let evaluator = agents
+            .create(AgentDraft {
+                kind: AgentKind::Claude,
+                label: "evaluator".into(),
+                role: Some("evaluator".into()),
+            })
+            .unwrap();
+
+        store
+            .create(
+                "thr-e2e",
+                TaskDraft {
+                    title: "implement endpoint".into(),
+                    parent: None,
+                    depends_on: vec![],
+                    brief: None,
+                    acceptance: vec![AcceptanceCheck {
+                        id: "check-1".into(),
+                        text: "endpoint responds".into(),
+                        verified: false,
+                        verified_by: None,
+                    }],
+                    labels: vec!["backend".into()],
+                    spec_refs: vec![],
+                    write_paths: vec![],
+                    forbidden_paths: vec![],
+                    created_by: "agent:planner".into(),
+                },
+            )
+            .unwrap();
+        store
+            .create(
+                "thr-e2e",
+                TaskDraft {
+                    title: "wire frontend".into(),
+                    parent: None,
+                    depends_on: vec!["T-0001".into()],
+                    brief: None,
+                    acceptance: vec![AcceptanceCheck {
+                        id: "check-1".into(),
+                        text: "frontend renders endpoint data".into(),
+                        verified: false,
+                        verified_by: None,
+                    }],
+                    labels: vec!["frontend".into()],
+                    spec_refs: vec![],
+                    write_paths: vec![],
+                    forbidden_paths: vec![],
+                    created_by: "agent:planner".into(),
+                },
+            )
+            .unwrap();
+
+        let blocked = store.get("thr-e2e", "T-0002").unwrap();
+        assert_eq!(blocked.status, TaskStatus::Blocked);
+        assert_eq!(blocked.blocked_by, vec!["T-0001"]);
+
+        let spawner = RecordingSpawner::default();
+        let mut prev = StatusSnapshot::new();
+        let cd = Mutex::new(HashMap::new());
+        let mut announced = HashSet::new();
+
+        run_ready_pass(&store, &mut announced).unwrap();
+        run_assign_pass(&store, &agents, &pause, 3, None, &mut prev, &cd, &spawner).unwrap();
+
+        let first = store.get("thr-e2e", "T-0001").unwrap();
+        assert_eq!(first.assignee.as_deref(), Some(generator.id.as_str()));
+        assert_eq!(first.status, TaskStatus::Queued);
+
+        store
+            .patch(
+                "thr-e2e",
+                "T-0001",
+                TaskPatch {
+                    status: Some(TaskStatus::InProgress),
+                    ..Default::default()
+                },
+                &generator.id,
+            )
+            .unwrap();
+        append_handoff(dir.path(), "thr-e2e", "T-0001", &generator.id);
+
+        store
+            .submit(
+                "thr-e2e",
+                "T-0001",
+                Artifacts {
+                    files: vec!["src/routes/api.rs".into()],
+                    ..Default::default()
+                },
+                &generator.id,
+            )
+            .unwrap();
+        run_assign_pass(&store, &agents, &pause, 3, None, &mut prev, &cd, &spawner).unwrap();
+
+        let first = store.get("thr-e2e", "T-0001").unwrap();
+        assert_eq!(first.status, TaskStatus::PendingVerify);
+        assert_eq!(first.assignee.as_deref(), Some(evaluator.id.as_str()));
+
+        let mut checks = first.acceptance.checks.clone();
+        checks[0].verified = true;
+        checks[0].verified_by = Some("human:qa".into());
+        store
+            .patch(
+                "thr-e2e",
+                "T-0001",
+                TaskPatch {
+                    acceptance_checks: Some(checks),
+                    ..Default::default()
+                },
+                &evaluator.id,
+            )
+            .unwrap();
+        store
+            .patch(
+                "thr-e2e",
+                "T-0001",
+                TaskPatch {
+                    status: Some(TaskStatus::Done),
+                    ..Default::default()
+                },
+                &evaluator.id,
+            )
+            .unwrap();
+
+        run_ready_pass(&store, &mut announced).unwrap();
+        let second = store.get("thr-e2e", "T-0002").unwrap();
+        assert_eq!(second.status, TaskStatus::Queued);
+        assert_eq!(
+            second.scheduler_explanation.as_ref().map(|e| e.decision),
+            Some(SchedulerDecisionKind::AutoUnblocked)
+        );
+
+        let calls = spawner.0.lock().unwrap();
+        let spawned_roles: Vec<&str> = calls.iter().map(|c| c.role.as_str()).collect();
+        assert_eq!(spawned_roles, vec!["generator", "evaluator"]);
     }
 }

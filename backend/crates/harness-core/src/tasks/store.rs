@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
-use std::io::Write;
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -22,6 +22,7 @@ use super::model::{
 };
 use super::reconcile::reconcile_tasks;
 use super::state_machine::validate_transition;
+use crate::threads::Handoff;
 use crate::Store;
 use crate::{validate_profile_id, validate_task_id, validate_thread_id, Error};
 
@@ -106,6 +107,16 @@ impl TaskStore {
     fn task_path(&self, tid: &str, task_id: &str) -> Result<PathBuf, Error> {
         validate_task_id(task_id).map_err(Error::Validation)?;
         Ok(self.thread_dir(tid)?.join(format!("{task_id}.toml")))
+    }
+
+    fn handoffs_path(&self, tid: &str, task_id: &str) -> Result<PathBuf, Error> {
+        validate_thread_id(tid).map_err(Error::Validation)?;
+        validate_task_id(task_id).map_err(Error::Validation)?;
+        Ok(self
+            .threads_root()
+            .join(tid)
+            .join("handoffs")
+            .join(format!("{task_id}.jsonl")))
     }
 
     fn ensure_thread(
@@ -272,6 +283,8 @@ impl TaskStore {
             previous_assignees: vec![],
             labels: draft.labels,
             spec_refs: draft.spec_refs,
+            write_paths: draft.write_paths,
+            forbidden_paths: draft.forbidden_paths,
             brief: draft.brief,
             acceptance: AcceptanceBlock { checks },
             artifacts: Artifacts::default(),
@@ -314,8 +327,9 @@ impl TaskStore {
     ) -> Result<Task, Error> {
         let (index, _) = self.ensure_thread(tid)?;
         let path = self.task_path(tid, task_id)?;
+        let handoffs = self.read_handoffs(tid, task_id)?;
         let (task, (prev_status, changed_fields)) =
-            with_locked_task(&path, |task| apply_patch(task, &patch, by))?;
+            with_locked_task(&path, |task| apply_patch(task, &patch, by, &handoffs))?;
 
         {
             let idx = index.lock().expect("index mutex poisoned");
@@ -556,6 +570,26 @@ impl TaskStore {
         Ok(artifacts.metadata)
     }
 
+    pub fn read_handoffs(&self, tid: &str, task_id: &str) -> Result<Vec<Handoff>, Error> {
+        let path = self.handoffs_path(tid, task_id)?;
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+        let file = File::open(path)?;
+        let mut out = Vec::new();
+        for line in BufReader::new(file).lines() {
+            let line = line?;
+            if line.trim().is_empty() {
+                continue;
+            }
+            match serde_json::from_str::<Handoff>(&line) {
+                Ok(handoff) => out.push(handoff),
+                Err(e) => tracing::warn!(error = %e, "skipping invalid handoff record"),
+            }
+        }
+        Ok(out)
+    }
+
     /// Store and broadcast the latest scheduler explanation for a task.
     ///
     /// The scheduler ticks frequently, so identical explanations are ignored
@@ -701,6 +735,7 @@ fn apply_patch(
     task: &mut Task,
     patch: &TaskPatch,
     by: &str,
+    handoffs: &[Handoff],
 ) -> Result<(TaskStatus, Vec<String>), Error> {
     let prev = task.status;
     let mut fields: Vec<String> = vec![];
@@ -720,6 +755,14 @@ fn apply_patch(
     if let Some(spec_refs) = &patch.spec_refs {
         task.spec_refs = spec_refs.clone();
         fields.push("spec_refs".into());
+    }
+    if let Some(write_paths) = &patch.write_paths {
+        task.write_paths = write_paths.clone();
+        fields.push("write_paths".into());
+    }
+    if let Some(forbidden_paths) = &patch.forbidden_paths {
+        task.forbidden_paths = forbidden_paths.clone();
+        fields.push("forbidden_paths".into());
     }
     if let Some(b) = &patch.blocked_by {
         task.blocked_by = b.clone();
@@ -814,6 +857,9 @@ fn apply_patch(
 
     if let Some(next) = patch.status {
         if next != task.status {
+            if next == TaskStatus::PendingVerify {
+                validate_pending_verify_handoff(task, by, handoffs)?;
+            }
             // For queued→in_progress, lease must be set first (caller should
             // call `claim` before patching to in_progress). We validate here.
             validate_transition(task, next, by)?;
@@ -918,6 +964,30 @@ fn append_legacy_artifact_metadata(
             created_at,
             summary: "Submitted diff".to_string(),
         });
+    }
+}
+
+fn validate_pending_verify_handoff(
+    task: &Task,
+    by: &str,
+    handoffs: &[Handoff],
+) -> Result<(), Error> {
+    let has_handoff = handoffs.iter().any(|handoff| {
+        handoff.task_id == task.id
+            && handoff.from == by
+            && matches!(
+                handoff.to_role.trim().to_ascii_lowercase().as_str(),
+                "evaluator" | "qa"
+            )
+            && !handoff.goal.trim().is_empty()
+            && !handoff.next_agent_action.trim().is_empty()
+    });
+    if has_handoff {
+        Ok(())
+    } else {
+        Err(Error::Validation(
+            "in_progress→pending_verify requires a generator→evaluator handoff".into(),
+        ))
     }
 }
 
@@ -1068,6 +1138,32 @@ mod tests {
         (dir, s)
     }
 
+    fn append_test_handoff(s: &TaskStore, tid: &str, task_id: &str, from: &str) {
+        let path = s.handoffs_path(tid, task_id).unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let handoff = Handoff {
+            at: Utc::now().timestamp_millis(),
+            from: from.to_string(),
+            to_role: "evaluator".to_string(),
+            task_id: task_id.to_string(),
+            status: "ready_for_verification".to_string(),
+            goal: "Verify submitted artifacts".to_string(),
+            assumptions: vec![],
+            files_changed: vec!["src/lib.rs".to_string()],
+            commands_run: vec!["cargo test".to_string()],
+            verification_passed: vec![],
+            verification_not_run: vec![],
+            blocked_on: vec![],
+            next_agent_action: "Evaluator reviews acceptance checks".to_string(),
+        };
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .unwrap();
+        writeln!(file, "{}", serde_json::to_string(&handoff).unwrap()).unwrap();
+    }
+
     #[test]
     fn create_then_get_and_list() {
         let (_dir, s) = store();
@@ -1082,6 +1178,8 @@ mod tests {
                     acceptance: vec![],
                     labels: vec!["x".into()],
                     spec_refs: vec![],
+                    write_paths: vec![],
+                    forbidden_paths: vec![],
                     created_by: "human".into(),
                 },
             )
@@ -1165,6 +1263,8 @@ mod tests {
                 acceptance: vec![],
                 labels: vec![],
                 spec_refs: vec![],
+                write_paths: vec![],
+                forbidden_paths: vec![],
                 created_by: "human".into(),
             },
         )
@@ -1203,6 +1303,8 @@ mod tests {
                 acceptance: vec![],
                 labels: vec![],
                 spec_refs: vec![],
+                write_paths: vec![],
+                forbidden_paths: vec![],
                 created_by: "human".into(),
             },
         )
@@ -1240,6 +1342,7 @@ mod tests {
         )
         .unwrap();
         let mut rx = s.subscribe("thr-1");
+        append_test_handoff(&s, "thr-1", "T-0001", "agent:a");
 
         let task = s
             .submit(
@@ -1284,6 +1387,37 @@ mod tests {
             }
         }
         assert_eq!(artifact_events, 4);
+    }
+
+    #[test]
+    fn submit_requires_generator_to_evaluator_handoff() {
+        let (_dir, s) = store();
+        s.create("thr-1", mk_draft("missing handoff")).unwrap();
+        s.claim("thr-1", "T-0001", "agent:a", Duration::from_secs(60))
+            .unwrap();
+        s.patch(
+            "thr-1",
+            "T-0001",
+            TaskPatch {
+                status: Some(TaskStatus::InProgress),
+                ..Default::default()
+            },
+            "agent:a",
+        )
+        .unwrap();
+
+        let err = s
+            .submit(
+                "thr-1",
+                "T-0001",
+                Artifacts {
+                    files: vec!["src/lib.rs".into()],
+                    ..Default::default()
+                },
+                "agent:a",
+            )
+            .expect_err("pending_verify should require handoff");
+        assert!(matches!(err, Error::Validation(_)), "got {err:?}");
     }
 
     #[test]
@@ -1340,6 +1474,7 @@ mod tests {
         )
         .unwrap();
         let mut rx = s.subscribe("thr-1");
+        append_test_handoff(&s, "thr-1", "T-0001", "agent:a");
 
         let task = s
             .submit(
@@ -1427,6 +1562,8 @@ mod tests {
             acceptance: vec![],
             labels: vec![],
             spec_refs: vec![],
+            write_paths: vec![],
+            forbidden_paths: vec![],
             created_by: "human".into(),
         }
     }
@@ -1487,6 +1624,8 @@ mod tests {
                 acceptance: vec![],
                 labels: vec![],
                 spec_refs: vec![],
+                write_paths: vec![],
+                forbidden_paths: vec![],
                 created_by: "human".into(),
             },
         )

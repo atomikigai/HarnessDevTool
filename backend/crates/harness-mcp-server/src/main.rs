@@ -113,6 +113,11 @@ struct CliArgs {
     /// Role label for minimal task_create gating. Omitted means legacy
     /// permissive behavior.
     role: Option<String>,
+    /// Trusted task id passed by harness-server when this MCP instance is
+    /// scoped to a task.
+    task_id: Option<String>,
+    /// Trusted resource scopes granted to this MCP instance.
+    scopes: Vec<String>,
 }
 
 fn parse_args() -> Result<CliArgs, String> {
@@ -130,6 +135,8 @@ fn parse_args_from(args: Vec<String>) -> Result<CliArgs, String> {
     let mut cwd: Option<PathBuf> = None;
     let mut api_token: Option<String> = None;
     let mut role: Option<String> = None;
+    let mut task_id: Option<String> = None;
+    let mut scopes: Vec<String> = Vec::new();
 
     let mut i = 0;
     while i < args.len() {
@@ -175,9 +182,17 @@ fn parse_args_from(args: Vec<String>) -> Result<CliArgs, String> {
                 role = Some(next(i)?.clone());
                 i += 2;
             }
+            "--task-id" => {
+                task_id = Some(next(i)?.clone());
+                i += 2;
+            }
+            "--scope" => {
+                scopes.push(next(i)?.clone());
+                i += 2;
+            }
             "-h" | "--help" => {
                 eprintln!(
-                    "usage: harness-mcp-server --thread <tid> --agent-id <aid> [--session-id <sid>] --harness-home <path> [--profile <profile>] [--server-url <url>] [--cwd <path>] [--api-token <token>] [--role <role>]"
+                    "usage: harness-mcp-server --thread <tid> --agent-id <aid> [--session-id <sid>] --harness-home <path> [--profile <profile>] [--server-url <url>] [--cwd <path>] [--api-token <token>] [--role <role>] [--task-id <task>] [--scope <scope>...]"
                 );
                 std::process::exit(0);
             }
@@ -194,6 +209,8 @@ fn parse_args_from(args: Vec<String>) -> Result<CliArgs, String> {
         cwd: cwd.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))),
         api_token,
         role,
+        task_id,
+        scopes,
     })
 }
 
@@ -232,6 +249,8 @@ fn main() -> ExitCode {
         args.cwd.clone(),
         args.api_token.clone(),
         args.role.clone(),
+        args.task_id.clone(),
+        args.scopes.clone(),
     ) {
         Ok(d) => d,
         Err(e) => {
@@ -375,5 +394,27 @@ mod tests {
         .unwrap();
 
         assert_eq!(args.api_token.as_deref(), Some("secret"));
+    }
+
+    #[test]
+    fn task_scope_comes_from_trusted_cli_flags() {
+        let args = parse_args_from(vec![
+            "--thread".into(),
+            "thread-1".into(),
+            "--agent-id".into(),
+            "agent:codex-1".into(),
+            "--harness-home".into(),
+            "/tmp/harness".into(),
+            "--task-id".into(),
+            "T-0001".into(),
+            "--scope".into(),
+            "task:T-0001".into(),
+            "--scope".into(),
+            "frontend".into(),
+        ])
+        .unwrap();
+
+        assert_eq!(args.task_id.as_deref(), Some("T-0001"));
+        assert_eq!(args.scopes, vec!["task:T-0001", "frontend"]);
     }
 }

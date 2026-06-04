@@ -163,7 +163,7 @@
                 : 'border-[var(--border-input)] bg-[var(--surface-titlebar)] text-[var(--fg-muted)] hover:text-[var(--fg-default)]'}"
               onclick={() => (kind = opt)}
               title={opt === 'zeus'
-                ? 'Zeus orchestrates the other CLIs by role (Claude=arch, Codex=PR/tests, Cursor=IDE, Antigravity=cloud). Falls back to Claude on quota/error. Today it runs a Claude PTY with the Zeus briefing; real multi-CLI delegation lands with F3.'
+                ? 'Zeus orchestrates the other CLIs by role (Codex=primary/implementation/tests, Claude=architecture fallback, Cursor=IDE, Antigravity=cloud). Falls back to Claude on quota/error. Today it runs a Codex PTY with the Zeus briefing; real multi-CLI delegation lands with F3.'
                 : opt}
             >
               {opt === 'zeus' ? 'Zeus' : opt}
@@ -173,7 +173,7 @@
         {#if kind === 'zeus'}
           <p class="text-[11px] leading-relaxed text-emerald-400/90">
             Zeus is an orchestrator session — it plans and delegates work across the CLIs by role,
-            falling back to Claude on quota/error. Under the hood it runs a Claude PTY with the Zeus
+            falling back to Claude on quota/error. Under the hood it runs a Codex PTY with the Zeus
             orchestrator briefing; real multi-CLI worker spawning lands with F3.
           </p>
         {/if}

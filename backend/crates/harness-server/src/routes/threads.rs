@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -8,8 +9,8 @@ use axum::routing::get;
 use axum::{Json, Router};
 use chrono::Utc;
 use harness_core::{
-    AutonomyProfile, Event, ExecutionMode, Item, ReadinessIssue, ReadinessReport,
-    ReconcileReport, ReconcileSessionRef, Thread,
+    AutonomyProfile, Event, ExecutionMode, Item, ReadinessIssue, ReadinessReport, ReconcileReport,
+    ReconcileSessionRef, Thread,
 };
 use harness_session::{SessionMeta, SessionStatus};
 use serde::{Deserialize, Serialize};
@@ -110,7 +111,7 @@ async fn create_thread(
     let autonomy = body.autonomy_profile.unwrap_or(state.autonomy_profile);
     state.store.set_autonomy_profile(&thread.id, autonomy)?;
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let readiness = calculate_readiness(&state, &cwd, thread.title.as_deref());
+    let readiness = calculate_readiness(&state, &thread.id, &cwd, thread.title.as_deref());
     state.store.write_readiness_report(&thread.id, &readiness)?;
     state
         .store
@@ -219,7 +220,7 @@ async fn get_readiness(
     }
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let thread = state.store.get_thread(&id)?;
-    let report = calculate_readiness(&state, &cwd, thread.title.as_deref());
+    let report = calculate_readiness(&state, &id, &cwd, thread.title.as_deref());
     state.store.write_readiness_report(&id, &report)?;
     state
         .store
@@ -240,7 +241,7 @@ async fn recalculate_readiness(
         .filter(|s| !s.trim().is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-    let report = calculate_readiness(&state, &cwd, thread.title.as_deref());
+    let report = calculate_readiness(&state, &id, &cwd, thread.title.as_deref());
     state.store.write_readiness_report(&id, &report)?;
     state
         .store
@@ -280,7 +281,12 @@ fn append_readiness_event(
     Ok(())
 }
 
-fn calculate_readiness(state: &AppState, cwd: &Path, title: Option<&str>) -> ReadinessReport {
+fn calculate_readiness(
+    state: &AppState,
+    thread_id: &str,
+    cwd: &Path,
+    title: Option<&str>,
+) -> ReadinessReport {
     let checked_at = Utc::now().timestamp_millis();
     let mut blocking = Vec::new();
     let mut warnings = Vec::new();
@@ -289,6 +295,10 @@ fn calculate_readiness(state: &AppState, cwd: &Path, title: Option<&str>) -> Rea
     let command_facts = check_commands(&mut warnings);
     let cli_facts = check_cli_auth(state, &mut blocking, &mut warnings);
     let env_facts = check_env(cwd, &mut blocking, &mut warnings);
+    let deps_facts = check_deps(cwd, &mut warnings);
+    let port_facts = check_ports(cwd, &mut warnings);
+    let budget_facts = check_budget(state, thread_id, &mut blocking, &mut warnings);
+    let external_facts = check_external_resources(title, &mut warnings);
     let codebase_memory = check_codebase_memory(cwd);
     let suggested_execution_mode = suggest_execution_mode(title, &blocking, &warnings);
 
@@ -297,6 +307,10 @@ fn calculate_readiness(state: &AppState, cwd: &Path, title: Option<&str>) -> Rea
         "commands": command_facts,
         "agent_clis": cli_facts,
         "env": env_facts,
+        "deps": deps_facts,
+        "ports": port_facts,
+        "budget": budget_facts,
+        "external_resources": external_facts,
         "codebase_memory": codebase_memory,
     });
 
@@ -508,6 +522,211 @@ fn check_env(
     })
 }
 
+fn check_deps(cwd: &Path, warnings: &mut Vec<ReadinessIssue>) -> serde_json::Value {
+    let js_roots = [cwd.to_path_buf(), cwd.join("frontend")]
+        .into_iter()
+        .filter(|root| root.join("package.json").exists())
+        .map(|root| {
+            let node_modules = root.join("node_modules");
+            let lockfile = [
+                "pnpm-lock.yaml",
+                "package-lock.json",
+                "yarn.lock",
+                "bun.lockb",
+            ]
+            .iter()
+            .find(|name| root.join(name).exists())
+            .copied();
+            if !node_modules.exists() {
+                warnings.push(ReadinessIssue::new(
+                    format!(
+                        "deps.node_modules_missing.{}",
+                        readiness_path_id(cwd, &root)
+                    ),
+                    "deps",
+                    format!("Node dependencies are not installed in {}", root.display()),
+                    Some("Run `pnpm install` before frontend or full-stack work".to_string()),
+                ));
+            }
+            json!({
+                "root": root.display().to_string(),
+                "package_json": true,
+                "lockfile": lockfile,
+                "node_modules": node_modules.exists(),
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let rust_roots = [cwd.to_path_buf(), cwd.join("backend")]
+        .into_iter()
+        .filter(|root| root.join("Cargo.toml").exists())
+        .map(|root| {
+            json!({
+                "root": root.display().to_string(),
+                "cargo_toml": true,
+                "cargo_lock": root.join("Cargo.lock").exists(),
+                "target_dir": root.join("target").exists(),
+            })
+        })
+        .collect::<Vec<_>>();
+
+    json!({
+        "javascript": js_roots,
+        "rust": rust_roots,
+    })
+}
+
+fn check_ports(cwd: &Path, warnings: &mut Vec<ReadinessIssue>) -> serde_json::Value {
+    let env_file = parse_env_file(&cwd.join(".env"));
+    let mut facts = serde_json::Map::new();
+
+    for key in ["FRONTEND_PORT", "CRAWL4AI_PORT"] {
+        let raw = std::env::var(key)
+            .ok()
+            .or_else(|| env_file.get(key).cloned());
+        let Some(raw) = raw else {
+            facts.insert(key.to_string(), json!({ "configured": false }));
+            continue;
+        };
+        match raw.parse::<u16>() {
+            Ok(port) => {
+                let available = local_port_available(port);
+                if !available {
+                    warnings.push(ReadinessIssue::new(
+                        format!("ports.unavailable.{key}"),
+                        "ports",
+                        format!("Configured port `{key}={port}` is already in use"),
+                        Some(format!(
+                            "Choose a free port for `{key}` or stop the process using it"
+                        )),
+                    ));
+                }
+                facts.insert(
+                    key.to_string(),
+                    json!({ "configured": true, "port": port, "available": available }),
+                );
+            }
+            Err(_) => {
+                warnings.push(ReadinessIssue::new(
+                    format!("ports.invalid.{key}"),
+                    "ports",
+                    format!("Configured port `{key}={raw}` is not a valid TCP port"),
+                    Some(format!("Set `{key}` to a number between 1 and 65535")),
+                ));
+                facts.insert(
+                    key.to_string(),
+                    json!({ "configured": true, "raw": raw, "valid": false }),
+                );
+            }
+        }
+    }
+
+    serde_json::Value::Object(facts)
+}
+
+fn local_port_available(port: u16) -> bool {
+    let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
+    TcpListener::bind(addr).is_ok()
+}
+
+fn check_budget(
+    state: &AppState,
+    thread_id: &str,
+    blocking: &mut Vec<ReadinessIssue>,
+    warnings: &mut Vec<ReadinessIssue>,
+) -> serde_json::Value {
+    let budget = state.budgets.get(thread_id);
+    if budget.limit_usd <= 0.0 {
+        warnings.push(ReadinessIssue::new(
+            "budget.no_limit",
+            "budget",
+            "No budget limit is configured for this thread",
+            Some("Set a thread budget before autonomous/project mode work".to_string()),
+        ));
+    } else if budget.over_hard() {
+        blocking.push(ReadinessIssue::new(
+            "budget.hard_cap_reached",
+            "budget",
+            format!(
+                "Budget hard cap is already reached: ${:.4} spent of ${:.4}",
+                budget.spent_usd, budget.limit_usd
+            ),
+            Some("Increase the budget limit or reduce spend before resuming work".to_string()),
+        ));
+    } else if budget.over_soft() {
+        warnings.push(ReadinessIssue::new(
+            "budget.soft_cap_reached",
+            "budget",
+            format!(
+                "Budget soft cap is reached: {}% of ${:.4}",
+                budget.pct_spent(),
+                budget.limit_usd
+            ),
+            Some("Review spend before spawning additional agents".to_string()),
+        ));
+    }
+
+    json!({
+        "limit_usd": budget.limit_usd,
+        "spent_usd": budget.spent_usd,
+        "pct": budget.pct_spent(),
+        "soft_pct": budget.soft_pct,
+        "hard_pct": budget.hard_pct,
+        "max_concurrent_workers": budget.max_concurrent_workers,
+    })
+}
+
+fn check_external_resources(
+    title: Option<&str>,
+    warnings: &mut Vec<ReadinessIssue>,
+) -> serde_json::Value {
+    let title = title.unwrap_or_default();
+    let needs_docs = looks_like_external_resource_request(title);
+    let crawl4ai_url = std::env::var("CRAWL4AI_MCP_URL").ok();
+    let crawl4ai_binary = which::which("crawl4ai").ok();
+    if needs_docs && crawl4ai_url.is_none() && crawl4ai_binary.is_none() {
+        warnings.push(ReadinessIssue::new(
+            "external.docs_tool_missing",
+            "external_resources",
+            "Request appears to need external documentation, but no crawl4ai endpoint or binary is configured",
+            Some("Set CRAWL4AI_MCP_URL or install crawl4ai before docs-heavy autonomous work".to_string()),
+        ));
+    }
+
+    json!({
+        "needs_external_docs": needs_docs,
+        "crawl4ai_url": crawl4ai_url,
+        "crawl4ai_binary": crawl4ai_binary.map(|p| p.display().to_string()),
+    })
+}
+
+fn looks_like_external_resource_request(title: &str) -> bool {
+    let lower = title.to_ascii_lowercase();
+    lower.contains("http://")
+        || lower.contains("https://")
+        || lower.contains("docs")
+        || lower.contains("documentation")
+        || lower.contains("documentacion")
+        || lower.contains("documentación")
+}
+
+fn readiness_path_id(cwd: &Path, path: &Path) -> String {
+    let id = path
+        .strip_prefix(cwd)
+        .unwrap_or(path)
+        .components()
+        .filter_map(|component| component.as_os_str().to_str())
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(".")
+        .replace(|c: char| !c.is_ascii_alphanumeric() && c != '.', "_");
+    if id.is_empty() {
+        "root".into()
+    } else {
+        id
+    }
+}
+
 fn parse_env_file(path: &Path) -> HashMap<String, String> {
     let Ok(contents) = std::fs::read_to_string(path) else {
         return HashMap::new();
@@ -563,5 +782,59 @@ fn suggest_execution_mode(
         ExecutionMode::Quick
     } else {
         ExecutionMode::Standard
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn readiness_path_id_uses_root_fallback_and_relative_segments() {
+        let dir = tempdir().unwrap();
+        assert_eq!(readiness_path_id(dir.path(), dir.path()), "root");
+        assert_eq!(
+            readiness_path_id(dir.path(), &dir.path().join("frontend/app")),
+            "frontend.app"
+        );
+    }
+
+    #[test]
+    fn external_resource_detection_catches_urls_and_docs() {
+        assert!(looks_like_external_resource_request(
+            "Read https://example.com docs before coding"
+        ));
+        assert!(looks_like_external_resource_request(
+            "actualiza la documentación de auth"
+        ));
+        assert!(!looks_like_external_resource_request("rename local helper"));
+    }
+
+    #[test]
+    fn deps_check_warns_when_frontend_dependencies_are_missing() {
+        let dir = tempdir().unwrap();
+        let frontend = dir.path().join("frontend");
+        std::fs::create_dir_all(&frontend).unwrap();
+        std::fs::write(frontend.join("package.json"), "{}").unwrap();
+        std::fs::write(frontend.join("pnpm-lock.yaml"), "").unwrap();
+
+        let mut warnings = Vec::new();
+        let facts = check_deps(dir.path(), &mut warnings);
+
+        assert!(warnings
+            .iter()
+            .any(|issue| issue.id == "deps.node_modules_missing.frontend"));
+        assert_eq!(facts["javascript"][0]["node_modules"], false);
+        assert_eq!(facts["javascript"][0]["lockfile"], "pnpm-lock.yaml");
+    }
+
+    #[test]
+    fn local_port_available_detects_bound_port() {
+        let listener =
+            TcpListener::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        assert!(!local_port_available(port));
     }
 }

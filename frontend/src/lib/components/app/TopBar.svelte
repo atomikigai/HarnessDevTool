@@ -16,14 +16,30 @@
   const REFRESH_MS = 10_000;
   let timer: ReturnType<typeof setInterval> | null = null;
 
+  function isEditableTarget(target: EventTarget | null): boolean {
+    if (!(target instanceof HTMLElement)) return false;
+    if (target.isContentEditable) return true;
+    const tag = target.tagName.toLowerCase();
+    return tag === 'input' || tag === 'textarea' || tag === 'select';
+  }
+
+  function onGlobalKeydown(ev: KeyboardEvent) {
+    if (isEditableTarget(ev.target)) return;
+    const modifier = ev.metaKey || ev.ctrlKey;
+    if (!modifier || !ev.shiftKey || ev.key !== '.') return;
+    ev.preventDefault();
+    void pauseAll.toggle();
+  }
+
   onMount(() => {
     health.refresh();
-    // [F3-followup] keyboard shortcut Ctrl+Shift+. not wired in this slice.
     pauseAll.refresh();
+    window.addEventListener('keydown', onGlobalKeydown);
     timer = setInterval(() => health.refresh(), REFRESH_MS);
   });
 
   onDestroy(() => {
+    window.removeEventListener('keydown', onGlobalKeydown);
     if (timer) clearInterval(timer);
   });
 

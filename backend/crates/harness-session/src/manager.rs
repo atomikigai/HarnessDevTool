@@ -547,7 +547,8 @@ fn build_extra_args(kind: AgentKind, opts: &SpawnOpts, session_id: &str) -> Vec<
         AgentKind::Claude | AgentKind::Zeus => {
             // Claude's `--dangerously-skip-permissions` lives in the MCP-
             // injection arm below (needs MCP config to be meaningful).
-            // Zeus runs as Claude under the hood, same path.
+            // A direct Zeus kind here would be a bug; routes resolve Zeus to
+            // its underlying CLI before spawning.
         }
     }
 
@@ -589,8 +590,7 @@ fn build_extra_args(kind: AgentKind, opts: &SpawnOpts, session_id: &str) -> Vec<
             }
             AgentKind::Zeus => {
                 // Unreachable in practice: routes/sessions.rs swaps Zeus for
-                // its `underlying_cli()` (Claude) before this matches, so
-                // we'd hit the Claude arm above. Keep the arm to satisfy
+                // its `underlying_cli()` before this matches. Keep the arm to satisfy
                 // exhaustiveness without a `_` wildcard.
                 tracing::warn!("build_extra_args called with Zeus kind directly; this is a bug");
             }

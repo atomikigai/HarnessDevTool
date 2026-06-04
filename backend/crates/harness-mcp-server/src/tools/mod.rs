@@ -4,6 +4,7 @@ pub mod repo;
 pub mod session;
 pub mod skills;
 pub mod spec;
+pub mod ssh;
 pub mod tasks;
 
 use serde_json::{json, Value};
@@ -533,6 +534,19 @@ pub fn list_descriptors() -> Vec<ToolDescriptor> {
             }),
         },
         ToolDescriptor {
+            name: "repo_write_file".into(),
+            description: "Write a UTF-8 text file under the workspace. Requires a task-scoped MCP session and the target path must be allowed by that task's write_paths."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["path", "content"],
+                "properties": {
+                    "path": { "type": "string" },
+                    "content": { "type": "string" }
+                }
+            }),
+        },
+        ToolDescriptor {
             name: "repo_git_status".into(),
             description: "Return `git status --short --branch` for the workspace.".into(),
             input_schema: json!({ "type": "object", "properties": {} }),
@@ -565,6 +579,128 @@ pub fn list_descriptors() -> Vec<ToolDescriptor> {
             description: "Report whether codebase-memory-mcp is installed and whether a local index marker exists for this workspace. The harness treats it as an optional code-intelligence accelerator."
                 .into(),
             input_schema: json!({ "type": "object", "properties": {} }),
+        },
+        ToolDescriptor {
+            name: "ssh_hosts".into(),
+            description: "List saved SSH hosts for the active profile.".into(),
+            input_schema: json!({ "type": "object", "properties": {} }),
+        },
+        ToolDescriptor {
+            name: "ssh_test".into(),
+            description: "Test a saved SSH host. Network client wiring is incremental; returns a structured readiness message when unavailable."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["host"],
+                "properties": { "host": { "type": "string", "description": "saved SSH host id" } }
+            }),
+        },
+        ToolDescriptor {
+            name: "ssh_exec".into(),
+            description: "Run a non-interactive command on a saved SSH host. Requires approval by default."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["host", "cmd"],
+                "properties": {
+                    "host": { "type": "string" },
+                    "cmd": { "type": "string" },
+                    "env": { "type": "object" }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "sftp_list".into(),
+            description: "List a remote directory on a saved SSH host.".into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["host"],
+                "properties": {
+                    "host": { "type": "string" },
+                    "path": { "type": "string" }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "sftp_get".into(),
+            description: "Copy a remote file from a saved SSH host to a local path on the harness server. Requires approval by default."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["host", "remote_path", "local_path"],
+                "properties": {
+                    "host": { "type": "string" },
+                    "remote_path": { "type": "string" },
+                    "local_path": { "type": "string" }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "sftp_put".into(),
+            description: "Copy a local file from the harness server to a remote path on a saved SSH host. Requires approval by default."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["host", "local_path", "remote_path"],
+                "properties": {
+                    "host": { "type": "string" },
+                    "local_path": { "type": "string" },
+                    "remote_path": { "type": "string" }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "sftp_mkdir".into(),
+            description: "Create a remote directory on a saved SSH host. Requires approval by default."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["host", "path"],
+                "properties": {
+                    "host": { "type": "string" },
+                    "path": { "type": "string" }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "sftp_rmdir".into(),
+            description: "Remove an empty remote directory on a saved SSH host. Requires approval by default."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["host", "path"],
+                "properties": {
+                    "host": { "type": "string" },
+                    "path": { "type": "string" }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "sftp_unlink".into(),
+            description: "Remove a remote file on a saved SSH host. Requires approval by default."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["host", "path"],
+                "properties": {
+                    "host": { "type": "string" },
+                    "path": { "type": "string" }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "sftp_rename".into(),
+            description: "Rename or move a remote path on a saved SSH host. Requires approval by default."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["host", "from_path", "to_path"],
+                "properties": {
+                    "host": { "type": "string" },
+                    "from_path": { "type": "string" },
+                    "to_path": { "type": "string" }
+                }
+            }),
         },
         // ── Session tree (Zeus orchestrator) ────────────────────────────
         ToolDescriptor {
@@ -643,6 +779,42 @@ pub fn list_descriptors() -> Vec<ToolDescriptor> {
                     "child_session_id": { "type": "string" },
                     "text":             { "type": "string" }
                 }
+            }),
+        },
+        ToolDescriptor {
+            name: "session_mailbox_send".into(),
+            description:
+                "Append an auditable mailbox message for a descendant session. This does not \
+                 write into the PTY; the child reads it with session_mailbox_list and can ack it."
+                    .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["to_session_id", "body"],
+                "properties": {
+                    "to_session_id": { "type": "string" },
+                    "body":          { "type": "string" },
+                    "task_id":       { "type": "string" },
+                    "scopes":        { "type": "array", "items": { "type": "string" } }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "session_mailbox_list".into(),
+            description:
+                "List mailbox messages addressed to the current session, including ack state."
+                    .into(),
+            input_schema: json!({ "type": "object", "properties": {} }),
+        },
+        ToolDescriptor {
+            name: "session_mailbox_ack".into(),
+            description:
+                "Acknowledge a mailbox message addressed to the current session. Ack is \
+                 append-only; the original message is not rewritten."
+                    .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["message_id"],
+                "properties": { "message_id": { "type": "string" } }
             }),
         },
         ToolDescriptor {

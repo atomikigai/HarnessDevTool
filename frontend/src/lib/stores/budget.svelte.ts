@@ -49,14 +49,26 @@ class BudgetStore {
     }
   }
 
-  async setLimit(threadId: string, limitUsd: number): Promise<void> {
+  async setLimit(
+    threadId: string,
+    limitUsd: number,
+    maxConcurrentWorkers?: number | null
+  ): Promise<void> {
     if (!(Number.isFinite(limitUsd) && limitUsd > 0)) {
       this.#patch(threadId, { error: 'Limit must be a positive number' });
       return;
     }
+    if (
+      maxConcurrentWorkers !== undefined &&
+      maxConcurrentWorkers !== null &&
+      !(Number.isInteger(maxConcurrentWorkers) && maxConcurrentWorkers >= 1)
+    ) {
+      this.#patch(threadId, { error: 'Max workers must be a positive integer' });
+      return;
+    }
     this.#patch(threadId, { saving: true, error: null });
     try {
-      const res = await api.setBudget(threadId, limitUsd);
+      const res = await api.setBudget(threadId, limitUsd, maxConcurrentWorkers);
       this.#patch(threadId, { view: res.data, saving: false, error: null });
     } catch (err) {
       this.#patch(threadId, {

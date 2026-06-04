@@ -137,6 +137,8 @@ mod tests {
             previous_assignees: vec![],
             labels: vec![],
             spec_refs: vec![],
+            write_paths: vec![],
+            forbidden_paths: vec![],
             brief: None,
             acceptance: AcceptanceBlock::default(),
             artifacts: Artifacts::default(),

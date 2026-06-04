@@ -19,6 +19,7 @@ tokei = { workspace = true }
 harness-core = { path = "../harness-core" }
 harness-policy = { path = "../harness-policy" }
 module-db = { path = "../module-db" }
+module-ssh = { path = "../module-ssh" }
 tokio = { workspace = true }
 sha2 = "0.10"
 tempfile = "3"

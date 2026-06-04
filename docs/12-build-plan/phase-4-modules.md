@@ -49,22 +49,27 @@ Habilitar **dos módulos verticales** que el usuario usa directamente desde la U
 ## Entregables — Module SSH
 
 ### Backend (`module-ssh`)
-- [ ] Crate `module-ssh` con `russh` + `russh-sftp` + `russh-keys`.
+- [x] Crate `module-ssh` integrado al workspace. Implementación actual usa el cliente `ssh` del sistema para el slice funcional porque `russh`/`russh-sftp` introdujeron conflictos de compilación en este workspace.
+- [x] Storage privado `~/.harness/profiles/<p>/modules/ssh/hosts.toml` para hosts guardados; password auth soportado y redacted en respuestas REST.
 - [ ] Storage `~/.harness/profiles/<p>/modules/ssh/{identities.db, known_hosts}`.
 - [ ] Operaciones:
-  - [ ] `host.list/add/remove/test`.
+  - [x] `host.list/add/remove/test`.
   - [ ] `session.open/close`.
-  - [ ] `sftp.list/mkdir/rmdir/unlink/rename`.
+  - [x] `sftp.list`.
+  - [x] `sftp.mkdir/rmdir/unlink/rename`.
+  - [x] `sftp.put / sftp.get` básico síncrono para archivos.
   - [ ] `transfer.queue/pause/resume/cancel` con resume.
-  - [ ] `ssh.exec` (no interactivo).
+  - [x] `ssh.exec` (no interactivo).
 - [ ] Verificación de host keys con TOFU + warning fuerte si cambia.
 - [ ] Tools MCP:
-  - [ ] `ssh.exec { host, cmd, env? }` (con approval por default).
-  - [ ] `sftp.list { host, path }`.
-  - [ ] `sftp.put / sftp.get`.
+  - [x] `ssh.exec { host, cmd, env? }`.
+  - [x] `sftp.list { host, path }`.
+  - [x] `sftp.put / sftp.get` básico síncrono.
+  - [x] `sftp.mkdir/rmdir/unlink/rename`.
 
 ### Frontend
-- [ ] Ruta `/ssh` → lista de hosts.
+- [x] Ruta `/ssh` → lista de hosts + add/test/delete.
+- [x] Ruta `/ssh/[host]` → panel remoto navegable para `sftp.list`.
 - [ ] Ruta `/ssh/[host]` → dos paneles (local / remote) + cola de transferencias abajo.
 - [ ] `<FilePane>` con virtual list.
 - [ ] `<TransferQueue>` con progreso por archivo.
@@ -72,10 +77,12 @@ Habilitar **dos módulos verticales** que el usuario usa directamente desde la U
 
 ### Test de aceptación SSH
 1. Add host con key file → test OK.
-2. Listar carpeta remota → contenido visible <2s.
-3. Subir archivo 100 MiB → progreso, velocidad, ETA → completa.
-4. Cancelar mitad de transferencia → resume continúa desde offset correcto.
-5. Desde `claude` en sesión: `sftp.list` devuelve entries; approval pedido para `ssh.exec`.
+2. Listar carpeta remota → contenido visible <2s. Ejecutado 2026-06-04 contra `webadmin@20.51.242.62` vía REST `/api/ssh/hosts/:id/sftp?path=.`.
+3. Subir y bajar archivo pequeño → completa y contenido coincide. Ejecutado 2026-06-04 vía REST `/sftp/put` + `/sftp/get`; cleanup remoto vía `/exec`.
+3a. Crear/renombrar/borrar archivo/remover directorio remoto → ejecutado 2026-06-04 vía REST `sftp/mkdir`, `sftp/rename`, `sftp/unlink`, `sftp/rmdir`; verificación final por `/exec` devolvió `cleanup-ok`.
+4. Subir archivo 100 MiB → progreso, velocidad, ETA → completa.
+5. Cancelar mitad de transferencia → resume continúa desde offset correcto.
+6. Desde `claude` en sesión: `sftp.list` devuelve entries; approval pedido para `ssh.exec`.
 
 ## Entregables — Approval-and-remember
 

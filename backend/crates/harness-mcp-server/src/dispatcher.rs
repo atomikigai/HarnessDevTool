@@ -12,20 +12,24 @@ use crate::protocol::{
 };
 use crate::tools::{
     self, db as db_tools, knowledge as knowledge_tools, repo, session as session_tools, skills,
-    spec, tasks, wrap_error, wrap_text,
+    spec, ssh as ssh_tools, tasks, wrap_error, wrap_text,
 };
 use harness_core::TaskStore;
 use harness_policy::{capability_default, is_sensitive_tool, Decision};
 use module_db::Manager as DbManager;
+use module_ssh::Manager as SshManager;
 
 pub struct Dispatcher {
     store: TaskStore,
     db: DbManager,
+    ssh: SshManager,
     harness_home: PathBuf,
     profile: String,
     thread_id: String,
     agent_id: String,
     role: Option<String>,
+    task_id: Option<String>,
+    scopes: Vec<String>,
     /// Stable session id owning this MCP instance. Used to attribute
     /// `session.spawn_child` calls to the right parent session in the tree.
     /// `None` for legacy callers that pre-date the `--session-id` flag.
@@ -52,6 +56,8 @@ impl Dispatcher {
             std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             None,
             None,
+            None,
+            Vec::new(),
         )
     }
 
@@ -66,17 +72,23 @@ impl Dispatcher {
         cwd: PathBuf,
         api_token: Option<String>,
         role: Option<String>,
+        task_id: Option<String>,
+        scopes: Vec<String>,
     ) -> Result<Self, String> {
         let store = TaskStore::with_profile(&harness_home, &profile).map_err(|e| e.to_string())?;
         let db = DbManager::new(&harness_home, &profile).map_err(|e| e.to_string())?;
+        let ssh = SshManager::new(&harness_home, &profile).map_err(|e| e.to_string())?;
         Ok(Self {
             store,
             db,
+            ssh,
             harness_home,
             profile,
             thread_id,
             agent_id,
             role,
+            task_id,
+            scopes,
             session_id,
             server_url,
             api_token,
@@ -186,6 +198,12 @@ impl Dispatcher {
             "repo_analyze" => repo::analyze(&self.cwd, &args),
             "repo_scan" => repo::scan(&self.cwd, &args),
             "repo_read_file" => repo::read_file(&self.cwd, &args),
+            "repo_write_file" => match self.repo_write_scope() {
+                Ok((write_paths, forbidden_paths)) => {
+                    repo::write_file(&self.cwd, &args, &write_paths, &forbidden_paths)
+                }
+                Err(e) => Err(e),
+            },
             "repo_git_status" => repo::git_status(&self.cwd, &args),
             "repo_git_log" => repo::git_log(&self.cwd, &args),
             "repo_git_diff" => repo::git_diff(&self.cwd, &args),
@@ -197,6 +215,16 @@ impl Dispatcher {
             "db_backup" => db_tools::backup(&self.db, &self.harness_home, &args),
             "db_memory_read" => db_tools::memory_read(&self.harness_home, &self.profile, &args),
             "db_memory_write" => db_tools::memory_write(&self.harness_home, &self.profile, &args),
+            "ssh_hosts" => ssh_tools::hosts(&self.ssh),
+            "ssh_test" => ssh_tools::test_host(&self.ssh, &args),
+            "ssh_exec" => ssh_tools::exec(&self.ssh, &args),
+            "sftp_list" => ssh_tools::sftp_list(&self.ssh, &args),
+            "sftp_get" => ssh_tools::sftp_get(&self.ssh, &args),
+            "sftp_put" => ssh_tools::sftp_put(&self.ssh, &args),
+            "sftp_mkdir" => ssh_tools::sftp_mkdir(&self.ssh, &args),
+            "sftp_rmdir" => ssh_tools::sftp_rmdir(&self.ssh, &args),
+            "sftp_unlink" => ssh_tools::sftp_unlink(&self.ssh, &args),
+            "sftp_rename" => ssh_tools::sftp_rename(&self.ssh, &args),
             "session_spawn_child" => session_tools::spawn_child(
                 self.session_id.as_deref(),
                 self.server_url.as_deref(),
@@ -215,6 +243,23 @@ impl Dispatcher {
                 &args,
             ),
             "session_send_input" => session_tools::send_input(
+                self.session_id.as_deref(),
+                self.server_url.as_deref(),
+                self.api_token.as_deref(),
+                &args,
+            ),
+            "session_mailbox_send" => session_tools::mailbox_send(
+                self.session_id.as_deref(),
+                self.server_url.as_deref(),
+                self.api_token.as_deref(),
+                &args,
+            ),
+            "session_mailbox_list" => session_tools::mailbox_list(
+                self.session_id.as_deref(),
+                self.server_url.as_deref(),
+                self.api_token.as_deref(),
+            ),
+            "session_mailbox_ack" => session_tools::mailbox_ack(
                 self.session_id.as_deref(),
                 self.server_url.as_deref(),
                 self.api_token.as_deref(),
@@ -306,6 +351,31 @@ impl Dispatcher {
             Some("planner" | "orchestrator" | "worker" | "generator" | "evaluator")
         )
     }
+
+    fn repo_write_scope(&self) -> Result<(Vec<String>, Vec<String>), String> {
+        let task_id = self.task_id.as_deref().ok_or_else(|| {
+            "repo_write_file denied: MCP session is not scoped to a task".to_string()
+        })?;
+        if !self
+            .scopes
+            .iter()
+            .any(|scope| scope == &format!("task:{task_id}"))
+        {
+            return Err(format!(
+                "repo_write_file denied: MCP session scope does not include task:{task_id}"
+            ));
+        }
+        let task = self
+            .store
+            .get(&self.thread_id, task_id)
+            .map_err(|e| format!("repo_write_file denied: cannot load task scope: {e}"))?;
+        if task.write_paths.is_empty() {
+            return Err(format!(
+                "repo_write_file denied: task {task_id} has no write_paths"
+            ));
+        }
+        Ok((task.write_paths, task.forbidden_paths))
+    }
 }
 
 fn policy_denied_message(tool_name: &str) -> String {
@@ -357,6 +427,8 @@ mod tests {
             cwd,
             None,
             None,
+            None,
+            Vec::new(),
         )
         .unwrap();
         (d, home)
@@ -374,9 +446,48 @@ mod tests {
             std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             None,
             role.map(String::from),
+            None,
+            Vec::new(),
         )
         .unwrap();
         (d, home)
+    }
+
+    fn mk_scoped_writer(
+        cwd: PathBuf,
+        write_paths: Vec<&str>,
+        forbidden_paths: Vec<&str>,
+    ) -> Dispatcher {
+        use harness_core::TaskDraft;
+
+        let home = tmp_home();
+        let d = Dispatcher::new_with_server(
+            home,
+            "t-write".to_string(),
+            "agent:writer".to_string(),
+            None,
+            "default".into(),
+            None,
+            cwd,
+            None,
+            Some("generator".into()),
+            Some("T-0001".into()),
+            vec!["task:T-0001".into()],
+        )
+        .unwrap();
+        d.store
+            .create(
+                "t-write",
+                TaskDraft {
+                    title: "write scoped file".into(),
+                    write_paths: write_paths.into_iter().map(String::from).collect(),
+                    forbidden_paths: forbidden_paths.into_iter().map(String::from).collect(),
+                    created_by: "planner".into(),
+                    ..TaskDraft::default()
+                },
+            )
+            .unwrap();
+        d
     }
 
     #[test]
@@ -794,6 +905,41 @@ mod tests {
         assert_eq!(resp["result"]["isError"], true);
         let text = resp["result"]["content"][0]["text"].as_str().unwrap();
         assert!(text.contains("must not escape"));
+    }
+
+    #[test]
+    fn repo_write_file_allows_task_scoped_path() {
+        let cwd = tmp_home();
+        let d = mk_scoped_writer(cwd.clone(), vec!["src"], vec![]);
+        let line = r#"{"jsonrpc":"2.0","id":46,"method":"tools/call","params":{"name":"repo_write_file","arguments":{"path":"src/lib.rs","content":"pub fn ok() {}\n"}}}"#;
+        let resp = d.handle(parse_request(line).unwrap()).unwrap();
+        assert_ne!(resp["result"]["isError"], true);
+        assert_eq!(
+            std::fs::read_to_string(cwd.join("src/lib.rs")).unwrap(),
+            "pub fn ok() {}\n"
+        );
+    }
+
+    #[test]
+    fn repo_write_file_denies_outside_task_scope() {
+        let cwd = tmp_home();
+        let d = mk_scoped_writer(cwd, vec!["src"], vec![]);
+        let line = r#"{"jsonrpc":"2.0","id":47,"method":"tools/call","params":{"name":"repo_write_file","arguments":{"path":"README.md","content":"nope"}}}"#;
+        let resp = d.handle(parse_request(line).unwrap()).unwrap();
+        assert_eq!(resp["result"]["isError"], true);
+        let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("outside task write_paths"));
+    }
+
+    #[test]
+    fn repo_write_file_denies_forbidden_subpath() {
+        let cwd = tmp_home();
+        let d = mk_scoped_writer(cwd, vec!["src"], vec!["src/secrets"]);
+        let line = r#"{"jsonrpc":"2.0","id":48,"method":"tools/call","params":{"name":"repo_write_file","arguments":{"path":"src/secrets/token.txt","content":"nope"}}}"#;
+        let resp = d.handle(parse_request(line).unwrap()).unwrap();
+        assert_eq!(resp["result"]["isError"], true);
+        let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("forbidden by task scope"));
     }
 
     #[test]

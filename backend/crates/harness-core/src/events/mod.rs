@@ -17,8 +17,10 @@ pub enum Item {
 #[cfg_attr(feature = "ts-export", ts(export, export_to = "../../../bindings/"))]
 pub struct Event {
     /// Monotonic sequence number within the thread (0-based).
+    #[cfg_attr(feature = "ts-export", ts(type = "number"))]
     pub seq: u64,
     /// Unix timestamp in milliseconds.
+    #[cfg_attr(feature = "ts-export", ts(type = "number"))]
     pub at: i64,
     /// Event type discriminator (free-form in F0).
     #[serde(rename = "type")]
@@ -58,7 +60,9 @@ impl TimelineEntity {
 #[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
 #[cfg_attr(feature = "ts-export", ts(export, export_to = "../../../bindings/"))]
 pub struct TimelineItem {
+    #[cfg_attr(feature = "ts-export", ts(type = "number"))]
     pub seq: u64,
+    #[cfg_attr(feature = "ts-export", ts(type = "number"))]
     pub at: i64,
     #[serde(rename = "type")]
     pub event_type: String,
@@ -77,6 +81,7 @@ pub struct TimelineItem {
 #[cfg_attr(feature = "ts-export", ts(export, export_to = "../../../bindings/"))]
 pub struct TimelineReport {
     pub thread_id: String,
+    #[cfg_attr(feature = "ts-export", ts(type = "number"))]
     pub generated_at: i64,
     pub event_count: usize,
     pub items: Vec<TimelineItem>,

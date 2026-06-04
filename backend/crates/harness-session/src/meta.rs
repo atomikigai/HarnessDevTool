@@ -61,9 +61,8 @@ pub struct SessionMeta {
     /// background task; `None` until the first detection pass runs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detected_state: Option<AgentState>,
-    /// Whether the harness is tailing a structured JSONL transcript for
-    /// this session (Chat view available). True for Claude/Zeus today;
-    /// false for CLIs whose transcript format isn't wired yet.
+    /// Whether the harness is tailing a structured JSONL transcript for this
+    /// session. False for CLIs whose transcript format isn't wired yet.
     #[serde(default)]
     pub has_transcript: bool,
 }

@@ -19,7 +19,7 @@ pub enum AgentKind {
     /// role-typed workers backed by the other CLIs (see [[agents/zeus-orchestrator]]).
     /// The role-to-CLI mapping is the canonical Zeus matrix; every role
     /// falls back to Claude on quota / failure. Today it runs under a
-    /// single Claude PTY with a Zeus orchestrator system prompt; the real
+    /// single Codex PTY with a Zeus orchestrator system prompt; the real
     /// multi-CLI delegation lands with F3.
     Zeus,
 }
@@ -62,11 +62,11 @@ impl AgentKind {
     }
 
     /// Which CLI binary actually backs this `AgentKind`. `Zeus` runs under
-    /// Claude today (matrix orchestrator role) until F3 wires the real
+    /// Codex today (matrix orchestrator role) until F3 wires the real
     /// multi-CLI delegation. All other kinds back themselves.
     pub fn underlying_cli(self) -> AgentKind {
         match self {
-            AgentKind::Zeus => AgentKind::Claude,
+            AgentKind::Zeus => AgentKind::Codex,
             other => other,
         }
     }

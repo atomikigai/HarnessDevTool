@@ -19,11 +19,15 @@ Lanzar una **request humana de alto nivel** ("construye una app TODO", "agrega p
 
 Audit rápido del 2026-05-27:
 - Scheduler base ya existe en `harness-core::scheduler`: tick 2s, auto-unblock, asignación `queued → generator`, ruteo `pending_verify → evaluator`, cooldown tras verify-fail, cap global de concurrencia y spans `scheduling.*`.
+- Observación 2026-06-04: el scheduler ya lee `budget.max_concurrent_workers` por thread y aplica affinity básica por archivo usando artifacts recientes.
 - Budget base ya existe: `harness-core::budget`, reporters Claude/Codex-stub, endpoint `/api/threads/:id/budget`, SSE `budget.warning` y hard-cap que activa `pause-all`.
 - Kill-switch base ya existe: `/api/pause-all`, `/api/resume-all`, store frontend y control en `TopBar`.
-- Zeus/sub-agentes está en estado puente: `kind=zeus` corre sobre Claude y el MCP expone `session_spawn_child/list/send_input/cancel/read_child_summary`.
-- Observación 2026-05-27: Claude pudo iniciar un subagente Codex y dejarlo trabajando. Bug pendiente: el panel derecho (`SessionRightPanel` / tab Agents) no mostró el agente activo aunque la orquestación sí funcionó.
-- Pendiente para cerrar F3 completo: policy/capability loader, `task.propose`, `spec.md` append-only, artifacts/events, roles por perfil con autorización fuerte, UI de spec/live cost, y test de aceptación "TODO app" end-to-end.
+- Observación 2026-06-04: el kill-switch también responde a `Cmd/Ctrl+Shift+.` desde `TopBar`.
+- Observación 2026-06-04: readiness ahora cubre deps instaladas, puertos auxiliares configurados, budget por thread y señales de recursos externos.
+- Observación 2026-06-04: `repo_write_file` ya es path-gated por `Task.write_paths` / `forbidden_paths` y requiere `task_id` + `scope task:<id>` confiables del MCP spawn.
+- Zeus/sub-agentes está en estado puente: `kind=zeus` corre sobre Codex y el MCP expone `session_spawn_child/list/send_input/cancel/read_child_summary` más mailbox auditable.
+- Observación 2026-06-04: el panel Agents consume sesiones hijas reales y Zeus usa Codex como CLI principal.
+- Pendiente para cerrar F3 completo: roles por perfil con autorización fuerte, sandbox propio del harness, UI de spec/live cost completa y test de aceptación "TODO app" end-to-end.
 - Ajuste de coherencia: antes de endurecer roles/capabilities, implementar [[agents/autonomy-protocol]] para readiness check, execution modes, autonomy profiles y handoffs. Sin esto el equipo puede planificar de mas en tareas cortas o bloquearse tarde por credenciales/env faltantes.
 
 ### Backend — scheduler
@@ -31,8 +35,8 @@ Audit rápido del 2026-05-27:
   - [x] Loop con tick 2s.
   - [x] Recoge tasks `queued` con deps `done` → asigna a un generator idle.
   - [x] Recoge tasks `pending_verify` → asigna a evaluator idle.
-  - [ ] Affinity: prefiere asignar tasks del mismo archivo al mismo agente reciente.
-  - [x] Concurrency cap global `max_concurrent` (default 3). Pendiente: leerlo desde `thread.budget.max_concurrent_workers`.
+  - [x] Affinity: prefiere asignar tasks del mismo archivo al mismo agente reciente.
+  - [x] Concurrency cap global `max_concurrent` (default 3) con override `thread.budget.max_concurrent_workers`.
   - [x] Cooldown tras `verify-fail`: no re-asignar misma task al mismo generator inmediatamente.
 - [x] Logging del scheduler como spans `tracing`: `scheduling.tick { queued, in_progress, pending_verify, idle_agents }`.
 
@@ -43,8 +47,8 @@ Audit rápido del 2026-05-27:
 - [x] Mapping inicial de autonomy profile a approval behavior (`autonomous`/`ci` auto-allow).
 - [x] Eventos append-only `thread.readiness.checked`, `thread.autonomy.changed`, `handoff.created`.
 - [x] Schema `handoff.v1.json` y persistencia append-only de handoffs por task.
-- [ ] Checks profundos: deps, ports, budget, external resources.
-- [ ] Enforcement obligatorio `generator -> evaluator` antes de `pending_verify`.
+- [x] Checks profundos: deps, ports, budget, external resources.
+- [x] Enforcement obligatorio `generator -> evaluator` antes de `pending_verify`.
 
 ### Backend — Zeus orchestrator (work item)
 - [ ] Implementar el routing rol → CLI según la matriz canónica de [[agents/zeus-orchestrator]].
@@ -53,7 +57,7 @@ Audit rápido del 2026-05-27:
   logic/API/stores usa Codex/Claude.
 - [ ] Selector con fallback uniforme a Claude (quota / binary missing / runtime error).
 - [ ] Audit log para cada fallback (`reason: quota_exceeded | binary_missing | runtime_error`).
-- [ ] `POST /api/threads/:tid/sessions { kind: "zeus" }` deja de devolver 400 BadRequest cuando esto esté listo.
+- [x] `POST /api/threads/:tid/sessions { kind: "zeus" }` deja de devolver 400 BadRequest y resuelve a Codex como CLI principal.
 - [ ] UI: tab carrusel principal "Zeus session" + sub-tabs por hija con `parent_session_id`.
 - [ ] Test de aceptación: dado un goal sintético, verificar que cada rol se delega al CLI esperado y que el fallback dispara cuando el primario está bloqueado.
 
@@ -62,7 +66,7 @@ Audit rápido del 2026-05-27:
 - [ ] **`check_capability(caller, tool, resource, scope)`**: middleware que envuelve cada handler de tool. Devuelve `Allow` o `Deny { reason }`. Deny se traduce a `permission_denied` para el CLI hijo.
 - [ ] **Nueva tool MCP `task.propose`**: workers no pueden `task.create`; en su lugar encolan propuestas que el planner convierte (o no) en tasks reales. Shape: `{ parent_task_id, discovered_by_role, rationale, suggested_title, suggested_acceptance_criteria }`.
 - [ ] **`spec.set_section` con version check**: exige `spec_version_required` que matchee la versión actual; rechazo si stale.
-- [ ] **`repo.write` path-gated**: la task lleva `write_paths` / `forbidden_paths`; el bridge rechaza writes fuera del allowlist aunque el rol tenga la capability.
+- [x] **`repo.write` path-gated**: la task lleva `write_paths` / `forbidden_paths`; el bridge rechaza writes fuera del allowlist aunque el rol tenga la capability.
 - [ ] **Audit log**: sink en `$HARNESS_HOME/.runtime/audit/bridge.jsonl` con rotación zstd. Una entrada por **cada** allow y deny, con `actor_id`, `actor_role`, `tool`, `resource`, `decision`, `reason`, `input_hash`, `result_hash`.
 - [ ] **Tests de invariantes**: los 12 invariantes de [[agents/role-capability-matrix]] §"Invariantes" como tests de integración del bridge (no unit tests del dispatcher).
 
@@ -82,15 +86,16 @@ Audit rápido del 2026-05-27:
 - [x] Crate `harness-core::budget`:
   - [ ] Schema `budget.v1.json`.
   - [x] Tracking en RAM y persistencia a `~/.harness/.../budget.toml` desde el budget pass.
+  - [x] `max_concurrent_workers` opcional por thread usado por el scheduler.
   - [x] Soft cap → notification `budget.warning` (bandas 75/90/100).
-  - [ ] Hard cap → pausa todas las tasks `in_progress`, marca `paused` con `why_paused="budget cap: usd"`.
+  - [x] Hard cap → pausa todas las tasks `in_progress`, marca `paused` con `why_paused="budget cap: usd"`.
   - [x] Hard cap activa `pause-all` global.
 - [x] Endpoint `POST /api/threads/:id/budget` para subir caps.
 
 ### Backend — kill-switch
 - [x] `POST /api/pause-all` y `POST /api/resume-all`.
 - [x] Persistente entre reboots.
-- [ ] UI atajo `Cmd/Ctrl+Shift+.`.
+- [x] UI atajo `Cmd/Ctrl+Shift+.`.
 
 ### Backend — sandbox
 - [ ] Crate **`harness-sandbox`**:

@@ -159,7 +159,7 @@
     }
     const nextChecks = task.acceptance.checks.map((c) =>
       c.id === check.id
-        ? { ...c, verified: !c.verified, verified_by: !c.verified ? 'human' : undefined }
+        ? { ...c, verified: !c.verified, verified_by: !c.verified ? 'human' : null }
         : c
     );
     void patch({ acceptance: { checks: nextChecks }, by: 'human' });

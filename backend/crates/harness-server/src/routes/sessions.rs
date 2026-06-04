@@ -8,7 +8,8 @@ use axum::http::StatusCode;
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use harness_session::{
-    AgentKind, AgentState, McpServerConfig, SessionError, SessionMeta, SpawnOpts,
+    AgentKind, AgentState, MailboxMessage, MailboxStore, McpServerConfig, SessionError,
+    SessionMeta, SpawnOpts,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
@@ -88,6 +89,14 @@ pub fn router() -> Router<Arc<AppState>> {
         .route(
             "/api/sessions/:sid/children/:cid/input",
             post(send_child_input_route),
+        )
+        .route(
+            "/api/sessions/:sid/mailbox",
+            get(list_mailbox_route).post(send_mailbox_route),
+        )
+        .route(
+            "/api/sessions/:sid/mailbox/:mid/ack",
+            post(ack_mailbox_route),
         )
 }
 
@@ -182,7 +191,7 @@ pub async fn spawn_session_internal(
     args: SpawnArgs,
 ) -> Result<String, ApiError> {
     // Resolve the underlying CLI. For real CLIs this is the kind itself;
-    // for Zeus it's Claude (today — F3 will wire real multi-CLI delegation).
+    // for Zeus it's Codex (today — F3 will wire real multi-CLI delegation).
     // The session's recorded `kind` keeps the user-facing value.
     let underlying = args.kind.underlying_cli();
     let binary = state
@@ -238,6 +247,8 @@ pub async fn spawn_session_internal(
         &args.cwd,
         load_crawl4ai,
         args.role.as_deref(),
+        args.task_id.as_deref(),
+        &args.scopes,
     )?;
     opts.session_id_override = Some(session_id.clone());
     opts.initial_size = args.initial_size;
@@ -249,7 +260,7 @@ pub async fn spawn_session_internal(
     }
 
     // Zeus: inject the orchestrator briefing as `auto_intro` (silent via
-    // --append-system-prompt). Pre-F3 the orchestrator delegates mentally;
+    // Codex system-prompt plumbing. Pre-F3 the orchestrator delegates mentally;
     // F3 wires real worker spawning.
     if matches!(args.kind, AgentKind::Zeus) {
         opts.auto_intro = Some(zeus_orchestrator_briefing());
@@ -330,7 +341,7 @@ pub async fn spawn_session_internal(
     }
 
     // Keep a copy of the cwd before moving `args.cwd` into the manager — we
-    // need it after spawn to compute the transcript file path Claude writes.
+    // need it after spawn to compute transcript paths for CLIs that have them.
     let cwd_for_transcript = args.cwd.clone();
     let session =
         state
@@ -342,7 +353,8 @@ pub async fn spawn_session_internal(
     }
 
     // Start the transcript watcher for CLIs that emit a JSONL transcript.
-    // Today: Claude (also covers Zeus, since its underlying CLI is Claude).
+    // Today: Claude only. Zeus is backed by Codex, whose transcript parser is
+    // not wired yet.
     // The file may not exist for a few seconds while Claude boots — the
     // watcher loop tolerates that.
     if matches!(underlying, AgentKind::Claude) {
@@ -408,9 +420,11 @@ fn build_spawn_opts(
     cwd: &std::path::Path,
     load_crawl4ai: bool,
     role: Option<&str>,
+    task_id: Option<&str>,
+    scopes: &[String],
 ) -> Result<(SpawnOpts, Option<PathBuf>), ApiError> {
-    // `kind` here is the **underlying** CLI (Zeus → Claude), so the Claude
-    // arm covers Zeus too. Codex does not support `--mcp-config`, but it does
+    // `kind` here is the **underlying** CLI. Codex does not support
+    // `--mcp-config`, but it does
     // support per-invocation `-c mcp_servers.*` overrides.
     if !matches!(kind, AgentKind::Claude | AgentKind::Codex) {
         return Ok((SpawnOpts::default(), None));
@@ -456,6 +470,14 @@ fn build_spawn_opts(
     if let Some(role) = role {
         mcp_args.push("--role".to_string());
         mcp_args.push(role.to_string());
+    }
+    if let Some(task_id) = task_id {
+        mcp_args.push("--task-id".to_string());
+        mcp_args.push(task_id.to_string());
+    }
+    for scope in scopes {
+        mcp_args.push("--scope".to_string());
+        mcp_args.push(scope.to_string());
     }
     if let Some(token) = state.api_token.as_ref() {
         mcp_args.push("--api-token".to_string());
@@ -772,6 +794,16 @@ pub struct ChildSummary {
     pub detected_state: Option<AgentState>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct MailboxSendBody {
+    pub to_session_id: String,
+    pub body: String,
+    #[serde(default)]
+    pub task_id: Option<String>,
+    #[serde(default)]
+    pub scopes: Vec<String>,
+}
+
 fn child_summary(meta: SessionMeta) -> ChildSummary {
     ChildSummary {
         session_id: meta.id,
@@ -929,6 +961,89 @@ async fn cancel_child_route(
     Ok(StatusCode::NO_CONTENT)
 }
 
+fn mailbox_store(state: &AppState) -> MailboxStore {
+    MailboxStore::new(
+        state
+            .harness_home
+            .join("profiles")
+            .join(&state.profile)
+            .join("sessions"),
+    )
+}
+
+async fn send_mailbox_route(
+    State(state): State<Arc<AppState>>,
+    Path(from_sid): Path<String>,
+    Json(body): Json<MailboxSendBody>,
+) -> Result<(StatusCode, Json<MailboxMessage>), ApiError> {
+    if body.body.trim().is_empty() {
+        return Err(ApiError::BadRequest("mailbox body cannot be empty".into()));
+    }
+    if body.body.len() > MAX_INPUT_BYTES {
+        return Err(ApiError::BadRequest(format!(
+            "mailbox body too large ({} bytes); cap is {MAX_INPUT_BYTES}",
+            body.body.len()
+        )));
+    }
+    if !state.manager.is_in_tree(&from_sid, &body.to_session_id) || from_sid == body.to_session_id {
+        return Err(ApiError::BadRequest(
+            "target session is not a descendant of the sender".into(),
+        ));
+    }
+
+    let msg = mailbox_store(&state)
+        .send(
+            &from_sid,
+            &body.to_session_id,
+            body.body,
+            body.task_id,
+            body.scopes,
+        )
+        .map_err(|e| ApiError::Internal(format!("mailbox send: {e}")))?;
+    Ok((StatusCode::CREATED, Json(msg)))
+}
+
+async fn list_mailbox_route(
+    State(state): State<Arc<AppState>>,
+    Path(sid): Path<String>,
+) -> Result<Json<Vec<MailboxMessage>>, ApiError> {
+    if !state
+        .manager
+        .list_metas()
+        .await
+        .iter()
+        .any(|meta| meta.id == sid)
+    {
+        return Err(ApiError::NotFound(format!("session {sid}")));
+    }
+    let messages = mailbox_store(&state)
+        .list(&sid)
+        .map_err(|e| ApiError::Internal(format!("mailbox list: {e}")))?;
+    Ok(Json(messages))
+}
+
+async fn ack_mailbox_route(
+    State(state): State<Arc<AppState>>,
+    Path((sid, message_id)): Path<(String, String)>,
+) -> Result<Json<MailboxMessage>, ApiError> {
+    if !state
+        .manager
+        .list_metas()
+        .await
+        .iter()
+        .any(|meta| meta.id == sid)
+    {
+        return Err(ApiError::NotFound(format!("session {sid}")));
+    }
+    let Some(message) = mailbox_store(&state)
+        .ack(&sid, &message_id, &sid)
+        .map_err(|e| ApiError::Internal(format!("mailbox ack: {e}")))?
+    else {
+        return Err(ApiError::NotFound(format!("mailbox message {message_id}")));
+    };
+    Ok(Json(message))
+}
+
 // ── Attachments (N5) ────────────────────────────────────────────────────────
 //
 // `POST /api/sessions/:sid/attach` accepts multipart with one or more `file`
@@ -1048,9 +1163,9 @@ async fn list_attachments(
     Ok(Json(out))
 }
 
-/// The Zeus orchestrator briefing — appended to Claude's system prompt
+/// The Zeus orchestrator briefing — injected into the underlying CLI prompt
 /// when a user spawns `kind: zeus`. Pre-F3 the orchestrator runs as a single
-/// Claude PTY that mentally tracks the role→CLI matrix; F3 will wire the
+/// Codex PTY that mentally tracks the role→CLI matrix; F3 will wire the
 /// scheduler to actually spawn worker sub-sessions per role.
 fn zeus_orchestrator_briefing() -> String {
     r#"You are running as the ZEUS ORCHESTRATOR inside HarnessDevTool.
@@ -1066,7 +1181,7 @@ because you're more comfortable with it.
 
 | Role                       | DEFAULT CLI       | Reason                                              |
 |----------------------------|-------------------|-----------------------------------------------------|
-| orchestrator (you)         | claude            | Plan, delegate, validate, handoffs.                 |
+| orchestrator (you)         | **codex**         | Primary Zeus driver in Agents mode.                 |
 | backend (impl)             | **codex**         | Codex is the implementation specialist.             |
 | frontend (impl)            | **codex**         | Same — fast, scoped code edits.                     |
 | db (migrations, schema)    | claude            | Reasoning over consistency / impact.                |
@@ -1098,7 +1213,8 @@ roleplay them yourself when a real spawn is possible:
 The harness creates a real PTY for the worker with its own CLI, status, and
 cost tracking. Track active workers with `session_list_children`, fetch a
 child's current state with `session_read_child_summary`, and cancel runaway
-workers with `session_cancel_child`.
+workers with `session_cancel_child`. Use `session_mailbox_send` for auditable
+follow-ups that should not be typed into the worker PTY.
 
 == WORKER PROMPT TEMPLATE ==
 
@@ -1138,13 +1254,18 @@ Example:
 Tasks: task_create / task_list / task_get / task_update / task_submit ...
 Spec:  spec_read
 Sessions: session_spawn_child / session_list_children /
-          session_read_child_summary / session_send_input /
-          session_cancel_child
+          session_read_child_summary / session_mailbox_send /
+          session_mailbox_list / session_mailbox_ack /
+          session_send_input / session_cancel_child
 
 `session_send_input { child_session_id, text }` writes raw bytes into a
 worker's PTY. Use it to unstick a worker whose prompt didn't auto-submit:
   session_send_input { child_session_id: "...", text: "\r" }
 Or to send a follow-up clarification mid-task.
+
+Prefer `session_mailbox_send` for ordinary supervisor-to-worker messages; it is
+append-only and ackable. Use direct PTY input only when you intentionally want
+to affect the child's interactive terminal.
 DB:    db_query / db_schema / db_explain
 
 Treat them as native operations — no permission prompts required.

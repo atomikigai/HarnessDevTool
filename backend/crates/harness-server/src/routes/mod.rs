@@ -9,6 +9,7 @@ pub mod knowledge;
 pub mod profiles;
 pub mod sessions;
 pub mod spec;
+pub mod ssh;
 pub mod tasks;
 pub mod threads;
 pub mod transcript;

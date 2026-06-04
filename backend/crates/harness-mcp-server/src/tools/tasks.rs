@@ -228,6 +228,8 @@ fn draft_from_args(args: &Value, agent_id: &str) -> Result<TaskDraft, String> {
     let parent = opt_str(args, "parent").map(String::from);
     let depends_on = string_array_arg(args, "depends_on");
     let labels = string_array_arg(args, "labels");
+    let write_paths = string_array_arg(args, "write_paths");
+    let forbidden_paths = string_array_arg(args, "forbidden_paths");
     let spec_refs = spec_refs_arg(args)?;
     let brief = brief_from_args(args)?;
     let acceptance = acceptance_from_args(args)?;
@@ -239,6 +241,8 @@ fn draft_from_args(args: &Value, agent_id: &str) -> Result<TaskDraft, String> {
         acceptance,
         labels,
         spec_refs,
+        write_paths,
+        forbidden_paths,
         created_by: agent_id.to_string(),
     })
 }
@@ -276,6 +280,8 @@ fn post_task_to_server(
         "depends_on": &draft.depends_on,
         "labels": &draft.labels,
         "spec_refs": &draft.spec_refs,
+        "write_paths": &draft.write_paths,
+        "forbidden_paths": &draft.forbidden_paths,
         "brief": &draft.brief,
         "acceptance": { "checks": draft.acceptance.iter().map(|c| json!({
             "id": c.id,

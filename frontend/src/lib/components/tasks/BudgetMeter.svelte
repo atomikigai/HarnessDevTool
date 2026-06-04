@@ -23,11 +23,16 @@
   // Form state. Initialized lazily from the server view so we don't
   // wipe a user's in-progress edit when SSE refreshes happen.
   let limitInput = $state<string>('');
+  let maxWorkersInput = $state<string>('');
   let limitDirty = $state(false);
+  let maxWorkersDirty = $state(false);
 
   $effect(() => {
     if (!limitDirty && view) {
       limitInput = String(view.limit_usd);
+    }
+    if (!maxWorkersDirty && view) {
+      maxWorkersInput = view.max_concurrent_workers == null ? '' : String(view.max_concurrent_workers);
     }
   });
 
@@ -82,6 +87,7 @@
   const pct = $derived(view?.pct ?? 0);
   const softPct = $derived(view?.soft_pct ?? 80);
   const hardPct = $derived(view?.hard_pct ?? 100);
+  const maxConcurrentWorkers = $derived(view?.max_concurrent_workers ?? null);
 
   const usdPct = $derived(Math.min(pct, 100));
   const usdState = $derived(stateFor(pct, softPct, hardPct));
@@ -94,13 +100,20 @@
       toast.error('Budget limit must be a positive number');
       return;
     }
-    await budgetStore.setLimit(threadId, parsed);
+    const trimmedMax = maxWorkersInput.trim();
+    const maxWorkers = trimmedMax === '' ? null : Number(trimmedMax);
+    if (maxWorkers !== null && (!Number.isInteger(maxWorkers) || maxWorkers < 1)) {
+      toast.error('Max workers must be a positive integer');
+      return;
+    }
+    await budgetStore.setLimit(threadId, parsed, maxWorkers);
     const next = budgetStore.get(threadId);
     if (next.error) {
       toast.error(`Set limit failed: ${next.error}`);
     } else {
       limitDirty = false;
-      toast.success(`Limit set to ${fmtUsd(parsed)}`);
+      maxWorkersDirty = false;
+      toast.success(`Budget saved`);
     }
   }
 </script>
@@ -136,7 +149,7 @@
   </div>
 
   <!-- Inline limit form -->
-  <form class="flex items-center gap-2 text-[11px]" onsubmit={submitLimit}>
+  <form class="flex flex-wrap items-center gap-2 text-[11px]" onsubmit={submitLimit}>
     <label class="uppercase tracking-wider" style="color: var(--fg-label);" for="budget-limit">
       Limit (USD)
     </label>
@@ -151,14 +164,33 @@
       oninput={() => (limitDirty = true)}
       disabled={entry.saving}
     />
+    <label class="uppercase tracking-wider" style="color: var(--fg-label);" for="budget-workers">
+      Workers
+    </label>
+    <input
+      id="budget-workers"
+      type="number"
+      step="1"
+      min="1"
+      placeholder="3"
+      title="Max concurrent workers for this thread. Empty uses default."
+      class="h-7 w-16 rounded-md border bg-[var(--surface-window)] px-2 font-mono text-[11px]"
+      style="border-color: var(--border-input); color: var(--fg-default);"
+      bind:value={maxWorkersInput}
+      oninput={() => (maxWorkersDirty = true)}
+      disabled={entry.saving}
+    />
     <button
       type="submit"
       class="h-7 rounded-md border px-2 text-[11px]"
       style="border-color: var(--border-input); color: var(--fg-default); background: var(--surface-window);"
-      disabled={entry.saving || !limitDirty}
+      disabled={entry.saving || (!limitDirty && !maxWorkersDirty)}
     >
       {entry.saving ? 'Saving…' : 'Set'}
     </button>
+    <span class="font-mono" style="color: var(--fg-muted);">
+      max {maxConcurrentWorkers ?? 3}
+    </span>
     {#if entry.error}
       <span style="color: var(--dot-danger);">{entry.error}</span>
     {/if}

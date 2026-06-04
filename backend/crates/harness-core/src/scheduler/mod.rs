@@ -8,6 +8,6 @@ mod tick;
 pub use spawner::{NoopSpawner, SessionSpawner, SpawnRequest, SpawnResult};
 pub use tick::{run_budget_pass, BudgetWiring, Scheduler};
 
-/// Default cap on concurrent in-progress tasks per thread when none is
-/// configured. Budget-aware override is a later slice.
+/// Default cap on concurrent in-progress tasks per thread when the thread
+/// budget does not set `max_concurrent_workers`.
 pub const MAX_CONCURRENT_DEFAULT: usize = 3;

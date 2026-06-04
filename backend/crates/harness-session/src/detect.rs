@@ -225,8 +225,8 @@ mod tests {
     }
 
     #[test]
-    fn zeus_routes_to_underlying_claude() {
-        let s = "✻ Cooked for 14s\n";
+    fn zeus_routes_to_underlying_codex() {
+        let s = "thinking...\n";
         assert_eq!(detect(AgentKind::Zeus, s.as_bytes()), AgentState::Working);
     }
 }

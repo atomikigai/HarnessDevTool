@@ -38,6 +38,10 @@ pub struct Budget {
     pub soft_pct: u8,
     /// Percentage (0-100) at which to auto-pause the thread. Default 100.
     pub hard_pct: u8,
+    /// Optional scheduler override for this thread. `None` means use the
+    /// scheduler's global default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_concurrent_workers: Option<usize>,
 }
 
 impl Default for Budget {
@@ -47,6 +51,7 @@ impl Default for Budget {
             spent_usd: 0.0,
             soft_pct: 80,
             hard_pct: 100,
+            max_concurrent_workers: None,
         }
     }
 }
@@ -435,6 +440,21 @@ impl BudgetStore {
         Ok(snapshot)
     }
 
+    pub fn set_max_concurrent_workers(
+        &self,
+        thread_id: &str,
+        max_concurrent_workers: Option<usize>,
+    ) -> Result<Budget, Error> {
+        let snapshot = {
+            let mut state = self.state.write().expect("budget lock");
+            let entry = state.entry(thread_id.to_string()).or_default();
+            entry.max_concurrent_workers = max_concurrent_workers;
+            entry.clone()
+        };
+        self.persist(thread_id, &snapshot)?;
+        Ok(snapshot)
+    }
+
     pub fn set_spent(&self, thread_id: &str, spent_usd: f64) -> Result<Budget, Error> {
         let snapshot = {
             let mut state = self.state.write().expect("budget lock");
@@ -677,6 +697,7 @@ mod tests {
         let b = Budget::default();
         assert_eq!(b.soft_pct, 80);
         assert_eq!(b.hard_pct, 100);
+        assert_eq!(b.max_concurrent_workers, None);
         assert!(!b.over_soft());
         assert!(!b.over_hard());
     }
@@ -688,6 +709,7 @@ mod tests {
             spent_usd: 8.0,
             soft_pct: 80,
             hard_pct: 100,
+            max_concurrent_workers: None,
         };
         assert!(b.over_soft());
         assert!(!b.over_hard());
@@ -697,6 +719,7 @@ mod tests {
             spent_usd: 10.5,
             soft_pct: 80,
             hard_pct: 100,
+            max_concurrent_workers: None,
         };
         assert!(b2.over_hard());
     }
@@ -716,6 +739,22 @@ mod tests {
         let got = s2.get("thr-1");
         assert_eq!(got.limit_usd, 5.0);
         assert_eq!(got.spent_usd, 2.0);
+    }
+
+    #[test]
+    fn max_concurrent_workers_round_trips_through_disk() {
+        let dir = tempdir().unwrap();
+        let s = BudgetStore::load(dir.path()).unwrap();
+
+        let b = s.set_max_concurrent_workers("thr-1", Some(2)).unwrap();
+        assert_eq!(b.max_concurrent_workers, Some(2));
+
+        let s2 = BudgetStore::load(dir.path()).unwrap();
+        let got = s2.get("thr-1");
+        assert_eq!(got.max_concurrent_workers, Some(2));
+
+        let cleared = s2.set_max_concurrent_workers("thr-1", None).unwrap();
+        assert_eq!(cleared.max_concurrent_workers, None);
     }
 
     #[test]

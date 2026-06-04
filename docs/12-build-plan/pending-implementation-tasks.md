@@ -23,7 +23,7 @@ revisar, aprobar y ejecutar sin mezclar scopes.
 6. **Mejoras y bugs del DB Manager** — ejecutada; tarea creada desde la inspección de validación DB.
 7. **Iconos lucide para schemas, tablas y vistas en DB** — ejecutada; mejora visual pequeña del árbol DB.
 8. **Context menu avanzado para tablas/vistas DB** — ejecutada; exportar formatos y generar queries en nueva pestaña.
-9. **Task A1: Readiness check + execution mode** — base ejecutada; follow-up: checks de deps/ports/budget mas profundos y bloqueo efectivo antes de spawns caros.
+9. **Task A1: Readiness check + execution mode** — ejecutada; readiness cubre repo/commands/cli_auth/env/deps/ports/budget/external resources, persiste evento append-only y ajusta `execution_mode`.
 10. **Task A2: Autonomy profile + approvals policy** — base ejecutada; follow-up: allowlists por project.toml/policy y selector editable en thread activo.
 11. **Task A3: Team handoff schema** — base ejecutada; follow-up: enforcement obligatorio `generator -> evaluator` antes de `pending_verify`.
 12. **Task A4: Repo intelligence + codebase-memory-mcp** — base ejecutada; follow-up: index orchestration/cache y wrappers profundos de grafo.
@@ -33,17 +33,17 @@ revisar, aprobar y ejecutar sin mezclar scopes.
 16. **Task 15: Eventos append-only unificados** — ejecutada (slice incremental backend-only): `Event` con envelope aditivo (`thread_id`/`actor`/`payload`), `seq` atómico en `append_event` (cierra Task 28), TaskEvents persistidos como envelopes vía sink server-side (MCP sink-free), `emit` best-effort, SSE intacto (cero frontend). Diferido a follow-up: broadcast en vivo de capability/handoff/readiness por SSE; envelope en el cable (opción full); endpoint/UI de replay (Task 23).
 17. **Task 16: Metadata fuerte de subagentes** — ejecutada 2026-06-04: `SessionMeta` persiste `owner_session_id`, `task_id` y `scopes`; `session_spawn_child`/REST aceptan task/scopes opcionales; children/API/UI exponen metadata segura; DB agents salen con scope de conexión/base. `just gen-types`, `pnpm check` y `just test` verdes.
 18. **Task 17: `spec.md` append-only con versiones** — ejecutada 2026-06-04: `spec.events.jsonl` append-only versiona cambios; `GET/PUT /spec` mantienen compat y exponen `version`; `PUT /spec/sections/:section` y MCP `spec_set_section` validan `spec_version_required`; `Task.spec_refs` permite `{ section, version }`; `spec.changed` incluye versión/sección. `just gen-types`, `pnpm check` y `just test` verdes.
-19. **Task 18: Artifacts como entidad/evento real** — metadata recuperable para diff, logs, screenshots.
-20. **Task 19: Razones estructuradas en tasks** — blocked/paused/rejected/needs_human.
-21. **Task 20: Scheduler explain/debug** — explicar por qué asignó o saltó una task.
-22. **Task 21: Budget por task/agente** — ejecutada 2026-06-04 en commit `e21710d`; costo por thread/session/task/role y retries con UI compacta.
+19. **Task 18: Artifacts como entidad/evento real** — ejecutada; metadata recuperable para diff, logs, screenshots, endpoint de artifacts y eventos `artifact.added`.
+20. **Task 19: Razones estructuradas en tasks** — ejecutada; blocked/paused/rejected/needs_human en `Notes`, eventos `task.reason.changed` y UI en `TaskDetail`.
+21. **Task 20: Scheduler explain/debug** — ejecutada; `SchedulerExplanation` persistido en task, evento `task.scheduler.decision` y UI compacta de razón.
+22. **Task 21: Budget por task/agente** — ejecutada 2026-06-04 en commit `e21710d`; costo por thread/session/task/role, retries con UI compacta y `max_concurrent_workers` opcional aplicado por el scheduler.
 23. **Task 22: Reconciliador de estado** — ejecutada 2026-06-04; reporte por thread para inconsistencias task/session/artifact, endpoint `/api/threads/:tid/reconcile`, UI compacta y hardening T4 de sesiones detached.
 24. **Task 23: Replay/debug timeline** — ejecutada 2026-06-04; timeline read-only desde `events.jsonl`, endpoint `/api/threads/:tid/timeline`, UI `/threads/:id/timeline` con filtros y payload raw.
-25. **Task 24: Tipos TS generados desde Rust para tasks** — reemplazar hand-rolled frontend models.
-26. **Task 25: E2E pequeño planner→worker→evaluator** — antes del TODO app challenge completo.
-27. **Task 26: Árbol aislado de sesiones y mailbox de subagentes** — comunicación controlada, multi-nivel y auditable.
+25. **Task 24: Tipos TS generados desde Rust para tasks** — ejecutada; frontend re-exporta tipos generados y `just gen-types` cubre tasks.
+26. **Task 25: E2E pequeño planner→worker→evaluator** — ejecutada; test de scheduler cubre planner/generator/evaluator con handoff y unblock de dependencias.
+27. **Task 26: Árbol aislado de sesiones y mailbox de subagentes** — ejecutada; sesiones hijas multi-nivel y mailbox append-only.
 28. **Task 9: Agente DB para conexión activa** — agente especializado con acceso controlado a la BD, backups y puente con Agents.
-29. **Task 10: Esqueleto mínimo del módulo SSH** — slice grande; arrancar después de cerrar pendientes chicos.
+29. **Task 10: Esqueleto mínimo del módulo SSH** — ejecutada parcialmente y usable: crate `module-ssh`, REST, MCP `ssh_exec`/`sftp_list`/`sftp_get`/`sftp_put`/`sftp_mkdir`/`sftp_rmdir`/`sftp_unlink`/`sftp_rename`, UI `/ssh` y `/ssh/[host]`; pendiente transfer queue con resume/progreso, known_hosts fuerte, sesiones SSH interactivas e implementación pure Rust `russh`.
 30. **Task 11: Botón `+ task` en tab Tasks** — mejora secundaria para control manual.
 31. **Task 27: Broadcast SSE + UI de propuestas** — ejecutada 2026-06-04: `POST /api/threads/:tid/tasks` acepta `status=proposed`, `task_propose` delega al REST cuando hay `server_url` para disparar `task.created`/SSE del server, y la UI lista/filtra `proposed` con promoción humana a `queued` o `blocked` según dependencias.
 32. **Task 28: `seq` atómico en `append_event`** — ejecutada (absorbida por Task 15): `append_event` asigna `seq` contando records bajo el `write_lock` y lo retorna; los 3 callers (approvals/tasks/threads) dejaron de pre-calcular con `read_events().len()`. Test de append concurrente verde.
@@ -485,15 +485,28 @@ Objetivo:
 Arrancar el SSH Manager con un slice mínimo y usable.
 
 Contexto:
-No existe crate `module-ssh`. Frontend SSH está pendiente y `IconRail` lo mantiene
-deshabilitado. Diseño objetivo en [[build-plan/phase-4-modules]].
+El slice inicial ya existe y es usable. `module-ssh` está integrado al workspace,
+`IconRail` habilita SSH, hay rutas REST/MCP para hosts, `ssh.exec`, listado SFTP,
+transferencias básicas y mutaciones remotas. Diseño objetivo completo en
+[[build-plan/phase-4-modules]].
 
-Tarea:
-1. Crear crate `module-ssh` con tipos base `Host`, `HostConfig` y `TestConnection`.
-2. Agregar storage mínimo para `host.list`, `host.add`, `host.remove` y `host.test`.
-3. Exponer endpoints REST pequeños desde `harness-server`.
-4. Crear ruta frontend `/ssh` con lista de hosts y dialog Add Host.
-5. Dejar SFTP, transfer queue y `ssh.exec` fuera de este primer slice.
+Estado ejecutado:
+1. Crate `module-ssh` con storage privado de hosts y password auth redacted en REST.
+2. Endpoints REST para `host.list/add/remove/test`, `ssh.exec`, `sftp.list`,
+   `sftp.get`, `sftp.put`, `sftp.mkdir`, `sftp.rmdir`, `sftp.unlink` y
+   `sftp.rename`.
+3. Tools MCP equivalentes para exec, listado, transferencias básicas y mutaciones
+   remotas, con policy sensible para escrituras/exec.
+4. Frontend `/ssh` y `/ssh/[host]` con listado de hosts, test/delete, navegador
+   remoto, upload/download y acciones mkdir/rename/rmdir/unlink.
+
+Pendiente:
+1. Cola de transferencias con progreso, pause/resume/cancel y resume real.
+2. `known_hosts` fuerte y bloqueo claro ante cambio de host key.
+3. Identidades/keyring/passphrase.
+4. Sesión SSH interactiva.
+5. Reemplazar el cliente `ssh`/`scp` del sistema por implementación pure Rust
+   `russh`/`russh-sftp` cuando los conflictos de compilación estén resueltos.
 
 Reglas:
 - No romper.
@@ -502,7 +515,10 @@ Reglas:
 - Agregar test.
 
 Resultado esperado:
-Se pueden guardar hosts SSH, listarlos y ejecutar un test de conexión básico.
+Se pueden guardar hosts SSH, listarlos, probar conexión, ejecutar comandos no
+interactivos, listar directorios remotos, subir/bajar archivos pequeños y crear,
+renombrar o borrar paths remotos. Smoke ejecutado 2026-06-04 contra host real vía
+REST con cleanup final `cleanup-ok`.
 
 ## 11. Botón `+ task` en tab Tasks
 
@@ -631,6 +647,9 @@ Estado implementado:
 - Task 29 cerró los hardenings posteriores: root spawn valida roles conocidos,
   `remembered_rule` conserva rol y el modo offline sin rol/desconocido niega
   tools sensibles.
+- Slice `repo_write_file` path-gated cerrado 2026-06-04: `Task` persiste
+  `write_paths` / `forbidden_paths`, los spawns MCP reciben `--task-id` y
+  `--scope task:<id>` confiables, y la tool falla cerrado fuera del allowlist.
 - Verificado con `cargo test -p harness-policy`,
   `cargo test -p harness-mcp-server` y `cargo test -p harness-server`.
 

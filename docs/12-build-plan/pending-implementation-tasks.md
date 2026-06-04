@@ -658,7 +658,7 @@ Estado implementado:
   y escribe audit bridge en `$HARNESS_HOME/.runtime/audit/bridge.jsonl` para
   cada `allow`/`deny` resuelto por `/api/approvals/check`, con actor, rol,
   tool, recurso, decisión, razón y hashes. Preserva el `role` al recordar
-  approvals.
+  approvals. El archivo activo rota a zstd cuando crece.
 - Task 29 cerró los hardenings posteriores: root spawn valida roles conocidos,
   `remembered_rule` conserva rol y el modo offline sin rol/desconocido niega
   tools sensibles.

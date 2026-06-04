@@ -2015,6 +2015,7 @@ dependencies = [
  "ts-rs",
  "uuid",
  "which",
+ "zstd",
 ]
 
 [[package]]

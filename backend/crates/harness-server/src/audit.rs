@@ -1,12 +1,15 @@
 use std::fs::OpenOptions;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use chrono::Utc;
 use harness_policy::Decision;
 use serde::Serialize;
 use serde_json::json;
 use sha2::{Digest, Sha256};
+
+const MAX_BRIDGE_AUDIT_BYTES: u64 = 10 * 1024 * 1024;
+const ZSTD_LEVEL: i32 = 3;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct BridgeAuditRecord {
@@ -63,9 +66,19 @@ impl BridgeAuditRecord {
 }
 
 pub fn append_bridge_audit(harness_home: &Path, record: &BridgeAuditRecord) -> std::io::Result<()> {
+    append_bridge_audit_with_limit(harness_home, record, MAX_BRIDGE_AUDIT_BYTES)
+}
+
+fn append_bridge_audit_with_limit(
+    harness_home: &Path,
+    record: &BridgeAuditRecord,
+    max_bytes: u64,
+) -> std::io::Result<()> {
     let dir = harness_home.join(".runtime").join("audit");
     std::fs::create_dir_all(&dir)?;
+    set_private_dir_permissions(&dir)?;
     let path = dir.join("bridge.jsonl");
+    rotate_bridge_audit_if_needed(&path, max_bytes)?;
     let mut options = OpenOptions::new();
     options.create(true).append(true);
     #[cfg(unix)]
@@ -77,6 +90,79 @@ pub fn append_bridge_audit(harness_home: &Path, record: &BridgeAuditRecord) -> s
     serde_json::to_writer(&mut file, record)?;
     file.write_all(b"\n")?;
     file.flush()?;
+    Ok(())
+}
+
+fn rotate_bridge_audit_if_needed(path: &Path, max_bytes: u64) -> std::io::Result<()> {
+    if max_bytes == 0 {
+        return Ok(());
+    }
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return Ok(());
+    };
+    if metadata.len() < max_bytes {
+        return Ok(());
+    }
+
+    let rotated_path = next_rotated_path(path);
+    compress_file(path, &rotated_path)?;
+    std::fs::remove_file(path)?;
+    Ok(())
+}
+
+fn next_rotated_path(path: &Path) -> PathBuf {
+    let dir = path.parent().unwrap_or_else(|| Path::new("."));
+    let base = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("bridge.jsonl");
+    let stamp = Utc::now().format("%Y%m%dT%H%M%S%3fZ");
+    let mut candidate = dir.join(format!("{base}.{stamp}.zst"));
+    let mut n = 1u32;
+    while candidate.exists() {
+        candidate = dir.join(format!("{base}.{stamp}.{n}.zst"));
+        n += 1;
+    }
+    candidate
+}
+
+fn compress_file(src: &Path, dst: &Path) -> std::io::Result<()> {
+    let mut input = std::fs::File::open(src)?;
+    let output = create_private_file(dst)?;
+    let mut encoder = zstd::Encoder::new(output, ZSTD_LEVEL)?;
+    std::io::copy(&mut input, &mut encoder)?;
+    encoder.finish()?;
+    Ok(())
+}
+
+fn create_private_file(path: &Path) -> std::io::Result<std::fs::File> {
+    let mut options = OpenOptions::new();
+    options.create(true).write(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let file = options.open(path)?;
+    set_private_file_permissions(path)?;
+    Ok(file)
+}
+
+fn set_private_dir_permissions(path: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
+
+fn set_private_file_permissions(path: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    }
     Ok(())
 }
 
@@ -137,5 +223,39 @@ mod tests {
         assert_eq!(line["decision"], "allow");
         assert!(line["input_hash"].as_str().unwrap().starts_with("sha256:"));
         assert!(line["result_hash"].as_str().unwrap().starts_with("sha256:"));
+    }
+
+    #[test]
+    fn bridge_audit_rotates_to_zstd_when_active_log_is_large() {
+        let dir = tempfile::tempdir().unwrap();
+        let audit_dir = dir.path().join(".runtime/audit");
+        std::fs::create_dir_all(&audit_dir).unwrap();
+        let active = audit_dir.join("bridge.jsonl");
+        std::fs::write(&active, b"{\"old\":true}\n").unwrap();
+        let record = BridgeAuditRecord::capability_decision(
+            "task_list",
+            &json!({}),
+            Some("thread-1"),
+            Some("session-1"),
+            Some("agent-1"),
+            Some("planner"),
+            Decision::Allow,
+            "policy allow",
+        );
+
+        append_bridge_audit_with_limit(dir.path(), &record, 1).unwrap();
+
+        let active_text = std::fs::read_to_string(&active).unwrap();
+        assert_eq!(active_text.lines().count(), 1);
+        assert!(active_text.contains("\"tool\":\"task_list\""));
+
+        let rotated = std::fs::read_dir(&audit_dir)
+            .unwrap()
+            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+            .find(|path| path.extension().and_then(|ext| ext.to_str()) == Some("zst"))
+            .expect("rotated zstd audit file");
+        let bytes = std::fs::read(rotated).unwrap();
+        let decoded = zstd::decode_all(bytes.as_slice()).unwrap();
+        assert_eq!(String::from_utf8(decoded).unwrap(), "{\"old\":true}\n");
     }
 }

@@ -237,15 +237,19 @@ impl Manager {
     }
 
     pub async fn open_session(&self, host_id: &str) -> SshResult<SshSession> {
-        let _host = self.storage.get_host(host_id)?;
+        let probe = self.test_host(host_id).await?;
+        if !probe.ok {
+            return Err(SshError::Command(probe.message));
+        }
+
         let session = SshSession {
             id: Uuid::new_v4().to_string(),
             host_id: host_id.to_string(),
-            status: SshSessionStatus::Failed,
+            status: SshSessionStatus::Open,
             opened_at: chrono::Utc::now(),
         };
         self.sessions.insert(session.id.clone(), session.clone());
-        Err(SshError::NotImplemented("ssh session.open"))
+        Ok(session)
     }
 
     pub fn close_session(&self, session_id: &str) -> SshResult<bool> {

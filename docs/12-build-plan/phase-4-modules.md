@@ -54,7 +54,7 @@ Habilitar **dos módulos verticales** que el usuario usa directamente desde la U
 - [x] Storage `~/.harness/profiles/<p>/modules/ssh/{identities.db, known_hosts}`.
 - [ ] Operaciones:
   - [x] `host.list/add/remove/test`.
-  - [ ] `session.open/close`.
+  - [x] `session.open/close`.
   - [x] `sftp.list`.
   - [x] `sftp.mkdir/rmdir/unlink/rename`.
   - [x] `sftp.put / sftp.get` básico síncrono para archivos.

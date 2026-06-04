@@ -6,10 +6,12 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
-use module_ssh::{Host, HostInput, HostTestResult, SftpListResult, SftpTransfer, SshExecResult};
+use module_ssh::{
+    Host, HostInput, HostTestResult, SftpListResult, SftpTransfer, SshExecResult, SshSession,
+};
 use serde::{Deserialize, Serialize};
 
-use crate::error::{ApiError, ApiResult};
+use crate::error::ApiResult;
 use crate::state::AppState;
 
 pub fn router() -> Router<Arc<AppState>> {
@@ -180,9 +182,11 @@ async fn sftp_put(
 async fn open_session(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
-) -> Result<StatusCode, ApiError> {
-    let _ = state.ssh.open_session(&id).await?;
-    Ok(StatusCode::CREATED)
+) -> ApiResult<(StatusCode, Json<SshSession>)> {
+    Ok((
+        StatusCode::CREATED,
+        Json(state.ssh.open_session(&id).await?),
+    ))
 }
 
 async fn close_session(

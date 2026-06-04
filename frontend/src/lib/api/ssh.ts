@@ -5,8 +5,17 @@ import type { HostTestResult } from './types/HostTestResult';
 import type { SftpListResult } from './types/SftpListResult';
 import type { SftpTransfer } from './types/SftpTransfer';
 import type { SshExecResult } from './types/SshExecResult';
+import type { SshSession } from './types/SshSession';
 
-export type { Host, HostInput, HostTestResult, SftpListResult, SftpTransfer, SshExecResult };
+export type {
+  Host,
+  HostInput,
+  HostTestResult,
+  SftpListResult,
+  SftpTransfer,
+  SshExecResult,
+  SshSession
+};
 
 export interface RemovedResponse {
   removed: boolean;
@@ -52,5 +61,11 @@ export const sshApi = {
         signal,
         timeoutMs: 600_000
       })
+  },
+  sessions: {
+    open: (hostId: string, signal?: AbortSignal) =>
+      apiRequest<SshSession>(`/ssh/hosts/${hostId}/sessions`, { method: 'POST', signal }),
+    close: (sessionId: string, signal?: AbortSignal) =>
+      apiRequest<RemovedResponse>(`/ssh/sessions/${sessionId}`, { method: 'DELETE', signal })
   }
 };

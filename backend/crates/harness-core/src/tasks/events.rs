@@ -37,6 +37,14 @@ pub enum TaskEvent {
         at: DateTime<Utc>,
         fields: Vec<String>,
     },
+    #[serde(rename = "task.reason.changed")]
+    ReasonChanged {
+        task_id: String,
+        reason_kind: String,
+        value: String,
+        by: String,
+        at: DateTime<Utc>,
+    },
     #[serde(rename = "task.ready")]
     Ready { task_id: String },
     #[serde(rename = "task.lease-expired")]
@@ -79,6 +87,7 @@ impl TaskEvent {
             TaskEvent::Created { .. } => "task.created",
             TaskEvent::Changed { .. } => "task.changed",
             TaskEvent::Updated { .. } => "task.updated",
+            TaskEvent::ReasonChanged { .. } => "task.reason.changed",
             TaskEvent::Ready { .. } => "task.ready",
             TaskEvent::LeaseExpired { .. } => "task.lease-expired",
             TaskEvent::SpecChanged { .. } => "spec.changed",
@@ -90,7 +99,8 @@ impl TaskEvent {
         match self {
             TaskEvent::Created { by, .. }
             | TaskEvent::Changed { by, .. }
-            | TaskEvent::Updated { by, .. } => Some(by.as_str()),
+            | TaskEvent::Updated { by, .. }
+            | TaskEvent::ReasonChanged { by, .. } => Some(by.as_str()),
             TaskEvent::Ready { .. } => Some("scheduler"),
             TaskEvent::LeaseExpired {
                 previous_holder, ..
@@ -120,6 +130,7 @@ impl TaskEvent {
             TaskEvent::Created { task_id, .. }
             | TaskEvent::Changed { task_id, .. }
             | TaskEvent::Updated { task_id, .. }
+            | TaskEvent::ReasonChanged { task_id, .. }
             | TaskEvent::Ready { task_id }
             | TaskEvent::LeaseExpired { task_id, .. } => task_id,
             TaskEvent::SpecChanged { .. } => "",
@@ -149,6 +160,23 @@ mod tests {
         let decoded: TaskEvent = serde_json::from_str(&json).unwrap();
         assert_eq!(decoded, ev);
         assert_eq!(decoded.task_id(), "");
+    }
+
+    #[test]
+    fn reason_changed_round_trips() {
+        let ev = TaskEvent::ReasonChanged {
+            task_id: "T-0001".to_string(),
+            reason_kind: "blocked_reason".to_string(),
+            value: "Waiting on T-0000".to_string(),
+            by: "agent:planner".to_string(),
+            at: Utc::now(),
+        };
+
+        let json = serde_json::to_string(&ev).unwrap();
+        assert!(json.contains("\"type\":\"task.reason.changed\""));
+        let decoded: TaskEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded, ev);
+        assert_eq!(decoded.task_id(), "T-0001");
     }
 
     #[test]

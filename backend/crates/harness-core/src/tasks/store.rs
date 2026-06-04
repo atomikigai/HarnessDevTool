@@ -337,7 +337,19 @@ impl TaskStore {
                     task_id: task.id.clone(),
                     by: by.into(),
                     at: task.updated_at,
-                    fields: changed_fields,
+                    fields: changed_fields.clone(),
+                },
+            );
+        }
+        for (reason_kind, value) in reason_changes(&task, &changed_fields) {
+            self.emit(
+                tid,
+                TaskEvent::ReasonChanged {
+                    task_id: task.id.clone(),
+                    reason_kind,
+                    value,
+                    by: by.into(),
+                    at: task.updated_at,
                 },
             );
         }
@@ -663,8 +675,74 @@ fn apply_patch(
         task.artifacts = a.clone();
         fields.push("artifacts".into());
     }
+    if let Some(notes) = &patch.notes {
+        if let Some(s) = &notes.why_paused {
+            task.notes.why_paused = s.clone();
+            if task.notes.paused_reason.trim().is_empty() {
+                task.notes.paused_reason = s.clone();
+            }
+            fields.push("notes.why_paused".into());
+        }
+        if let Some(s) = &notes.why_abandoned {
+            task.notes.why_abandoned = s.clone();
+            fields.push("notes.why_abandoned".into());
+        }
+        if let Some(s) = &notes.blocked_reason {
+            task.notes.blocked_reason = s.clone();
+            fields.push("notes.blocked_reason".into());
+        }
+        if let Some(s) = &notes.paused_reason {
+            task.notes.paused_reason = s.clone();
+            if task.notes.why_paused.trim().is_empty() {
+                task.notes.why_paused = s.clone();
+            }
+            fields.push("notes.paused_reason".into());
+        }
+        if let Some(s) = &notes.rejected_reason {
+            task.notes.rejected_reason = s.clone();
+            fields.push("notes.rejected_reason".into());
+        }
+        if let Some(s) = &notes.last_failure {
+            task.notes.last_failure = s.clone();
+            fields.push("notes.last_failure".into());
+        }
+        if let Some(needs_human) = notes.needs_human {
+            task.notes.needs_human = needs_human;
+            fields.push("notes.needs_human".into());
+        }
+        if let Some(feedback) = &notes.feedback {
+            task.notes.feedback.extend(feedback.clone());
+            fields.push("notes.feedback".into());
+        }
+    }
+    if let Some(s) = &patch.blocked_reason {
+        task.notes.blocked_reason = s.clone();
+        fields.push("notes.blocked_reason".into());
+    }
+    if let Some(s) = &patch.paused_reason {
+        task.notes.paused_reason = s.clone();
+        if task.notes.why_paused.trim().is_empty() {
+            task.notes.why_paused = s.clone();
+        }
+        fields.push("notes.paused_reason".into());
+    }
+    if let Some(s) = &patch.rejected_reason {
+        task.notes.rejected_reason = s.clone();
+        fields.push("notes.rejected_reason".into());
+    }
+    if let Some(s) = &patch.last_failure {
+        task.notes.last_failure = s.clone();
+        fields.push("notes.last_failure".into());
+    }
+    if let Some(needs_human) = patch.needs_human {
+        task.notes.needs_human = needs_human;
+        fields.push("notes.needs_human".into());
+    }
     if let Some(s) = &patch.why_paused {
         task.notes.why_paused = s.clone();
+        if task.notes.paused_reason.trim().is_empty() {
+            task.notes.paused_reason = s.clone();
+        }
         fields.push("notes.why_paused".into());
     }
     if let Some(s) = &patch.why_abandoned {
@@ -819,6 +897,40 @@ fn summarize_artifact(kind: &ArtifactKind, path: &str) -> String {
         ArtifactKind::Screenshot => format!("Submitted screenshot {path}"),
         ArtifactKind::Log => format!("Submitted log {path}"),
     }
+}
+
+fn reason_changes(task: &Task, fields: &[String]) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for field in fields {
+        match field.as_str() {
+            "notes.blocked_reason" => out.push((
+                "blocked_reason".to_string(),
+                task.notes.blocked_reason.clone(),
+            )),
+            "notes.paused_reason" | "notes.why_paused" => out.push((
+                "paused_reason".to_string(),
+                task.notes.pause_reason().to_string(),
+            )),
+            "notes.rejected_reason" => out.push((
+                "rejected_reason".to_string(),
+                task.notes.rejected_reason.clone(),
+            )),
+            "notes.last_failure" => {
+                out.push(("last_failure".to_string(), task.notes.last_failure.clone()))
+            }
+            "notes.needs_human" => out.push((
+                "needs_human".to_string(),
+                task.notes.needs_human.to_string(),
+            )),
+            "notes.feedback" => {
+                if let Some(last) = task.notes.feedback.last() {
+                    out.push(("feedback".to_string(), last.clone()));
+                }
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 /// Acquire an exclusive flock, deserialize, mutate, atomically persist.
@@ -1193,6 +1305,47 @@ mod tests {
             }
         }
         assert_eq!(artifact_events, 4);
+    }
+
+    #[test]
+    fn nested_notes_patch_supports_pause_and_emits_reason_event() {
+        let (_dir, s) = store();
+        s.create("thr-1", mk_draft("pause")).unwrap();
+        let mut rx = s.subscribe("thr-1");
+
+        let task = s
+            .patch(
+                "thr-1",
+                "T-0001",
+                TaskPatch {
+                    status: Some(TaskStatus::Paused),
+                    notes: Some(crate::tasks::model::NotesPatch {
+                        why_paused: Some("Need human decision".into()),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+                "human",
+            )
+            .unwrap();
+
+        assert_eq!(task.status, TaskStatus::Paused);
+        assert_eq!(task.notes.why_paused, "Need human decision");
+        assert_eq!(task.notes.paused_reason, "Need human decision");
+
+        let mut saw_reason = false;
+        while let Ok(ev) = rx.try_recv() {
+            if let TaskEvent::ReasonChanged {
+                reason_kind, value, ..
+            } = ev
+            {
+                if reason_kind == "paused_reason" {
+                    saw_reason = true;
+                    assert_eq!(value, "Need human decision");
+                }
+            }
+        }
+        assert!(saw_reason);
     }
 
     fn mk_draft(title: &str) -> TaskDraft {

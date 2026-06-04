@@ -66,6 +66,30 @@
   const hasLegacyArtifacts = $derived(
     task.artifacts.files.length > 0 || task.artifacts.turns.length > 0 || !!task.artifacts.diff
   );
+  const reasonItems = $derived.by(() => {
+    const notes = task.notes;
+    const items: { label: string; value: string; urgent?: boolean }[] = [];
+    if (notes.blocked_reason?.trim()) {
+      items.push({ label: 'Blocked', value: notes.blocked_reason });
+    }
+    const pauseReason = notes.paused_reason?.trim() || notes.why_paused?.trim();
+    if (pauseReason) {
+      items.push({ label: 'Paused', value: pauseReason });
+    }
+    if (notes.rejected_reason?.trim()) {
+      items.push({ label: 'Rejected', value: notes.rejected_reason });
+    }
+    if (notes.last_failure?.trim()) {
+      items.push({ label: 'Last failure', value: notes.last_failure, urgent: true });
+    }
+    if (notes.why_abandoned?.trim()) {
+      items.push({ label: 'Abandoned', value: notes.why_abandoned });
+    }
+    if (notes.needs_human) {
+      items.push({ label: 'Needs human', value: 'Human input required', urgent: true });
+    }
+    return items;
+  });
 
   async function patch(body: PatchTaskRequest, optimisticMsg?: string) {
     const validation = safeParse(patchTaskSchema, body);
@@ -140,7 +164,9 @@
 
   function promote() {
     const status = task.blocked_by.length > 0 ? 'blocked' : 'queued';
-    void patch({ status, by: 'human' }, `${task.id} ${status}`);
+    const blocked_reason =
+      status === 'blocked' ? `Waiting on dependencies: ${task.blocked_by.join(', ')}` : undefined;
+    void patch({ status, blocked_reason, by: 'human' }, `${task.id} ${status}`);
   }
 
   function artifactKindLabel(kind: string): string {
@@ -310,6 +336,30 @@
         </div>
       {/if}
     </dl>
+
+    {#if reasonItems.length > 0}
+      <section class="mb-4 flex flex-col gap-1.5">
+        {#each reasonItems as item (`${item.label}:${item.value}`)}
+          <div
+            class="rounded-md border px-2.5 py-2 text-xs"
+            style="
+              border-color: {item.urgent
+                ? 'color-mix(in srgb, var(--dot-warn) 45%, transparent)'
+                : 'var(--border-subtle)'};
+              background: {item.urgent
+                ? 'color-mix(in srgb, var(--dot-warn) 10%, transparent)'
+                : 'var(--surface-window)'};
+            "
+            title={item.value}
+          >
+            <span class="mr-2 text-[10px] uppercase" style="color: var(--fg-label);">
+              {item.label}
+            </span>
+            <span class="line-clamp-2" style="color: var(--fg-default);">{item.value}</span>
+          </div>
+        {/each}
+      </section>
+    {/if}
 
     <!-- Brief -->
     {#if hasBrief && task.brief}
@@ -616,5 +666,8 @@
 <PauseDialog
   bind:open={pauseOpen}
   onSubmit={(why) =>
-    patch({ status: 'paused', notes: { why_paused: why }, by: 'human' }, `Paused ${task.id}`)}
+    patch(
+      { status: 'paused', notes: { why_paused: why, paused_reason: why }, by: 'human' },
+      `Paused ${task.id}`
+    )}
 />

@@ -234,7 +234,7 @@ pub fn list_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "task_update".into(),
-            description: "Patch a task's metadata (status, label, assignee, title, notes). \
+            description: "Patch a task's metadata (status, labels, assignee, title, reasons, notes). \
                           `thread_id` defaults to the caller's thread when omitted."
                 .into(),
             input_schema: json!({
@@ -246,11 +246,32 @@ pub fn list_descriptors() -> Vec<ToolDescriptor> {
                     "patch":     {
                         "type": "object",
                         "properties": {
-                            "status":   { "type": "string" },
-                            "label":    { "type": "string" },
-                            "assignee": { "type": "string" },
-                            "title":    { "type": "string" },
-                            "notes":    { "type": "string" }
+                            "status":          { "type": "string" },
+                            "labels":          { "type": "array", "items": { "type": "string" } },
+                            "assignee":        { "type": ["string", "null"] },
+                            "title":           { "type": "string" },
+                            "blocked_by":      { "type": "array", "items": { "type": "string" } },
+                            "blocked_reason":  { "type": "string" },
+                            "paused_reason":   { "type": "string" },
+                            "rejected_reason": { "type": "string" },
+                            "last_failure":    { "type": "string" },
+                            "needs_human":     { "type": "boolean" },
+                            "why_paused":      { "type": "string" },
+                            "why_abandoned":   { "type": "string" },
+                            "feedback":        { "type": "string" },
+                            "notes": {
+                                "type": "object",
+                                "properties": {
+                                    "why_paused":      { "type": "string" },
+                                    "why_abandoned":   { "type": "string" },
+                                    "blocked_reason":  { "type": "string" },
+                                    "paused_reason":   { "type": "string" },
+                                    "rejected_reason": { "type": "string" },
+                                    "last_failure":    { "type": "string" },
+                                    "needs_human":     { "type": "boolean" },
+                                    "feedback":        { "type": "array", "items": { "type": "string" } }
+                                }
+                            }
                         }
                     }
                 }

@@ -851,6 +851,7 @@ mod tests {
                 "T-0001",
                 TaskPatch {
                     status: Some(TaskStatus::InProgress),
+                    rejected_reason: Some("verify failed".into()),
                     ..Default::default()
                 },
                 &first_gen,

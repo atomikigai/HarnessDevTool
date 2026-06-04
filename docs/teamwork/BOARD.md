@@ -17,13 +17,50 @@ Modelo operativo: ver [`docs/teamwork/OPERATING_MODEL.md`](./OPERATING_MODEL.md)
 
 | Campo | Valor |
 |---|---|
-| **Tarea** | Task 19 — Razones estructuradas en tasks |
-| **Estado** | `OPEN` — equipo inicializado el 2026-06-04. Pendiente audit inicial antes de implementar. |
-| **Objetivo** | Evitar que bloqueos, pausas, rechazos, fallos y necesidades humanas queden escondidos en strings libres; exponer razones operativas legibles y machine-readable. |
-| **Alcance / archivos** | Backend/core task model/store/state machine/events/schema; MCP/API task patch/submit si aplica; frontend TaskDetail, badges/listas y tipos. |
+| **Tarea** | Task 20 — Scheduler explain/debug |
+| **Estado** | `OPEN` — equipo inicializado el 2026-06-04. Pendiente auditoría inicial antes de implementar. |
+| **Objetivo** | Explicar por qué el scheduler asignó, saltó o enfrió una task para que planner/UI/agentes puedan depurar decisiones sin leer logs internos. |
+| **Alcance / archivos** | Backend/core scheduler tick/decisions/events; server/API/SSE si aplica; frontend TaskDetail/SessionRightPanel/listas para mostrar explicación compacta; tests de rutas de assign/skip/cooldown. |
 | **Responsables** | Planner/Codex. Usar auditoría auxiliar backend/frontend antes del primer patch. |
-| **Criterio de aceptación** | (1) existen campos o eventos para `blocked_reason`, `paused_reason`, `rejected_reason`, `last_failure` y `needs_human`; (2) state machine exige razón donde aplique; (3) TaskDetail/badges muestran razones compactas; (4) eventos se emiten cuando cambian razones; (5) tests cubren transiciones con/sin razón requerida. |
+| **Criterio de aceptación** | (1) las decisiones relevantes del scheduler tienen razón estructurada; (2) se distinguen assign, skip, cooldown, blockers y budget; (3) la razón queda disponible para replay/debug append-only; (4) UI muestra explicación compacta donde afecte a tasks/agentes; (5) tests cubren decisiones positivas y skips principales. |
 | **Checks obligatorios** | `cargo test -p harness-core -p harness-mcp-server -p harness-server`; `just gen-types` si cambian tipos exportados; `pnpm check`; `just test` al cierre. |
+
+### Contrato breve — Task 20
+
+1. No cambiar la política del scheduler en esta task; solo hacer visibles sus decisiones y razones.
+2. Las razones deben ser estructuradas y cortas, pero conservar contexto humano legible.
+3. Cualquier evento nuevo debe seguir el contrato append-only y ser compatible con replay.
+4. La UI debe mostrar el motivo sin saturar la lista ni convertirlo en log raw.
+5. El debug debe ayudar a distinguir “no asignable todavía” de “error operativo”.
+
+### Handoff inicial — Planner/Codex 2026-06-04
+
+**Backend audit auxiliar:**
+- Auditar `scheduler/tick.rs`, eventos de tasks/thread, rutas SSE y tests existentes.
+- Reportar qué decisión actual no deja rastro suficiente y proponer el contrato mínimo.
+
+**Frontend audit auxiliar:**
+- Auditar TaskDetail, SessionRightPanel, lista de tasks y stores.
+- Reportar dónde mostrar explicaciones sin ruido y qué tipos/API tocar si cambia el contrato.
+
+**Ruta propuesta:**
+1. Integrar hallazgos de auditoría.
+2. Implementar contrato backend/core + tests.
+3. Regenerar tipos si el contrato Rust cambia.
+4. Implementar UI mínima.
+5. Correr checks y cerrar con revisión.
+
+## Última cerrada — Task 19
+
+| Campo | Valor |
+|---|---|
+| **Tarea** | Task 19 — Razones estructuradas en tasks |
+| **Estado** | ✅ `DONE` — implementada por Codex el 2026-06-04; auditorías auxiliares backend/frontend incorporadas y checks verdes. |
+| **Objetivo** | Evitar que bloqueos, pausas, rechazos, fallos y necesidades humanas queden escondidos en strings libres; exponer razones operativas legibles y machine-readable. |
+| **Alcance / archivos** | Backend/core task model/store/state machine/events/schema; MCP/API task patch; frontend TaskDetail, badges/listas y tipos. |
+| **Responsables** | Planner/Codex. Subagentes auxiliares Codex: backend audit (`Einstein`) y frontend audit (`Curie`). |
+| **Criterio de aceptación** | ✅ campos para `blocked_reason`, `paused_reason`, `rejected_reason`, `last_failure` y `needs_human`; ✅ state machine exige razón donde aplica; ✅ TaskDetail/badges muestran razones compactas; ✅ `task.reason.changed` se emite cuando cambian razones; ✅ tests cubren transiciones con/sin razón requerida. |
+| **Checks corridos** | ✅ `cargo test -p harness-core -p harness-mcp-server -p harness-server`; ✅ `just gen-types`; ✅ `pnpm check`; ✅ `just test`. |
 
 ### Contrato breve — Task 19
 
@@ -32,6 +69,32 @@ Modelo operativo: ver [`docs/teamwork/OPERATING_MODEL.md`](./OPERATING_MODEL.md)
 3. Cualquier reparación o cambio de razón debe ser trazable por evento append-only.
 4. `blocked`/`paused`/`rejected`/`needs_human` deben explicar el bloqueo sin obligar a leer logs internos.
 5. UI debe mostrar razones sin saturar el panel de tasks.
+
+### Handoff Implementación — Codex 2026-06-04
+
+**Archivos tocados:**
+- `backend/crates/harness-core/src/tasks/{model.rs,events.rs,store.rs,state_machine.rs}`
+- `backend/crates/harness-core/src/scheduler/tick.rs`
+- `backend/crates/harness-core/schemas/task.v1.json`
+- `backend/crates/harness-mcp-server/src/tools/mod.rs`
+- `backend/crates/harness-server/src/routes/events.rs`
+- `frontend/src/lib/api/{models/task.ts,schemas/task.ts}`
+- `frontend/src/lib/components/{tasks/TaskDetail.svelte,app/SessionRightPanel.svelte}`
+- `frontend/src/routes/threads/[id]/tasks/+page.svelte`
+
+**Implementado:**
+- `Notes` agrega razones estructuradas y conserva fallback legacy.
+- `TaskPatch` acepta razones top-level y `notes` anidado para `task_update`.
+- La state machine exige razón al pausar/bloquear y al devolver `pending_verify -> in_progress`.
+- `TaskEvent::ReasonChanged` emite `task.reason.changed` para cambios trazables.
+- MCP `task_update` documenta razones estructuradas y legacy.
+- TaskDetail/listas/panel lateral muestran indicadores compactos de atención.
+
+**Checks corridos:**
+- `cargo test -p harness-core -p harness-mcp-server -p harness-server` ✅
+- `just gen-types` ✅
+- `pnpm check` ✅
+- `just test` ✅
 
 ## Última cerrada — Task 18
 

@@ -122,6 +122,11 @@
       "properties": {
         "why_paused": { "type": "string" },
         "why_abandoned": { "type": "string" },
+        "blocked_reason": { "type": "string" },
+        "paused_reason": { "type": "string" },
+        "rejected_reason": { "type": "string" },
+        "last_failure": { "type": "string" },
+        "needs_human": { "type": "boolean" },
         "feedback": { "type": "array", "items": { "type": "string" } }
       }
     },

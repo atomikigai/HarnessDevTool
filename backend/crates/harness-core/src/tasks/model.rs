@@ -144,7 +144,33 @@ pub struct Notes {
     #[serde(default)]
     pub why_abandoned: String,
     #[serde(default)]
+    pub blocked_reason: String,
+    #[serde(default)]
+    pub paused_reason: String,
+    #[serde(default)]
+    pub rejected_reason: String,
+    #[serde(default)]
+    pub last_failure: String,
+    #[serde(default)]
+    pub needs_human: bool,
+    #[serde(default)]
     pub feedback: Vec<String>,
+}
+
+impl Notes {
+    pub fn pause_reason(&self) -> &str {
+        if self.paused_reason.trim().is_empty() {
+            &self.why_paused
+        } else {
+            &self.paused_reason
+        }
+    }
+
+    pub fn rejection_reason_present(&self) -> bool {
+        !self.rejected_reason.trim().is_empty()
+            || !self.last_failure.trim().is_empty()
+            || !self.feedback.is_empty()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -278,9 +304,27 @@ pub struct TaskPatch {
     pub blocked_by: Option<Vec<String>>,
     pub acceptance_checks: Option<Vec<AcceptanceCheck>>,
     pub artifacts: Option<Artifacts>,
+    pub notes: Option<NotesPatch>,
+    pub blocked_reason: Option<String>,
+    pub paused_reason: Option<String>,
+    pub rejected_reason: Option<String>,
+    pub last_failure: Option<String>,
+    pub needs_human: Option<bool>,
     pub why_paused: Option<String>,
     pub why_abandoned: Option<String>,
     pub feedback: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct NotesPatch {
+    pub why_paused: Option<String>,
+    pub why_abandoned: Option<String>,
+    pub blocked_reason: Option<String>,
+    pub paused_reason: Option<String>,
+    pub rejected_reason: Option<String>,
+    pub last_failure: Option<String>,
+    pub needs_human: Option<bool>,
+    pub feedback: Option<Vec<String>>,
 }
 
 /// Outcome of a claim attempt.

@@ -62,9 +62,19 @@ export const patchTaskSchema = v.object({
     v.object({
       why_paused: v.optional(v.string()),
       why_abandoned: v.optional(v.string()),
+      blocked_reason: v.optional(v.string()),
+      paused_reason: v.optional(v.string()),
+      rejected_reason: v.optional(v.string()),
+      last_failure: v.optional(v.string()),
+      needs_human: v.optional(v.boolean()),
       feedback: v.optional(v.array(v.unknown()))
     })
   ),
+  blocked_reason: v.optional(v.string()),
+  paused_reason: v.optional(v.string()),
+  rejected_reason: v.optional(v.string()),
+  last_failure: v.optional(v.string()),
+  needs_human: v.optional(v.boolean()),
   by: v.string()
 });
 

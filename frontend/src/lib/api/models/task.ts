@@ -48,6 +48,11 @@ export interface TaskArtifacts {
 export interface TaskNotes {
   why_paused?: string;
   why_abandoned?: string;
+  blocked_reason?: string;
+  paused_reason?: string;
+  rejected_reason?: string;
+  last_failure?: string;
+  needs_human?: boolean;
   feedback?: unknown[];
 }
 
@@ -108,6 +113,11 @@ export interface PatchTaskRequest {
   labels?: string[];
   spec_refs?: SpecRef[];
   acceptance?: { checks: AcceptanceCheck[] };
+  blocked_reason?: string;
+  paused_reason?: string;
+  rejected_reason?: string;
+  last_failure?: string;
+  needs_human?: boolean;
   notes?: TaskNotes;
   by: 'human' | string;
 }

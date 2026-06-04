@@ -81,16 +81,31 @@ pub fn validate_transition(task: &Task, to: TaskStatus, by: &str) -> Result<(), 
             }
         }
         Paused => {
-            if task.notes.why_paused.is_empty() {
+            if task.notes.pause_reason().trim().is_empty() {
                 return Err(Error::Validation(
-                    "→paused requires notes.why_paused".into(),
+                    "→paused requires notes.paused_reason or notes.why_paused".into(),
                 ));
             }
         }
-        Blocked if task.blocked_by.is_empty() => {
-            return Err(Error::Validation(
-                "→blocked requires non-empty blocked_by".into(),
-            ));
+        Blocked => {
+            if task.blocked_by.is_empty() {
+                return Err(Error::Validation(
+                    "→blocked requires non-empty blocked_by".into(),
+                ));
+            }
+            if task.notes.blocked_reason.trim().is_empty() {
+                return Err(Error::Validation(
+                    "→blocked requires notes.blocked_reason".into(),
+                ));
+            }
+        }
+        InProgress if from == PendingVerify => {
+            if !task.notes.rejection_reason_present() {
+                return Err(Error::Validation(
+                    "pending_verify→in_progress requires rejected_reason, last_failure or feedback"
+                        .into(),
+                ));
+            }
         }
         _ => {}
     }
@@ -152,6 +167,14 @@ mod tests {
     }
 
     #[test]
+    fn pending_verify_to_in_progress_requires_rejection_reason() {
+        let mut t = base(TaskStatus::PendingVerify);
+        assert!(validate_transition(&t, TaskStatus::InProgress, "agent:evaluator").is_err());
+        t.notes.rejected_reason = "tests failed".into();
+        assert!(validate_transition(&t, TaskStatus::InProgress, "agent:evaluator").is_ok());
+    }
+
+    #[test]
     fn abandoned_requires_human_and_reason() {
         let t = base(TaskStatus::Queued);
         assert!(validate_transition(&t, TaskStatus::Abandoned, "agent:a").is_err());
@@ -176,6 +199,8 @@ mod tests {
         assert!(validate_transition(&t, TaskStatus::Queued, "agent:planner").is_ok());
         let mut blocked = t.clone();
         blocked.blocked_by = vec!["T-0000".into()];
+        assert!(validate_transition(&blocked, TaskStatus::Blocked, "agent:planner").is_err());
+        blocked.notes.blocked_reason = "Waiting on T-0000".into();
         assert!(validate_transition(&blocked, TaskStatus::Blocked, "agent:planner").is_ok());
         assert!(matches!(
             validate_transition(&t, TaskStatus::InProgress, "agent:planner"),

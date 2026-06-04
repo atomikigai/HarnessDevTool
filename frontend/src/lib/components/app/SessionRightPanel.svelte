@@ -56,6 +56,16 @@
     );
   }
 
+  function needsAttention(task: (typeof tasksState.items)[number]): boolean {
+    const notes = task.notes;
+    return Boolean(
+      notes.needs_human ||
+        notes.last_failure?.trim() ||
+        notes.rejected_reason?.trim() ||
+        notes.blocked_reason?.trim()
+    );
+  }
+
   function resetChildren() {
     children = [];
     childrenError = null;
@@ -223,6 +233,7 @@
           {#each tasksState.items as t (t.id)}
             {@const done = isDone(t.status)}
             {@const artifacts = artifactCount(t)}
+            {@const attention = needsAttention(t)}
             <div
               class="flex items-start gap-2.5 rounded-md border px-2.5 py-2"
               style="
@@ -258,9 +269,19 @@
               >
                 {t.title}
               </span>
-              {#if artifacts > 0}
+              {#if attention}
                 <span
                   class="ml-auto shrink-0 rounded-sm px-1.5 py-0.5 text-[10px]"
+                  style="background: color-mix(in srgb, var(--dot-warn) 16%, transparent); color: var(--dot-warn);"
+                  title="Task has structured reason metadata"
+                >
+                  !
+                </span>
+              {/if}
+              {#if artifacts > 0}
+                <span
+                  class={(attention ? '' : 'ml-auto') +
+                    ' shrink-0 rounded-sm px-1.5 py-0.5 text-[10px]'}
                   style="background: var(--surface-titlebar); color: var(--fg-muted);"
                   title={`${artifacts} artifact${artifacts === 1 ? '' : 's'}`}
                 >

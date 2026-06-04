@@ -78,6 +78,18 @@
     selectedId = id;
   }
 
+  function reasonTitle(task: (typeof tasksState.items)[number]): string {
+    const notes = task.notes;
+    return (
+      notes.last_failure?.trim() ||
+      notes.rejected_reason?.trim() ||
+      notes.blocked_reason?.trim() ||
+      notes.paused_reason?.trim() ||
+      notes.why_paused?.trim() ||
+      (notes.needs_human ? 'Human input required' : '')
+    );
+  }
+
   const statuses: TaskStatus[] = [
     'proposed',
     'queued',
@@ -248,7 +260,20 @@
                   <td class="px-4 py-2 font-mono text-[12px]" style="color: var(--fg-muted);"
                     >{t.id}</td
                   >
-                  <td class="max-w-md truncate px-4 py-2">{t.title}</td>
+                  <td class="max-w-md px-4 py-2">
+                    <div class="flex min-w-0 items-center gap-2">
+                      <span class="truncate">{t.title}</span>
+                      {#if reasonTitle(t)}
+                        <span
+                          class="shrink-0 rounded-sm px-1.5 py-0.5 text-[10px]"
+                          style="background: color-mix(in srgb, var(--dot-warn) 14%, transparent); color: var(--dot-warn);"
+                          title={reasonTitle(t)}
+                        >
+                          !
+                        </span>
+                      {/if}
+                    </div>
+                  </td>
                   <td class="px-4 py-2"><TaskStatusBadge status={t.status} /></td>
                   <td class="px-4 py-2 font-mono text-[12px]" style="color: var(--fg-muted);">
                     {t.assignee ?? '—'}

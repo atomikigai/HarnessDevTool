@@ -155,6 +155,7 @@ setup:
     cargo_install_if_missing "cargo-bloat"       "cargo-bloat"
     cargo_install_if_missing "cargo-edit"        "cargo-add"
     cargo_install_if_missing "flamegraph"        "cargo-flamegraph"
+    cargo_install_if_missing "mdbook"            "mdbook"
 
     # — Herramientas Go / sistema (mejor effort, sin sudo interactivo) —
     echo ""
@@ -235,6 +236,11 @@ setup:
         warn "$tool no encontrado — necesario para spawnar agentes"
       fi
     done
+    if command -v astro &>/dev/null; then
+      ok "astro $(astro --version 2>/dev/null | head -1)"
+    else
+      warn "astro no encontrado — docs.build con Starlight puede usar dependencias locales en docs-site"
+    fi
 
     # — Dependencias frontend —
     echo ""
@@ -315,6 +321,8 @@ tools-doctor:
     for tool in claude codex cursor-agent agy; do
       check_optional "$tool"
     done
+    check_optional "astro"
+    check_optional "mdbook"
     if [ -d frontend ] && (cd frontend && pnpm exec playwright --version >/dev/null 2>&1); then
       printf "ok      %-18s %s\n" "playwright" "$(cd frontend && pnpm exec playwright --version)"
     else

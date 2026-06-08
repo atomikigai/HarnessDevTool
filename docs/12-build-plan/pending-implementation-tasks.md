@@ -49,10 +49,19 @@ revisar, aprobar y ejecutar sin mezclar scopes.
 32. **Task 28: `seq` atómico en `append_event`** — ejecutada (absorbida por Task 15): `append_event` asigna `seq` contando records bajo el `write_lock` y lo retorna; los 3 callers (approvals/tasks/threads) dejaron de pre-calcular con `read_events().len()`. Test de append concurrente verde.
 33. **Task 29: Hardening de capability policy** — ejecutada 2026-06-04: root spawn rechaza roles desconocidos contra `RolesRegistry`; `remembered_rule` persiste el rol de `ApprovalSummary`; offline sin rol o con rol desconocido niega tools sensibles y conserva read-only.
 34. **Task 30: gitignore de `backend/crates/*/bindings/`** — ejecutada 2026-06-04: `.gitignore` cubre outputs crate-locales de `ts-rs`, `ReadinessReport.facts` exporta `unknown` desde Rust en vez de importar `JsonValue`, y el gate frontend queda en `pnpm check`.
-35. **Task 31: Medición de eficiencia de tools por spawn** — benchmark de tokens, tool-calls y tasa de éxito por configuración de capacidades cargadas; identifica qué tools deben ser rails Rust o contexto pre-inyectado vs tools reales. Prerequisito: smart-loading implementado (spawn_hint / resolve_load).
-36. **Task 32: Reemplazar `pdftotext` por `pdf_oxide` embebido** — eliminar la dependencia del subprocess externo poppler/pdftotext en `harness-core/knowledge.rs`; embeber el crate `pdf_oxide` como extracción pure Rust (cero subprocess); agregar `pdf_oxide_mcp` como servicio MCP opcional en `docker-compose.mcp.yml` para que agentes lean PDFs directamente como tool.
-37. **Task 33: Capacidad `docs.build` con Starlight como backend default** — el doc-agent genera markdown; el harness compila un sitio navegable para el proyecto donde está desplegado. Backend Starlight (Astro) como default universal; arquitectura intercambiable para soporte futuro de mdBook/VitePress según stack detectado.
-38. **Task 34: Project Memory Binding** — el harness reconoce repos ya trabajados al iniciar sesiones nuevas, usando SQLite como índice operativo por profile y un marcador opcional `.harness/project.toml` en el repo solo para identidad estable.
+35. **Task 31: Medición de eficiencia de tools por spawn** — ejecutada; `capability_profile=auto` se mantiene como default, UI expone `none` como modo liviano, `repo_find` queda como rail determinístico de búsqueda y el analizador reporta calidad básica (`completion_marker_rate`, `active_tool_work_rate`, `quality_pass_rate`).
+36. **Task 32: Reemplazar `pdftotext` por `pdf_oxide` embebido** — ejecutada; knowledge PDF usa `pdf_oxide` pure Rust sin subprocess ni Poppler, y `pdf_oxide_mcp` queda disponible como MCP stdio opcional en `docker-compose.mcp.yml`.
+37. **Task 33: Capacidad `docs.build` con Starlight como backend default** — ejecutada; `docs_build` genera scaffold/copia Markdown para Starlight/mdBook/VitePress, auto-selecciona mdBook solo para repos Rust puros y corre build cuando las deps locales están disponibles.
+38. **Task 34: Project Memory Binding** — base ejecutada; el harness detecta/indexa repos por profile, enlaza threads/sesiones, expone continuity compacta en `repos/current`, inyecta project context controlable al spawn y la UI permite resume/context/fresh. Follow-up: endpoint/write explícito para `.harness/project.toml` y continuity más profunda de archivos tocados.
+
+## Experimentos activos
+
+- **Slint desktop Agents spike** — creado en `experiments/slint-agents`; app
+  desktop nativa que consume `GET /api/threads` y renderiza una vista global de
+  Agents fuera de SvelteKit. Decisión 2026-06-08: el track desktop corre en
+  paralelo y no modifica la web UI; la UI SvelteKit actual es referencia
+  funcional. Slint queda como candidato performance-first y debe compararse con
+  un spike Tauri baseline antes de cerrar tecnología.
 
 Nota F3 2026-06-04:
 - El routing base rol → CLI quedó cerrado para el scheduler: `Role.cli`
@@ -1080,15 +1089,18 @@ de éxito con menos tokens y menos pasos. La hipótesis es que el mismo patrón
 aplica aquí, especialmente para tasks de escritura de código.
 
 Contexto:
-Ver agents/smart-loading y agents/rust-rails. El smart-loading (spawn_hint /
-resolve_load / capability.request) debe estar implementado antes de este task.
-El meta.toml de cada spawn ya guarda started_at/finished_at; hay que extenderlo
-con métricas de tokens y tool calls.
+Ver agents/smart-loading y agents/rust-rails. El smart-loading mínimo ya registra
+`loaded_capabilities` por sesión (`harness` y `crawl4ai` cuando aplica) para que
+la medición compare configuraciones reales. El endpoint de métricas por sesión
+deriva tokens/costo desde el reporter de transcript y tool calls desde el
+transcript normalizado append-only.
 
 Tarea:
-1. Extender meta.toml del spawn con: prompt_tokens, output_tokens, tool_call_count,
-   tool_call_breakdown (map de tool_name → count).
-2. Agregar endpoint GET /api/spawns/:id/metrics que devuelva esas métricas.
+1. Ejecutado: snapshot por sesión con prompt_tokens, output_tokens, costo,
+   tool_call_count, tool_call_breakdown (map de tool_name → count) y
+   loaded_capabilities.
+2. Ejecutado: endpoint GET /api/sessions/:id/metrics y tarjeta compacta en la
+   UI de sesión.
 3. Diseñar experimento A/B: misma task, distintas configuraciones de
    loaded_capabilities. Grupos mínimos: (a) tools completas del agente,
    (b) solo harness-bridge + bash, (c) rails Rust + contexto pre-inyectado.
@@ -1105,7 +1117,26 @@ Tabla de ganancia por tipo de task: tokens ahorrados, pasos reducidos, delta
 en tasa de éxito. Al menos una tool promovida a rail Rust o a contexto
 pre-inyectado con evidencia de mejora.
 
-Estado: pendiente — blocked hasta que smart-loading (Task en F3) esté implementado.
+Estado: ejecutada 2026-06-08. Instrumentación base y perfiles controlados
+(`auto`, `none`, `harness`, `harness_crawl4ai`) listos. Se corrieron tres
+muestras reales: repo temporal pequeño, variante forzada con `fd`/`rg`, y repo
+pesado `aventi-workspace` en modo read-only. Decisión: mantener
+`capability_profile=auto` como default, exponer `none` como perfil liviano para
+sesiones locales simples, mantener Crawl4AI heuristic/explicit, y usar
+preferencia `fd`/`rg` como rail de comportamiento pero no como optimización de
+costo garantizada. Implementado follow-up técnico: MCP `repo_find` para búsqueda
+determinística bounded por nombre/extensión/contenido y métrica de calidad en
+`scripts/analyze-session-metrics.py` (`completion_marker_rate`,
+`active_tool_work_rate`, `quality_pass_rate`). Reporte:
+`docs/12-build-plan/task31-ab-experiment-2026-06-08.md`.
+
+Follow-up abierto:
+- Medir pass/fail semántico con evaluador, no solo marcador + evidencia de
+  tools.
+- Considerar que `repo_scan`/`repo_find` usen cache por repo/HEAD si aparecen
+  como ruta caliente.
+- Llevar `efficient_cli_command_rate` y `quality_pass_rate` al panel de métricas
+  cuando el endpoint agregue categorías de comandos.
 
 ## Task 32: Reemplazar `pdftotext` por `pdf_oxide` embebido
 
@@ -1153,7 +1184,7 @@ Resultado esperado:
 de ningún binario del sistema. `pdf_oxide_mcp` disponible como MCP opcional para
 agentes. `just test` verde.
 
-Estado: pendiente.
+Estado: ejecutada 2026-06-08.
 
 ## Task 33: Capacidad `docs.build` con Starlight como backend default
 
@@ -1191,7 +1222,7 @@ El orchestrator puede pedir `docs.build` y obtener un sitio estático en
 `<project>/docs-site/` listo para desplegar. `just setup` informa si Starlight
 (npx astro) está disponible.
 
-Estado: pendiente.
+Estado: ejecutada 2026-06-08.
 
 ## Task 34: Project Memory Binding
 
@@ -1282,4 +1313,4 @@ Al abrir una sesión nueva dentro de un repo ya visto, el harness reconoce el
 proyecto, muestra la continuidad relevante y permite reanudar o arrancar fresco
 con contexto sin depender de memoria del modelo.
 
-Estado: pendiente.
+Estado: base ejecutada 2026-06-08.

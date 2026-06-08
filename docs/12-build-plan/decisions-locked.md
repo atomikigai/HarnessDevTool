@@ -14,7 +14,8 @@ sources: []
 
 | Decisión | Valor fijo | Razón |
 |---|---|---|
-| UI primaria | **Web (SvelteKit) servida por adapter-node en container** | el usuario priorizó web; desktop descartado |
+| UI primaria | **Web (SvelteKit) servida por adapter-node en container** | el usuario priorizó web/self-host/LAN; no tocar la web UI para el track desktop |
+| Desktop app post-F6 | **Track paralelo, basado funcionalmente en la UI actual, con decisión por métricas** | Decisión revisitada 2026-06-08: la app desktop se trabaja en paralelo sin modificar la web UI. Tauri es el baseline más fácil porque puede reutilizar SvelteKit; Slint sigue como candidato performance-first aunque requiere reconstruir módulos (`Agents`, terminal, tasks, métricas) en `.slint`. La elección final exige medición real de startup, memoria, CPU/render y paridad funcional |
 | UI secundaria | **CLI cliente** | pospuesto post-F6 |
 | Backend lang | **Rust + Axum** | preferencia del usuario; Axum por idiomático y composable |
 | Modelo de procesos | **Backend orquesta `claude`/`codex` CLI** | el usuario debe tener uno instalado; cero provider auth en harness |

@@ -11,7 +11,7 @@
     • Info           — session metadata (id, kind, pid, cwd, …).
 -->
 <script lang="ts">
-  import { api, type ChildSessionSummary, type SessionMeta } from '$lib/api/client';
+  import { api, type ChildSessionSummary, type SessionMeta, type SessionMetrics } from '$lib/api/client';
   import { tasksState } from '$lib/stores/tasks.svelte';
   import { Bot } from '$lib/icons';
   import { taskProgress } from '$lib/sessionDisplay';
@@ -30,8 +30,11 @@
   type Tab = 'tasks' | 'agents' | 'info';
   let tab = $state<Tab>('tasks');
   let children = $state<ChildSessionSummary[]>([]);
+  let metrics = $state<SessionMetrics | null>(null);
+  let metricsError = $state<string | null>(null);
   let childrenError = $state<string | null>(null);
   let pollTimer: ReturnType<typeof setInterval> | null = null;
+  let metricsTimer: ReturnType<typeof setInterval> | null = null;
   // Track ids and statuses across polls so we can fire toasts when something
   // actually changes — a hard refresh of the list always renders, but the
   // visual blip belongs on transitions.
@@ -106,6 +109,21 @@
     }
   }
 
+  async function loadMetrics(sessionId: string) {
+    if (!session || session.id !== sessionId) {
+      metrics = null;
+      return;
+    }
+    try {
+      const res = await api.sessions.metrics(sessionId);
+      if (!session || session.id !== sessionId) return;
+      metrics = res.data;
+      metricsError = null;
+    } catch (err) {
+      metricsError = err instanceof Error ? err.message : String(err);
+    }
+  }
+
   /**
    * Diff the polled list against what we already showed: surface new spawns
    * and status transitions as toasts so the user gets a real "something
@@ -168,8 +186,23 @@
     }
   });
 
+  $effect(() => {
+    if (metricsTimer) {
+      clearInterval(metricsTimer);
+      metricsTimer = null;
+    }
+    metrics = null;
+    metricsError = null;
+    if (session) {
+      const sessionId = session.id;
+      void loadMetrics(sessionId);
+      metricsTimer = setInterval(() => void loadMetrics(sessionId), 5000);
+    }
+  });
+
   onDestroy(() => {
     if (pollTimer) clearInterval(pollTimer);
+    if (metricsTimer) clearInterval(metricsTimer);
   });
 
   function statusColor(s: string): string {
@@ -184,6 +217,30 @@
     if (diff < 3600) return `${Math.round(diff / 60)}m ago`;
     return new Date(ms).toLocaleString();
   }
+
+  function fmtInt(value: number | undefined): string {
+    return new Intl.NumberFormat().format(value ?? 0);
+  }
+
+  function fmtUsd(value: number | undefined): string {
+    return `$${(value ?? 0).toFixed(4)}`;
+  }
+
+  function capabilityLabel(m: SessionMetrics | null): string {
+    const caps = m?.loaded_capabilities ?? session?.loaded_capabilities;
+    const parts = [
+      ...(caps?.mcp_servers ?? []),
+      ...(caps?.skills ?? []),
+      ...(caps?.tool_groups ?? [])
+    ];
+    return parts.length > 0 ? parts.join(', ') : 'none';
+  }
+
+  const topTools = $derived(
+    Object.entries(metrics?.tool_call_breakdown ?? {})
+      .toSorted((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+      .slice(0, 4)
+  );
 </script>
 
 <style>
@@ -389,7 +446,64 @@
         {/if}
       </div>
     {:else if tab === 'info'}
-      <div class="flex flex-col gap-0 p-3">
+      <div class="flex flex-col gap-3 p-3">
+        <section class="rounded-md border p-2.5" style="border-color: var(--border-subtle);">
+          <div class="mb-2 flex items-center justify-between gap-2">
+            <span class="text-[10px] font-bold uppercase tracking-wider" style="color: var(--fg-label);">
+              Metrics
+            </span>
+            <span class="font-mono text-[10px]" style="color: var(--fg-muted);">
+              {metrics ? new Date(metrics.observed_at).toLocaleTimeString() : 'pending'}
+            </span>
+          </div>
+
+          {#if metricsError}
+            <p class="text-[11px]" style="color: var(--dot-danger);">{metricsError}</p>
+          {:else}
+            <div class="grid grid-cols-2 gap-2">
+              <div>
+                <p class="font-mono text-[10px]" style="color: var(--fg-muted);">Prompt</p>
+                <p class="font-mono text-[13px]" style="color: var(--fg-default);">
+                  {fmtInt(metrics?.prompt_tokens)}
+                </p>
+              </div>
+              <div>
+                <p class="font-mono text-[10px]" style="color: var(--fg-muted);">Output</p>
+                <p class="font-mono text-[13px]" style="color: var(--fg-default);">
+                  {fmtInt(metrics?.output_tokens)}
+                </p>
+              </div>
+              <div>
+                <p class="font-mono text-[10px]" style="color: var(--fg-muted);">Tools</p>
+                <p class="font-mono text-[13px]" style="color: var(--fg-default);">
+                  {fmtInt(metrics?.tool_call_count)}
+                </p>
+              </div>
+              <div>
+                <p class="font-mono text-[10px]" style="color: var(--fg-muted);">Cost</p>
+                <p class="font-mono text-[13px]" style="color: var(--fg-default);">
+                  {fmtUsd(metrics?.cost_usd)}
+                </p>
+              </div>
+            </div>
+            {#if topTools.length > 0}
+              <div class="mt-2 flex flex-wrap gap-1">
+                {#each topTools as [name, count] (name)}
+                  <span
+                    class="rounded border px-1.5 py-0.5 font-mono text-[10px]"
+                    style="border-color: var(--border-subtle); color: var(--fg-muted);"
+                    title={`${name}: ${count} calls`}
+                  >
+                    {name} × {count}
+                  </span>
+                {/each}
+              </div>
+            {/if}
+            <p class="mt-2 truncate font-mono text-[10px]" style="color: var(--fg-muted);" title={capabilityLabel(metrics)}>
+              caps: {capabilityLabel(metrics)}
+            </p>
+          {/if}
+        </section>
         {#each [['Session ID', session.id], ['Kind', session.kind], ['Status', session.status], ['PID', String(session.pid)], ['Started', new Date(session.started_at).toLocaleString()], ['Directory', session.cwd ?? '(default)'], ['Thread ID', session.thread_id]] as [label, val] (label)}
           <div
             class="grid grid-cols-[88px_1fr] gap-2 border-b py-2"

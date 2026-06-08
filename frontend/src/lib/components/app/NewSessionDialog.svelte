@@ -14,6 +14,7 @@
     api,
     ApiError,
     type AutonomyProfile,
+    type CapabilityProfile,
     type CurrentRepoReport,
     type SessionKind
   } from '$lib/api/client';
@@ -45,7 +46,8 @@
   let error = $state<string | null>(null);
   let repoReport = $state<CurrentRepoReport | null>(null);
   let repoLookup = $state<'idle' | 'loading' | 'error'>('idle');
-  let repoMode = $state<'fresh' | 'resume'>('fresh');
+  let repoMode = $state<'resume' | 'context' | 'none'>('context');
+  let capabilityProfile = $state<Extract<CapabilityProfile, 'auto' | 'none'>>('auto');
 
   function reset() {
     kind = 'claude';
@@ -54,14 +56,15 @@
     error = null;
     repoReport = null;
     repoLookup = 'idle';
-    repoMode = 'fresh';
+    repoMode = 'context';
+    capabilityProfile = 'auto';
     submitting = false;
   }
 
   async function lookupRepo() {
     const requestedCwd = cwd.trim();
     repoReport = null;
-    repoMode = 'fresh';
+    repoMode = 'context';
     if (!requestedCwd) {
       repoLookup = 'idle';
       return;
@@ -72,6 +75,7 @@
       repoReport = res.data.detected ? res.data : null;
       repoLookup = 'idle';
       if (repoReport?.repo?.last_thread_id) repoMode = 'resume';
+      else if (repoReport) repoMode = 'context';
     } catch {
       repoLookup = 'error';
     }
@@ -117,8 +121,11 @@
     try {
       let tid = threadId;
       const requestedCwd = cwd.trim() ? cwd.trim() : undefined;
-      if (!tid && repoMode === 'resume' && repoReport?.repo?.last_thread_id) {
-        tid = repoReport.repo.last_thread_id;
+      if (!tid && repoMode === 'resume') {
+        tid =
+          repoReport?.continuity?.recommended_thread_id ??
+          repoReport?.repo?.last_thread_id ??
+          null;
       }
       if (!tid) {
         const t = await api.threads.create(undefined, autonomy, requestedCwd);
@@ -136,6 +143,8 @@
       const res = await api.sessions.create(tid, {
         kind,
         cwd: requestedCwd,
+        include_project_context: repoMode !== 'none',
+        capability_profile: capabilityProfile,
         cols,
         rows
       });
@@ -236,7 +245,7 @@
             </div>
             <div class="mt-1 truncate">{repoReport.identity.canonical_path}</div>
             {#if repoReport.repo?.last_thread_id && !threadId}
-              <div class="mt-2 grid grid-cols-2 gap-2">
+              <div class="mt-2 grid gap-2">
                 <button
                   type="button"
                   class="rounded border px-2 py-1 text-left transition-colors {repoMode === 'resume'
@@ -248,12 +257,52 @@
                 </button>
                 <button
                   type="button"
-                  class="rounded border px-2 py-1 text-left transition-colors {repoMode === 'fresh'
+                  class="rounded border px-2 py-1 text-left transition-colors {repoMode === 'context'
                     ? 'border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent)]'
                     : 'border-[var(--border-input)] text-[var(--fg-muted)] hover:text-[var(--fg-default)]'}"
-                  onclick={() => (repoMode = 'fresh')}
+                  onclick={() => (repoMode = 'context')}
                 >
-                  Start fresh
+                  Start fresh with project context
+                </button>
+                <button
+                  type="button"
+                  class="rounded border px-2 py-1 text-left transition-colors {repoMode === 'none'
+                    ? 'border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent)]'
+                    : 'border-[var(--border-input)] text-[var(--fg-muted)] hover:text-[var(--fg-default)]'}"
+                  onclick={() => (repoMode = 'none')}
+                >
+                  Start completely fresh
+                </button>
+              </div>
+              {#if repoReport.continuity?.last_goal}
+                <div class="mt-2 line-clamp-2">
+                  Last goal: {repoReport.continuity.last_goal}
+                </div>
+              {/if}
+              {#if repoReport.continuity?.blockers?.length}
+                <div class="mt-1 line-clamp-2">
+                  Blocked: {repoReport.continuity.blockers[0]}
+                </div>
+              {/if}
+            {:else if !threadId}
+              <div class="mt-2 grid gap-2">
+                <button
+                  type="button"
+                  class="rounded border px-2 py-1 text-left transition-colors {repoMode === 'context'
+                    ? 'border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent)]'
+                    : 'border-[var(--border-input)] text-[var(--fg-muted)] hover:text-[var(--fg-default)]'}"
+                  onclick={() => (repoMode = 'context')}
+                >
+                  Start with project context
+                </button>
+                <button
+                  type="button"
+                  class="rounded border px-2 py-1 text-left transition-colors {repoMode === 'none'
+                    ? 'border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent)]'
+                    : 'border-[var(--border-input)] text-[var(--fg-muted)] hover:text-[var(--fg-default)]'}"
+                  onclick={() => (repoMode = 'none')}
+                >
+                  Start completely fresh
                 </button>
               </div>
             {/if}
@@ -282,6 +331,28 @@
                     : 'Headless: do not ask; fail with a structured blocker.'}
             >
               {opt}
+            </button>
+          {/each}
+        </div>
+      </div>
+      <div class="flex flex-col gap-2">
+        <Label for="capability-profile">Capabilities</Label>
+        <div class="grid grid-cols-2 gap-2" role="radiogroup" id="capability-profile">
+          {#each ['auto', 'none'] as const as opt (opt)}
+            <button
+              type="button"
+              role="radio"
+              aria-checked={capabilityProfile === opt}
+              class="rounded-md border px-2 py-2 text-xs transition-colors {capabilityProfile ===
+              opt
+                ? 'border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent)] font-medium'
+                : 'border-[var(--border-input)] bg-[var(--surface-titlebar)] text-[var(--fg-muted)] hover:text-[var(--fg-default)]'}"
+              onclick={() => (capabilityProfile = opt)}
+              title={opt === 'auto'
+                ? 'Default smart loading: Harness MCP when useful, Crawl4AI only by heuristic.'
+                : 'Lightweight local mode: skip Harness MCP injection and use only built-in agent tools.'}
+            >
+              {opt === 'auto' ? 'Auto' : 'Light'}
             </button>
           {/each}
         </div>

@@ -18,8 +18,8 @@ Modelo operativo: ver [`docs/teamwork/OPERATING_MODEL.md`](./OPERATING_MODEL.md)
 | Campo | Valor |
 |---|---|
 | **Tarea** | Ninguna |
-| **Estado** | `IDLE` — Task 23 cerrada; próxima sugerida: Task 24 — Tipos TS generados desde Rust para tasks. |
-| **Objetivo** | Esperando apertura explícita de la siguiente tarea. |
+| **Estado** | `IDLE` — Task 31 cerrada. Spike desktop Slint para Agents creado en `experiments/slint-agents`; decisión 2026-06-08: desktop va en paralelo sin tocar la web UI, usando SvelteKit como referencia funcional. Slint sigue como candidato performance-first; Tauri es baseline de comparación. SSH sigue postergado al final. |
+| **Objetivo** | Siguiente recomendado: evaluator semántico pass/fail. Para desktop post-F6, completar paridad mínima de Agents en Slint y compararla contra un spike Tauri con métricas de startup/memoria/render. |
 | **Alcance / archivos** | N/A |
 | **Responsables** | Planner/Codex. |
 | **Criterio de aceptación** | N/A |

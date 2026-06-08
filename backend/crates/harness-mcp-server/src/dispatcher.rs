@@ -11,8 +11,8 @@ use crate::protocol::{
     SERVER_NAME, SERVER_VERSION,
 };
 use crate::tools::{
-    self, db as db_tools, knowledge as knowledge_tools, repo, session as session_tools, skills,
-    spec, ssh as ssh_tools, tasks, wrap_error, wrap_text,
+    self, db as db_tools, docs as docs_tools, knowledge as knowledge_tools, repo,
+    session as session_tools, skills, spec, ssh as ssh_tools, tasks, wrap_error, wrap_text,
 };
 use harness_core::TaskStore;
 use harness_policy::{capability_default, is_sensitive_tool, Decision, PolicyEngine};
@@ -207,13 +207,13 @@ impl Dispatcher {
                 self.api_token.as_deref(),
                 &args,
             ),
-            "knowledge_pdftotext_check" => Ok(knowledge_tools::pdftotext_check()),
             "knowledge_pdf_ingest" => {
                 knowledge_tools::pdf_ingest(&self.harness_home, &self.profile, &args)
             }
             "skills_search" => skills::search(&args),
             "repo_analyze" => repo::analyze(&self.cwd, &args),
             "repo_scan" => repo::scan(&self.cwd, &args),
+            "repo_find" => repo::find(&self.cwd, &args),
             "repo_read_file" => repo::read_file(&self.cwd, &args),
             "repo_write_file" => match self.repo_write_scope() {
                 Ok((write_paths, forbidden_paths)) => {
@@ -225,6 +225,7 @@ impl Dispatcher {
             "repo_git_log" => repo::git_log(&self.cwd, &args),
             "repo_git_diff" => repo::git_diff(&self.cwd, &args),
             "repo_codebase_memory_status" => repo::codebase_memory_status(&self.cwd, &args),
+            "docs_build" => docs_tools::build(&self.cwd, &args),
             "db_query" => db_tools::query(&self.db, &args),
             "db_select" => db_tools::select(&self.db, &args),
             "db_validate_query" => db_tools::validate_query(&self.db, &args),
@@ -610,8 +611,8 @@ mod tests {
             "task_submit",
             "spec_read",
             "spec_write",
-            "knowledge_pdftotext_check",
             "knowledge_pdf_ingest",
+            "docs_build",
             "db_performance_audit",
             "db_memory_read",
             "db_memory_write",
@@ -1078,6 +1079,25 @@ decision = "allow"
         assert_eq!(resp["result"]["isError"], true);
         let text = resp["result"]["content"][0]["text"].as_str().unwrap();
         assert!(text.contains("must not escape"));
+    }
+
+    #[test]
+    fn repo_find_searches_names_and_content_with_limits() {
+        let cwd = tmp_home();
+        let (d, _home) = mk_with_cwd("t-repo-find", "agent:planner", cwd.clone());
+        std::fs::create_dir_all(cwd.join("src")).unwrap();
+        std::fs::write(cwd.join("src/session.rs"), "pub fn login_session() {}\n").unwrap();
+        std::fs::write(cwd.join("src/account.rs"), "pub fn account() {}\n").unwrap();
+
+        let line = r#"{"jsonrpc":"2.0","id":49,"method":"tools/call","params":{"name":"repo_find","arguments":{"path":"src","content_contains":"login","extensions":["rs"],"limit":5}}}"#;
+        let resp = d.handle(parse_request(line).unwrap()).unwrap();
+        assert_ne!(resp["result"]["isError"], true);
+        let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+        let value: serde_json::Value = serde_json::from_str(text).unwrap();
+        let matches = value["matches"].as_array().unwrap();
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0]["path"], "session.rs");
+        assert_eq!(matches[0]["content_matched"], true);
     }
 
     #[test]

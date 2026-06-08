@@ -7,7 +7,7 @@ use tokio::sync::broadcast;
 
 use crate::errors::SessionError;
 use crate::kind::AgentKind;
-use crate::meta::{SessionMeta, SessionRepoContext, SessionStatus};
+use crate::meta::{LoadedCapabilities, SessionMeta, SessionRepoContext, SessionStatus};
 use crate::output::OutputWriter;
 use crate::session::{persist_meta, AgentSession};
 
@@ -275,6 +275,7 @@ impl Manager {
             opts.task_id.clone(),
             opts.scopes.clone(),
             opts.repo.clone(),
+            opts.loaded_capabilities.clone(),
             parent_session_id,
             root_session_id,
             opts.initial_size,
@@ -441,6 +442,10 @@ pub struct SpawnOpts {
     /// Optional repository identity attached by the server from the per-profile
     /// repo index.
     pub repo: Option<SessionRepoContext>,
+    /// Capability set actually loaded or emphasized for this session. Stored
+    /// in SessionMeta so later efficiency analysis can compare spawn shape
+    /// against transcript/tool outcomes.
+    pub loaded_capabilities: LoadedCapabilities,
     /// Briefing appended to claude's system prompt via `--append-system-prompt`
     /// (NOT typed into the PTY). Used to tell the agent about the harness MCP
     /// tools so it doesn't fall back to its built-in todo list. Silent to the
@@ -668,6 +673,7 @@ mod tests {
             task_id: None,
             scopes: Vec::new(),
             repo: None,
+            loaded_capabilities: LoadedCapabilities::default(),
             parent_session_id: None,
             root_session_id: id.to_string(),
             detected_state: None,

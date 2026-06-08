@@ -216,6 +216,15 @@ export interface RepoThreadRecord {
   summary?: string | null;
 }
 
+export interface RepoContinuity {
+  recommended_thread_id?: string | null;
+  last_thread_id?: string | null;
+  last_session_id?: string | null;
+  last_goal?: string | null;
+  blockers: string[];
+  recent_threads: RepoThreadRecord[];
+}
+
 export interface RepoIdentity {
   project_id?: string | null;
   root_path: string;
@@ -231,6 +240,7 @@ export interface CurrentRepoReport {
   identity?: RepoIdentity | null;
   repo?: RepoRecord | null;
   threads: RepoThreadRecord[];
+  continuity?: RepoContinuity | null;
 }
 
 export interface ReadinessIssue {
@@ -263,9 +273,16 @@ export type SessionKind =
    */
   | 'zeus';
 export type SessionStatus = 'running' | 'exited' | 'killed';
+export type CapabilityProfile = 'auto' | 'none' | 'harness' | 'harness_crawl4ai';
 
 /** Heuristic interaction phase of the child CLI, derived from PTY scrollback. */
 export type AgentState = 'working' | 'blocked' | 'idle' | 'unknown';
+
+export interface LoadedCapabilities {
+  mcp_servers: string[];
+  skills: string[];
+  tool_groups: string[];
+}
 
 export interface SessionMeta {
   id: string;
@@ -287,6 +304,8 @@ export interface SessionMeta {
   scopes?: string[];
   /** Repository/worktree identity detected by the harness when the session spawned. */
   repo?: RepoContext | null;
+  /** Capability set actually loaded or emphasized for this session. */
+  loaded_capabilities?: LoadedCapabilities;
   /** Parent session id when this session was spawned by an orchestrator. */
   parent_session_id?: string | null;
   /** Topmost ancestor in the session tree (equals `id` for root sessions). */
@@ -295,6 +314,23 @@ export interface SessionMeta {
   detected_state?: AgentState | null;
   /** Whether the harness is tailing a structured JSONL transcript for this session. */
   has_transcript?: boolean;
+}
+
+export interface SessionMetrics {
+  session_id: string;
+  thread_id: string;
+  kind: SessionKind;
+  model: string;
+  prompt_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_write_5m_tokens: number;
+  cache_write_1h_tokens: number;
+  cost_usd: number;
+  tool_call_count: number;
+  tool_call_breakdown: Record<string, number>;
+  loaded_capabilities: LoadedCapabilities;
+  observed_at: string;
 }
 
 export interface ChildSessionSummary {
@@ -356,6 +392,8 @@ export interface TranscriptEvent {
 export interface CreateSessionRequest {
   kind: SessionKind;
   cwd?: string;
+  include_project_context?: boolean;
+  capability_profile?: CapabilityProfile;
   /**
    * Optional initial PTY size. When provided, the backend opens the PTY at
    * exactly this size instead of the 80x24 default, so the TUI's first frame
@@ -621,6 +659,8 @@ export const api = {
       }),
     get: (sessionId: string, signal?: AbortSignal) =>
       apiRequest<SessionMeta>(`/sessions/${sessionId}`, { signal }),
+    metrics: (sessionId: string, signal?: AbortSignal) =>
+      apiRequest<SessionMetrics>(`/sessions/${sessionId}/metrics`, { signal }),
     children: (sessionId: string, signal?: AbortSignal) =>
       apiRequest<ChildSessionSummary[]>(`/sessions/${sessionId}/children`, { signal }),
     kill: (sessionId: string, signal?: AbortSignal) =>

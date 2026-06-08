@@ -11,7 +11,7 @@ use tokio::sync::{broadcast, Mutex as AsyncMutex};
 use crate::errors::SessionError;
 use crate::kind::AgentKind;
 use crate::manager::SessionEvent;
-use crate::meta::{SessionMeta, SessionRepoContext, SessionStatus};
+use crate::meta::{LoadedCapabilities, SessionMeta, SessionRepoContext, SessionStatus};
 use crate::output::OutputWriter;
 
 const PTY_FLUSH_INTERVAL_MS: u64 = 16;
@@ -100,6 +100,7 @@ impl AgentSession {
         task_id: Option<String>,
         scopes: Vec<String>,
         repo: Option<SessionRepoContext>,
+        loaded_capabilities: LoadedCapabilities,
         parent_session_id: Option<String>,
         root_session_id: String,
         initial_size: Option<(u16, u16)>,
@@ -196,6 +197,7 @@ impl AgentSession {
             task_id: task_id.clone(),
             scopes: scopes.clone(),
             repo: repo.clone(),
+            loaded_capabilities,
             parent_session_id: parent_session_id.clone(),
             root_session_id: root_session_id.clone(),
             detected_state: None,

@@ -648,6 +648,8 @@ impl SessionSpawner for ManagerSpawner {
                         }),
                     );
                 }
+                let loaded_capabilities =
+                    crate::routes::sessions::loaded_mcp_capabilities(load_crawl4ai);
                 let config = json!({ "mcpServers": serde_json::Value::Object(mcp_servers) });
                 if let Err(e) = crate::routes::sessions::write_private_json(&path, &config) {
                     return SpawnResult::Failed(format!("write mcp config: {e}"));
@@ -655,6 +657,7 @@ impl SessionSpawner for ManagerSpawner {
                 opts.mcp_config_path = Some(path.clone());
                 opts.mcp_server_command = Some(mcp_bin.display().to_string());
                 opts.mcp_server_args = mcp_args;
+                opts.loaded_capabilities = loaded_capabilities;
                 opts.auto_intro = Some(if load_crawl4ai {
                     format!(
                         "{}\n\n{}",

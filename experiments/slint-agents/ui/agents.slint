@@ -1,0 +1,219 @@
+import { ScrollView } from "std-widgets.slint";
+
+export struct AgentRow {
+    id: string,
+    short_id: string,
+    role: string,
+    kind: string,
+    status: string,
+    pid: string,
+    task_id: string,
+    scopes: string,
+    started: string,
+    thread: string,
+    parent: string,
+    state: string,
+}
+
+export component AgentsWindow inherits Window {
+    in property <string> backend_url;
+    in property <string> scope_label;
+    in property <string> last_updated;
+    in property <string> selected_agent;
+    in property <int> running_count;
+    in property <int> total_count;
+    in property <[AgentRow]> agents;
+
+    callback refresh();
+    callback open_agent(string);
+
+    title: "Harness Agents";
+    width: 760px;
+    height: 680px;
+    background: #0b1120;
+
+    VerticalLayout {
+        padding: 16px;
+        spacing: 12px;
+
+        Rectangle {
+            height: 104px;
+            border-radius: 8px;
+            background: #111827;
+            border-color: #263246;
+            border-width: 1px;
+
+            HorizontalLayout {
+                padding: 14px;
+                spacing: 16px;
+
+                VerticalLayout {
+                    spacing: 6px;
+                    Text {
+                        text: "Harness Agents";
+                        color: #f8fafc;
+                        font-size: 24px;
+                        font-weight: 800;
+                    }
+                    Text {
+                        text: root.scope_label;
+                        color: #94a3b8;
+                        font-size: 12px;
+                    }
+                    Text {
+                        text: root.backend_url + " · " + root.last_updated;
+                        color: #64748b;
+                        font-size: 11px;
+                    }
+                }
+
+                Rectangle {
+                    width: 118px;
+                    border-radius: 8px;
+                    background: #0f172a;
+                    border-color: #334155;
+                    border-width: 1px;
+                    VerticalLayout {
+                        padding: 8px;
+                        spacing: 2px;
+                        Text {
+                            text: root.running_count + "/" + root.total_count;
+                            color: #22c55e;
+                            font-size: 22px;
+                            font-weight: 800;
+                            horizontal-alignment: center;
+                        }
+                        Text {
+                            text: "running";
+                            color: #94a3b8;
+                            font-size: 11px;
+                            horizontal-alignment: center;
+                        }
+                    }
+                }
+
+                Rectangle {
+                    width: 92px;
+                    border-radius: 8px;
+                    background: #0284c7;
+
+                    TouchArea {
+                        clicked => { root.refresh(); }
+                    }
+
+                    Text {
+                        text: "Refresh";
+                        color: white;
+                        font-size: 13px;
+                        font-weight: 800;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+
+        HorizontalLayout {
+            spacing: 12px;
+            Text {
+                text: "Sessions";
+                color: #cbd5e1;
+                font-size: 14px;
+                font-weight: 800;
+                vertical-alignment: center;
+            }
+            Text {
+                text: "roots and children from GET /api/threads";
+                color: #64748b;
+                font-size: 11px;
+                vertical-alignment: center;
+            }
+        }
+
+        ScrollView {
+            viewport-height: 510px;
+
+            VerticalLayout {
+                spacing: 8px;
+
+                if root.agents.length == 0: Rectangle {
+                    height: 116px;
+                    border-radius: 8px;
+                    background: #111827;
+                    border-color: #263246;
+                    border-width: 1px;
+
+                    Text {
+                        text: "No sessions returned by the Harness backend.";
+                        color: #94a3b8;
+                        font-size: 13px;
+                        wrap: word-wrap;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+
+                for agent in root.agents: Rectangle {
+                    height: 104px;
+                    border-radius: 8px;
+                    background: agent.id == root.selected_agent ? #1e293b : #111827;
+                    border-color: agent.status == "running" ? #22c55e : agent.status == "exited" ? #f59e0b : #ef4444;
+                    border-width: agent.id == root.selected_agent ? 2px : 1px;
+
+                    TouchArea {
+                        clicked => { root.open_agent(agent.id); }
+                    }
+
+                    HorizontalLayout {
+                        padding: 10px;
+                        spacing: 10px;
+
+                        Rectangle {
+                            width: 5px;
+                            border-radius: 3px;
+                            background: agent.status == "running" ? #22c55e : agent.status == "exited" ? #f59e0b : #ef4444;
+                        }
+
+                        VerticalLayout {
+                            spacing: 5px;
+                            HorizontalLayout {
+                                spacing: 8px;
+                                Text {
+                                    text: agent.role + " · " + agent.kind;
+                                    color: #f8fafc;
+                                    font-size: 14px;
+                                    font-weight: 800;
+                                }
+                                Text {
+                                    text: agent.status;
+                                    color: agent.status == "running" ? #22c55e : agent.status == "exited" ? #f59e0b : #ef4444;
+                                    font-size: 11px;
+                                    font-weight: 800;
+                                    horizontal-alignment: right;
+                                }
+                            }
+
+                            Text {
+                                text: agent.thread;
+                                color: #cbd5e1;
+                                font-size: 11px;
+                            }
+
+                            Text {
+                                text: agent.short_id + " · " + agent.parent + " · pid " + agent.pid + " · " + agent.started;
+                                color: #94a3b8;
+                                font-size: 10px;
+                            }
+
+                            Text {
+                                text: agent.task_id + agent.scopes + (agent.state == "" ? "" : " · " + agent.state);
+                                color: #64748b;
+                                font-size: 10px;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

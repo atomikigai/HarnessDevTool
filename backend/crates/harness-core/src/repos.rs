@@ -102,6 +102,24 @@ pub struct RepoThreadRecord {
     pub summary: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export, export_to = "../../../bindings/"))]
+pub struct RepoContinuity {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recommended_thread_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_thread_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_goal: Option<String>,
+    #[serde(default)]
+    pub blockers: Vec<String>,
+    #[serde(default)]
+    pub recent_threads: Vec<RepoThreadRecord>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
 #[cfg_attr(feature = "ts-export", ts(export, export_to = "../../../bindings/"))]
@@ -113,6 +131,8 @@ pub struct CurrentRepoReport {
     pub repo: Option<RepoRecord>,
     #[serde(default)]
     pub threads: Vec<RepoThreadRecord>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continuity: Option<RepoContinuity>,
 }
 
 #[derive(Debug, Clone)]
@@ -193,6 +213,7 @@ impl RepoIndex {
                     identity: None,
                     repo: None,
                     threads: Vec::new(),
+                    continuity: None,
                 });
             }
             Err(e) => return Err(e),
@@ -207,6 +228,7 @@ impl RepoIndex {
             identity: Some(identity),
             repo,
             threads,
+            continuity: None,
         })
     }
 

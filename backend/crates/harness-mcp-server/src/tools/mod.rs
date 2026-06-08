@@ -1,4 +1,5 @@
 pub mod db;
+pub mod docs;
 pub mod knowledge;
 pub mod repo;
 pub mod session;
@@ -15,12 +16,6 @@ use crate::protocol::ToolDescriptor;
 /// `[a-zA-Z0-9_-]+`); the brief's `task.list` is the conceptual name.
 pub fn list_descriptors() -> Vec<ToolDescriptor> {
     vec![
-        ToolDescriptor {
-            name: "knowledge_pdftotext_check".into(),
-            description: "Check whether `pdftotext` is installed and available on PATH. Returns a warning with OS-specific install guidance when missing."
-                .into(),
-            input_schema: json!({ "type": "object", "properties": {} }),
-        },
         ToolDescriptor {
             name: "knowledge_pdf_ingest".into(),
             description: "Extract a local technical PDF into compact Markdown shards under HARNESS_HOME/profiles/<profile>/knowledge/pdf/<document>. Returns index and shard paths for future agent sessions."
@@ -882,6 +877,25 @@ pub fn list_descriptors() -> Vec<ToolDescriptor> {
             }),
         },
         ToolDescriptor {
+            name: "repo_find".into(),
+            description: "Deterministically find files by name, extension, or bounded text content search under the current workspace. Prefer this over ad-hoc shell find/grep/rg for repository discovery."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string" },
+                    "name_contains": { "type": "string" },
+                    "content_contains": { "type": "string" },
+                    "extensions": {
+                        "type": "array",
+                        "items": { "type": "string" }
+                    },
+                    "max_depth": { "type": "integer", "minimum": 0 },
+                    "limit": { "type": "integer", "minimum": 1 }
+                }
+            }),
+        },
+        ToolDescriptor {
             name: "repo_read_file".into(),
             description: "Read a text file from the workspace with size limits. Refuses paths outside cwd."
                 .into(),
@@ -941,6 +955,38 @@ pub fn list_descriptors() -> Vec<ToolDescriptor> {
             description: "Report whether codebase-memory-mcp is installed and whether a local index marker exists for this workspace. The harness treats it as an optional code-intelligence accelerator."
                 .into(),
             input_schema: json!({ "type": "object", "properties": {} }),
+        },
+        ToolDescriptor {
+            name: "docs_build".into(),
+            description: "Build or scaffold a static documentation site from workspace Markdown. Conceptual capability: docs.build. Backend can be auto, starlight, mdbook, or vitepress."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "backend": {
+                        "type": "string",
+                        "enum": ["auto", "starlight", "mdbook", "vitepress"],
+                        "description": "Docs backend. Defaults to auto: mdbook for Rust-only repos, Starlight otherwise."
+                    },
+                    "source_dir": {
+                        "type": "string",
+                        "description": "Workspace-relative directory containing .md/.mdx files. Defaults to docs."
+                    },
+                    "output_dir": {
+                        "type": "string",
+                        "description": "Workspace-relative generated docs-site directory. Defaults to docs-site."
+                    },
+                    "title": { "type": "string" },
+                    "install": {
+                        "type": "boolean",
+                        "description": "When true, run pnpm install before Node-backed builds."
+                    },
+                    "run_build": {
+                        "type": "boolean",
+                        "description": "When false, only scaffold/copy files. Defaults to true."
+                    }
+                }
+            }),
         },
         ToolDescriptor {
             name: "ssh_hosts".into(),

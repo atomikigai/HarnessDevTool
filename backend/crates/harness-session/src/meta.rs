@@ -30,6 +30,27 @@ pub struct SessionRepoContext {
     pub head_sha: Option<String>,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export, export_to = "../../../bindings/"))]
+pub struct LoadedCapabilities {
+    /// MCP servers injected into the agent process for this session.
+    #[serde(default)]
+    pub mcp_servers: Vec<String>,
+    /// Harness skills or skill bundles intentionally loaded for this session.
+    #[serde(default)]
+    pub skills: Vec<String>,
+    /// Non-MCP tool groups exposed or explicitly emphasized at spawn time.
+    #[serde(default)]
+    pub tool_groups: Vec<String>,
+}
+
+impl LoadedCapabilities {
+    pub fn is_empty(&self) -> bool {
+        self.mcp_servers.is_empty() && self.skills.is_empty() && self.tool_groups.is_empty()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
 #[cfg_attr(feature = "ts-export", ts(export, export_to = "../../../bindings/"))]
@@ -66,6 +87,11 @@ pub struct SessionMeta {
     /// the session back to the per-profile repo index.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repo: Option<SessionRepoContext>,
+    /// Final capability set injected or emphasized for this spawn. This is
+    /// recorded after heuristics such as documentation-url detection so later
+    /// efficiency analysis can compare loaded context against outcomes.
+    #[serde(default)]
+    pub loaded_capabilities: LoadedCapabilities,
 
     // ── Session tree (Zeus / orchestrator) ────────────────────────────────
     /// Parent session id when this session was spawned as a child of another
@@ -87,4 +113,63 @@ pub struct SessionMeta {
     /// session. False for CLIs whose transcript format isn't wired yet.
     #[serde(default)]
     pub has_transcript: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::kind::AgentKind;
+
+    #[test]
+    fn session_meta_defaults_loaded_capabilities_for_old_files() {
+        let raw = r#"{
+            "id": "s1",
+            "kind": "codex",
+            "thread_id": "t1",
+            "cwd": "/tmp",
+            "pid": 42,
+            "status": "running",
+            "started_at": 1700000000000,
+            "root_session_id": "s1",
+            "has_transcript": false
+        }"#;
+
+        let meta: SessionMeta = serde_json::from_str(raw).expect("deserialize old meta");
+        assert_eq!(meta.kind, AgentKind::Codex);
+        assert!(meta.loaded_capabilities.is_empty());
+    }
+
+    #[test]
+    fn empty_loaded_capabilities_are_serialized_with_empty_arrays() {
+        let meta = SessionMeta {
+            id: "s1".to_string(),
+            kind: AgentKind::Codex,
+            thread_id: "t1".to_string(),
+            cwd: "/tmp".to_string(),
+            pid: 42,
+            status: SessionStatus::Running,
+            started_at: 1_700_000_000_000,
+            exit_code: None,
+            role: None,
+            owner_session_id: None,
+            task_id: None,
+            scopes: Vec::new(),
+            repo: None,
+            loaded_capabilities: LoadedCapabilities::default(),
+            parent_session_id: None,
+            root_session_id: "s1".to_string(),
+            detected_state: None,
+            has_transcript: false,
+        };
+
+        let value = serde_json::to_value(&meta).expect("serialize meta");
+        assert_eq!(
+            value.get("loaded_capabilities"),
+            Some(&serde_json::json!({
+                "mcp_servers": [],
+                "skills": [],
+                "tool_groups": []
+            }))
+        );
+    }
 }

@@ -4,9 +4,10 @@
 use std::ffi::OsStr;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use chrono::{DateTime, Utc};
+use pdf_oxide::converters::ConversionOptions;
+use pdf_oxide::PdfDocument;
 use serde::{Deserialize, Serialize};
 
 use crate::Error;
@@ -41,13 +42,6 @@ pub struct KnowledgeShard {
     pub bytes: u64,
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub struct PdfTextToolStatus {
-    pub installed: bool,
-    pub binary: String,
-    pub warning: Option<String>,
-}
-
 #[derive(Debug, Clone)]
 struct TextShard {
     title: String,
@@ -61,30 +55,8 @@ pub fn ingest_pdf(
     req: KnowledgeIngestRequest,
 ) -> Result<KnowledgeIngestResult, Error> {
     validate_pdf_path(&req.source_path)?;
-    let status = check_pdftotext();
-    if !status.installed {
-        return Err(Error::Validation(
-            status
-                .warning
-                .unwrap_or_else(|| "pdftotext is not installed".to_string()),
-        ));
-    }
     let text = extract_pdf_text(&req.source_path)?;
     ingest_text(harness_home, profile, req.source_path, req.title, &text)
-}
-
-pub fn check_pdftotext() -> PdfTextToolStatus {
-    let available = Command::new("pdftotext").arg("-v").output().is_ok();
-    PdfTextToolStatus {
-        installed: available,
-        binary: "pdftotext".to_string(),
-        warning: (!available).then(|| {
-            format!(
-                "`pdftotext` is not installed or is not available on PATH. {}",
-                pdftotext_install_hint()
-            )
-        }),
-    }
 }
 
 pub fn ingest_text(
@@ -175,39 +147,23 @@ fn validate_pdf_path(path: &Path) -> Result<(), Error> {
 }
 
 fn extract_pdf_text(path: &Path) -> Result<String, Error> {
-    let output = Command::new("pdftotext")
-        .arg("-layout")
-        .arg("-enc")
-        .arg("UTF-8")
-        .arg("-eol")
-        .arg("unix")
-        .arg(path)
-        .arg("-")
-        .output()
-        .map_err(|e| {
-            Error::Validation(format!(
-                "failed to run pdftotext: {e}. {}",
-                pdftotext_install_hint()
-            ))
+    let doc = PdfDocument::open(path)
+        .map_err(|e| Error::Validation(format!("failed to open PDF: {e}")))?;
+    let page_count = doc
+        .page_count()
+        .map_err(|e| Error::Validation(format!("failed to read PDF page count: {e}")))?;
+    let options = ConversionOptions {
+        detect_headings: true,
+        ..Default::default()
+    };
+    let mut pages = Vec::with_capacity(page_count);
+    for page in 0..page_count {
+        let markdown = doc.to_markdown(page, &options).map_err(|e| {
+            Error::Validation(format!("failed to extract PDF page {}: {e}", page + 1))
         })?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(Error::Validation(format!("pdftotext failed: {stderr}")));
+        pages.push(markdown);
     }
-    String::from_utf8(output.stdout)
-        .map_err(|e| Error::Validation(format!("pdftotext returned invalid utf-8: {e}")))
-}
-
-fn pdftotext_install_hint() -> &'static str {
-    if cfg!(target_os = "linux") {
-        "Install Poppler: Debian/Ubuntu `sudo apt-get install poppler-utils`, Fedora `sudo dnf install poppler-utils`, Arch `sudo pacman -S poppler`."
-    } else if cfg!(target_os = "macos") {
-        "Install Poppler with Homebrew: `brew install poppler`."
-    } else if cfg!(target_os = "windows") {
-        "Install Poppler for Windows and add its `bin` directory to PATH, for example via Chocolatey `choco install poppler` or Scoop `scoop install poppler`."
-    } else {
-        "Install Poppler and ensure `pdftotext` is available on PATH."
-    }
+    Ok(pages.join("\u{c}"))
 }
 
 fn normalize_text(text: &str) -> String {
@@ -464,14 +420,5 @@ mod tests {
         assert!(second
             .output_dir
             .ends_with("profiles/default/knowledge/pdf/doc-1"));
-    }
-
-    #[test]
-    fn pdftotext_hint_mentions_linux_package() {
-        let hint = pdftotext_install_hint();
-        if cfg!(target_os = "linux") {
-            assert!(hint.contains("apt-get install poppler-utils"));
-        }
-        assert!(hint.contains("pdftotext") || hint.contains("Poppler"));
     }
 }

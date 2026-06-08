@@ -16,6 +16,8 @@ use tokei::{Config, Languages};
 const DEFAULT_SCAN_LIMIT: usize = 400;
 const DEFAULT_MAX_DEPTH: usize = 4;
 const DEFAULT_MAX_BYTES: usize = 64 * 1024;
+const DEFAULT_FIND_LIMIT: usize = 80;
+const DEFAULT_FIND_MAX_BYTES: usize = 256 * 1024;
 const MAX_GIT_BYTES: usize = 128 * 1024;
 
 pub fn analyze(root: &Path, args: &Value) -> Result<Value, String> {
@@ -82,6 +84,118 @@ pub fn scan(root: &Path, args: &Value) -> Result<Value, String> {
         "limit": limit,
         "max_depth": max_depth,
         "files": files.iter().filter_map(|p| relative_to(&dir, p)).collect::<Vec<_>>(),
+    }))
+}
+
+pub fn find(root: &Path, args: &Value) -> Result<Value, String> {
+    let dir = resolve_under_root(root, opt_str(args, "path").unwrap_or("."))?;
+    if !dir.is_dir() {
+        return Err(format!("path is not a directory: {}", dir.display()));
+    }
+    let max_depth = args
+        .get("max_depth")
+        .and_then(Value::as_u64)
+        .map(|v| v as usize)
+        .unwrap_or(DEFAULT_MAX_DEPTH);
+    let limit = args
+        .get("limit")
+        .and_then(Value::as_u64)
+        .map(|v| v as usize)
+        .unwrap_or(DEFAULT_FIND_LIMIT)
+        .min(DEFAULT_SCAN_LIMIT);
+    let name_contains = opt_str(args, "name_contains").map(|s| s.to_ascii_lowercase());
+    let content_contains = opt_str(args, "content_contains").map(|s| s.to_ascii_lowercase());
+    let extensions = args
+        .get("extensions")
+        .and_then(Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(Value::as_str)
+                .map(|s| s.trim_start_matches('.').to_ascii_lowercase())
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    if name_contains.is_none() && content_contains.is_none() && extensions.is_empty() {
+        return Err(
+            "repo_find requires at least one of name_contains, content_contains or extensions"
+                .into(),
+        );
+    }
+
+    let files = collect_files(&dir, max_depth, DEFAULT_SCAN_LIMIT)?;
+    let mut matches = Vec::new();
+    let mut scanned_content_files = 0usize;
+    for file in files {
+        if matches.len() >= limit {
+            break;
+        }
+        let rel = relative_to(&dir, &file).unwrap_or_else(|| file.display().to_string());
+        let file_name = file
+            .file_name()
+            .and_then(OsStr::to_str)
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        let ext = file
+            .extension()
+            .and_then(OsStr::to_str)
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if !extensions.is_empty() && !extensions.iter().any(|wanted| wanted == &ext) {
+            continue;
+        }
+        let name_matched = name_contains
+            .as_ref()
+            .is_some_and(|needle| file_name.contains(needle));
+        let mut content_matched = false;
+        let mut line_hits = Vec::new();
+        if let Some(needle) = &content_contains {
+            if let Ok(metadata) = std::fs::metadata(&file) {
+                if metadata.len() <= DEFAULT_FIND_MAX_BYTES as u64 {
+                    if let Ok(text) = std::fs::read_to_string(&file) {
+                        scanned_content_files += 1;
+                        for (idx, line) in text.lines().enumerate() {
+                            if line.to_ascii_lowercase().contains(needle) {
+                                content_matched = true;
+                                line_hits.push(json!({
+                                    "line": idx + 1,
+                                    "preview": truncate_preview(line),
+                                }));
+                                if line_hits.len() >= 5 {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if name_matched
+            || content_matched
+            || (!extensions.is_empty() && content_contains.is_none() && name_contains.is_none())
+        {
+            matches.push(json!({
+                "path": rel,
+                "name_matched": name_matched,
+                "content_matched": content_matched,
+                "line_hits": line_hits,
+            }));
+        }
+    }
+
+    Ok(json!({
+        "root": dir.display().to_string(),
+        "limit": limit,
+        "max_depth": max_depth,
+        "query": {
+            "name_contains": name_contains,
+            "content_contains": content_contains,
+            "extensions": extensions,
+        },
+        "scanned_content_files": scanned_content_files,
+        "matches": matches,
     }))
 }
 
@@ -152,6 +266,15 @@ pub fn write_file(
         "path": relative_to(&root, &path).unwrap_or_else(|| path.display().to_string()),
         "bytes": content.len(),
     }))
+}
+
+fn truncate_preview(line: &str) -> String {
+    let trimmed = line.trim();
+    let mut out = trimmed.chars().take(180).collect::<String>();
+    if trimmed.chars().count() > 180 {
+        out.push_str("...");
+    }
+    out
 }
 
 fn truncate_utf8_safe(content: &mut String, max_bytes: usize) {

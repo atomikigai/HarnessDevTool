@@ -205,6 +205,7 @@ pub fn is_sensitive_tool(tool: &str) -> bool {
             | "spec_set_section"
             | "repo_write_file"
             | "knowledge_pdf_ingest"
+            | "docs_build"
             | "db_query"
             | "db_backup"
             | "db_memory_write"

@@ -24,6 +24,7 @@ rusqlite.workspace = true
 dirs = { workspace = true }
 fs2.workspace = true
 schemars.workspace = true
+pdf_oxide = "0.3"
 tempfile = "3"
 ts-rs = { workspace = true, optional = true }
 

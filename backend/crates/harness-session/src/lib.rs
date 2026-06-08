@@ -14,5 +14,5 @@ pub use errors::SessionError;
 pub use kind::AgentKind;
 pub use mailbox::{MailboxMessage, MailboxStore};
 pub use manager::{Manager, McpServerConfig, SessionEvent, SpawnOpts};
-pub use meta::{SessionMeta, SessionRepoContext, SessionStatus};
+pub use meta::{LoadedCapabilities, SessionMeta, SessionRepoContext, SessionStatus};
 pub use session::AgentSession;

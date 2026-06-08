@@ -99,6 +99,8 @@ async fn start_db_agent(
             initial_prompt: (!supports_system_context).then_some(prompt),
             parent_session_id: None,
             initial_size: None,
+            include_project_context: true,
+            capability_profile: crate::routes::sessions::CapabilityProfile::Auto,
         },
     )
     .await?;

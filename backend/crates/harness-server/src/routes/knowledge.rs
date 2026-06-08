@@ -1,20 +1,16 @@
 use std::sync::Arc;
 
 use axum::extract::State;
-use axum::routing::{get, post};
+use axum::routing::post;
 use axum::{Json, Router};
-use harness_core::{
-    check_pdftotext, ingest_pdf, KnowledgeIngestRequest, KnowledgeIngestResult, PdfTextToolStatus,
-};
+use harness_core::{ingest_pdf, KnowledgeIngestRequest, KnowledgeIngestResult};
 use serde::Deserialize;
 
 use crate::error::{ApiError, ApiResult};
 use crate::state::AppState;
 
 pub fn router() -> Router<Arc<AppState>> {
-    Router::new()
-        .route("/api/knowledge/pdf", post(ingest_pdf_route))
-        .route("/api/knowledge/pdf/pdftotext", get(check_pdftotext_route))
+    Router::new().route("/api/knowledge/pdf", post(ingest_pdf_route))
 }
 
 #[derive(Debug, Deserialize)]
@@ -38,8 +34,4 @@ async fn ingest_pdf_route(
     )
     .map_err(ApiError::from)?;
     Ok(Json(result))
-}
-
-async fn check_pdftotext_route() -> Json<PdfTextToolStatus> {
-    Json(check_pdftotext())
 }

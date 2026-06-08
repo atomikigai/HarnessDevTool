@@ -6,6 +6,11 @@ COMPOSE=(docker compose -f "$ROOT_DIR/docker-compose.mcp.yml")
 SERVICES=(crawl4ai excalidraw-mcp)
 PRIMARY_CONTAINERS=(crawl4ai excalidraw-mcp)
 
+if [[ "${HARNESS_MCP_PDF_OXIDE_BUILD:-0}" == "1" ]]; then
+  echo "Building optional pdf-oxide stdio MCP image."
+  "${COMPOSE[@]}" --profile stdio build pdf-oxide-mcp
+fi
+
 primary_containers_running() {
   local container
   for container in "${PRIMARY_CONTAINERS[@]}"; do

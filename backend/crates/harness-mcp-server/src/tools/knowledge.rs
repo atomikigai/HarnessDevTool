@@ -1,16 +1,12 @@
 use std::path::PathBuf;
 
-use harness_core::{check_pdftotext, ingest_pdf, KnowledgeIngestRequest};
+use harness_core::{ingest_pdf, KnowledgeIngestRequest};
 use serde_json::{json, Value};
 
 fn str_arg<'a>(args: &'a Value, key: &str) -> Result<&'a str, String> {
     args.get(key)
         .and_then(|v| v.as_str())
         .ok_or_else(|| format!("missing or non-string arg: {key}"))
-}
-
-pub fn pdftotext_check() -> Value {
-    json!(check_pdftotext())
 }
 
 pub fn pdf_ingest(

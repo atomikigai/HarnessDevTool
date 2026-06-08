@@ -18,7 +18,10 @@ import {
   type SchemaTree,
   type TableMeta
 } from '$lib/api/db';
-import { ApiError } from '$lib/api/client';
+import { ApiError, type SessionKind } from '$lib/api/client';
+
+const ACTIVE_DB_KEY = 'harness.db.activeConnectionId';
+const CONNECTIONS_SIDEBAR_COLLAPSED_KEY = 'harness.db.connectionsSidebarCollapsed';
 
 /**
  * Comment-aware extraction of the first SQL keyword, uppercase. Mirrors
@@ -103,7 +106,16 @@ function isTabBucketEmpty(b: TabPending): boolean {
   return Object.keys(b.edits).length === 0 && b.inserts.length === 0;
 }
 
-interface ConnectionWorkspace {
+export interface DbAgentWorkspace {
+  threadId: string | null;
+  sessionId: string | null;
+  kind: SessionKind;
+  collapsed: boolean;
+  fullscreen: boolean;
+  size: number;
+}
+
+export interface ConnectionWorkspace {
   databases: string[];
   database: string | null;
   schema: SchemaTree | null;
@@ -112,6 +124,9 @@ interface ConnectionWorkspace {
   tabs: DbTab[];
   activeTabId: string | null;
   pendingEdits: WorkspacePendingEdits;
+  schemaPanelCollapsed: boolean;
+  tableSubTab: Record<string, 'data' | 'schema'>;
+  agent: DbAgentWorkspace;
 }
 
 function emptyWorkspace(): ConnectionWorkspace {
@@ -123,8 +138,39 @@ function emptyWorkspace(): ConnectionWorkspace {
     schemaError: null,
     tabs: [],
     activeTabId: null,
-    pendingEdits: {}
+    pendingEdits: {},
+    schemaPanelCollapsed: false,
+    tableSubTab: {},
+    agent: {
+      threadId: null,
+      sessionId: null,
+      kind: 'claude',
+      collapsed: false,
+      fullscreen: false,
+      size: 30
+    }
   };
+}
+
+function readActiveConnectionId(): string | null {
+  if (typeof localStorage === 'undefined') return null;
+  return localStorage.getItem(ACTIVE_DB_KEY);
+}
+
+function writeActiveConnectionId(id: string | null): void {
+  if (typeof localStorage === 'undefined') return;
+  if (id) localStorage.setItem(ACTIVE_DB_KEY, id);
+  else localStorage.removeItem(ACTIVE_DB_KEY);
+}
+
+function readConnectionsSidebarCollapsed(): boolean {
+  if (typeof localStorage === 'undefined') return false;
+  return localStorage.getItem(CONNECTIONS_SIDEBAR_COLLAPSED_KEY) === 'true';
+}
+
+function writeConnectionsSidebarCollapsed(collapsed: boolean): void {
+  if (typeof localStorage === 'undefined') return;
+  localStorage.setItem(CONNECTIONS_SIDEBAR_COLLAPSED_KEY, String(collapsed));
 }
 
 let nextTabId = 1;
@@ -134,6 +180,8 @@ class DbStore {
   loaded = $state(false);
   listLoading = $state(false);
   listError = $state<string | null>(null);
+  activeConnectionId = $state<string | null>(readActiveConnectionId());
+  connectionsSidebarCollapsed = $state(readConnectionsSidebarCollapsed());
 
   /** Keyed by connection id. */
   workspaces = $state<Record<string, ConnectionWorkspace>>({});
@@ -147,6 +195,41 @@ class DbStore {
     this.workspaces = { ...this.workspaces, [connId]: { ...prev, ...patch } };
   }
 
+  setActiveConnection(connId: string | null): void {
+    this.activeConnectionId = connId;
+    writeActiveConnectionId(connId);
+  }
+
+  setConnectionsSidebarCollapsed(collapsed: boolean): void {
+    this.connectionsSidebarCollapsed = collapsed;
+    writeConnectionsSidebarCollapsed(collapsed);
+  }
+
+  patchAgent(connId: string, patch: Partial<DbAgentWorkspace>): void {
+    const ws = this.workspace(connId);
+    this.#patchWorkspace(connId, { agent: { ...ws.agent, ...patch } });
+  }
+
+  setAgentSize(connId: string, size: number): void {
+    this.patchAgent(connId, { size: Math.max(24, Math.min(60, Math.round(size))) });
+  }
+
+  resetAgent(connId: string): void {
+    const current = this.workspace(connId).agent;
+    this.#patchWorkspace(connId, {
+      agent: { ...emptyWorkspace().agent, kind: current.kind, size: current.size }
+    });
+  }
+
+  setSchemaPanelCollapsed(connId: string, collapsed: boolean): void {
+    this.#patchWorkspace(connId, { schemaPanelCollapsed: collapsed });
+  }
+
+  setTableSubTab(connId: string, tabId: string, kind: 'data' | 'schema'): void {
+    const ws = this.workspace(connId);
+    this.#patchWorkspace(connId, { tableSubTab: { ...ws.tableSubTab, [tabId]: kind } });
+  }
+
   // ── connections ──────────────────────────────────────────────────────────
   async refresh(signal?: AbortSignal): Promise<void> {
     this.listLoading = true;
@@ -154,6 +237,12 @@ class DbStore {
     try {
       const res = await dbApi.connections.list(signal);
       this.connections = res.data ?? [];
+      if (
+        this.activeConnectionId &&
+        !this.connections.some((connection) => connection.id === this.activeConnectionId)
+      ) {
+        this.setActiveConnection(null);
+      }
       this.loaded = true;
     } catch (err) {
       this.listError = err instanceof Error ? err.message : String(err);
@@ -168,11 +257,15 @@ class DbStore {
   async loadDatabases(connId: string): Promise<void> {
     try {
       const res = await dbApi.databases(connId);
-      const list = res.data ?? [];
+      const conn = this.connections.find((connection) => connection.id === connId);
+      const savedDatabase = conn?.database.trim() || null;
+      const fetched = res.data ?? [];
+      const list =
+        savedDatabase && !fetched.includes(savedDatabase) ? [savedDatabase, ...fetched] : fetched;
       const prev = this.workspace(connId);
       this.#patchWorkspace(connId, {
         databases: list,
-        database: prev.database ?? list[0] ?? null
+        database: prev.database ?? savedDatabase ?? list[0] ?? null
       });
     } catch (err) {
       this.#patchWorkspace(connId, {

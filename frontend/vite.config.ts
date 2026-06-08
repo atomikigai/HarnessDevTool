@@ -7,6 +7,7 @@ const backendPort = Number(process.env.BACKEND_PORT ?? '43177');
 const backendTarget = process.env.PUBLIC_API_BASE
   ? new URL(process.env.PUBLIC_API_BASE).origin
   : `http://localhost:${backendPort}`;
+const apiToken = process.env.PUBLIC_HARNESS_API_TOKEN ?? process.env.HARNESS_API_TOKEN ?? '';
 
 export default defineConfig({
   plugins: [tailwindcss(), sveltekit()],
@@ -16,7 +17,17 @@ export default defineConfig({
     proxy: {
       '/api': {
         target: backendTarget,
-        changeOrigin: true
+        changeOrigin: true,
+        configure: (proxy) => {
+          proxy.on('proxyReq', (proxyReq, req) => {
+            if (
+              apiToken.trim().length > 0 &&
+              ['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method ?? '')
+            ) {
+              proxyReq.setHeader('Authorization', `Bearer ${apiToken.trim()}`);
+            }
+          });
+        }
       }
     }
   }

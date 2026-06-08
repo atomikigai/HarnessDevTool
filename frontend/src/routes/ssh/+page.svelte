@@ -5,6 +5,7 @@
   import { sshApi, type Host, type HostInput } from '$lib/api/ssh';
   import { ApiError } from '$lib/api/client';
   import { Loader2, Plus, RefreshCw, Trash2, Activity, Terminal } from '$lib/icons';
+  import { sshStore } from '$lib/stores/ssh.svelte';
   import { toast } from 'svelte-sonner';
 
   let hosts = $state<Host[]>([]);
@@ -30,6 +31,9 @@
     try {
       const res = await sshApi.hosts.list();
       hosts = res.data ?? [];
+      if (sshStore.activeHostId && hosts.some((host) => host.id === sshStore.activeHostId)) {
+        goto(`/ssh/${sshStore.activeHostId}`, { replaceState: true });
+      }
       error = null;
     } catch (err) {
       error = err instanceof Error ? err.message : String(err);
@@ -178,7 +182,14 @@
                   {/if}
                 </div>
                 <div class="flex shrink-0 items-center gap-2">
-                  <Button variant="outline" size="sm" onclick={() => goto(`/ssh/${host.id}`)}>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onclick={() => {
+                      sshStore.setActiveHost(host.id);
+                      goto(`/ssh/${host.id}`);
+                    }}
+                  >
                     Open
                   </Button>
                   <Button variant="outline" size="sm" onclick={() => testHost(host)} disabled={testing[host.id]}>

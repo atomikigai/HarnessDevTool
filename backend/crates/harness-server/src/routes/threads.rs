@@ -25,6 +25,8 @@ pub struct CreateThreadRequest {
     pub title: Option<String>,
     #[serde(default)]
     pub autonomy_profile: Option<AutonomyProfile>,
+    #[serde(default)]
+    pub cwd: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -110,7 +112,23 @@ async fn create_thread(
     let thread = state.store.create_thread(title)?;
     let autonomy = body.autonomy_profile.unwrap_or(state.autonomy_profile);
     state.store.set_autonomy_profile(&thread.id, autonomy)?;
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let cwd = body
+        .cwd
+        .as_deref()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    if let Ok(identity) = state.repos.detect(&cwd) {
+        match state.repos.touch(&identity, Some(&thread.id), None, None) {
+            Ok((_record, context)) => {
+                if let Err(e) = state.store.set_thread_repo(&thread.id, context) {
+                    tracing::warn!(thread_id = %thread.id, error = %e, "failed to persist thread repo context");
+                }
+            }
+            Err(e) => {
+                tracing::warn!(thread_id = %thread.id, cwd = %cwd.display(), error = %e, "repo index update failed");
+            }
+        }
+    }
     let readiness = calculate_readiness(&state, &thread.id, &cwd, thread.title.as_deref());
     state.store.write_readiness_report(&thread.id, &readiness)?;
     state

@@ -45,6 +45,7 @@ export_harness_dev_env() {
 
   export HARNESS_BIND="${HARNESS_BIND:-127.0.0.1:${BACKEND_PORT}}"
   export HARNESS_CORS_ORIGIN="${HARNESS_CORS_ORIGIN:-http://localhost:${FRONTEND_PORT}}"
+  export PUBLIC_HARNESS_API_TOKEN="${PUBLIC_HARNESS_API_TOKEN:-${HARNESS_API_TOKEN:-}}"
 
   echo "Harness dev ports: backend http://${HARNESS_BIND}, frontend http://localhost:${FRONTEND_PORT}" >&2
 }

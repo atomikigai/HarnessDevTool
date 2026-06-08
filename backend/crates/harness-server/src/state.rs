@@ -5,6 +5,7 @@ use std::time::Instant;
 
 use anyhow::Result;
 use dashmap::DashMap;
+use harness_core::RepoIndex;
 use harness_core::{
     ActiveSession, ActiveSessionsSource, AgentsRegistry, BudgetStore, BudgetWarning,
     BudgetWarningSink, BudgetWiring, ClaudeTranscriptReporter, CodexStubReporter, CostReporter,
@@ -38,6 +39,7 @@ pub struct AppState {
     pub roles: Arc<RolesRegistry>,
     pub pause: Arc<PauseFlag>,
     pub budgets: Arc<BudgetStore>,
+    pub repos: Arc<RepoIndex>,
     pub policy: Arc<PolicyEngine>,
     pub approvals: Arc<ApprovalStore>,
     pub db: Arc<module_db::Manager>,
@@ -93,6 +95,7 @@ impl AppState {
         let roles = Arc::new(RolesRegistry::load_for_profile(&cfg.home, profile)?);
         let pause = Arc::new(PauseFlag::load(&cfg.home)?);
         let budgets = Arc::new(BudgetStore::load_for_profile(&cfg.home, profile)?);
+        let repos = Arc::new(RepoIndex::with_profile(&cfg.home, profile)?);
         let policy_path = cfg.home.join("profiles").join(profile).join("policy.toml");
         let policy = Arc::new(PolicyEngine::load(policy_path.clone()).unwrap_or_else(|e| {
             tracing::warn!(
@@ -195,6 +198,7 @@ impl AppState {
             roles,
             pause,
             budgets,
+            repos,
             policy,
             approvals,
             db,

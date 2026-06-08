@@ -19,6 +19,7 @@ pub mod query;
 pub mod row;
 pub mod schema;
 pub mod storage;
+pub mod structured;
 pub mod types;
 pub mod value;
 
@@ -26,6 +27,7 @@ pub use error::{DbError, DbResult};
 pub use export::{ExportFormat, ExportRequest, ExportResult, ExportScope, ExportTarget};
 pub use lease::PinnedTab;
 pub use manager::Manager;
+pub use structured::{Filter, FilterOp, OrderBy, OrderDir, SelectRequest, SelectResponse};
 pub use types::{
     Column, ColumnKind, Connection, ConnectionInput, Engine, ForeignKey, Index, QueryResult, Row,
     SchemaTree, SchemaTreeSchema, SslMode, Table, TableKind, TestResult,

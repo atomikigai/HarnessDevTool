@@ -135,22 +135,39 @@
 
     const isMac = navigator.platform.toUpperCase().startsWith('MAC');
     const key = ev.key.toLowerCase();
-    const hasSelection = activeSelection().length > 0;
+    const mayCopy =
+      ((isMac ? ev.metaKey : ev.ctrlKey) && !ev.altKey && key === 'c') ||
+      (!isMac && ev.ctrlKey && key === 'insert');
+    if (!mayCopy) return;
+
+    const selection = activeSelection();
     const copyCombo =
-      hasSelection &&
+      selection.length > 0 &&
       (((isMac ? ev.metaKey : ev.ctrlKey) && !ev.altKey && key === 'c') ||
         (!isMac && ev.ctrlKey && key === 'insert'));
     if (!copyCombo) return;
 
     ev.preventDefault();
     ev.stopPropagation();
-    void copyText(activeSelection());
+    void copyText(selection);
   }
 
   let reconnectAttempts = 0;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   const MAX_RECONNECT_ATTEMPTS = 30;
   const encoder = new TextEncoder();
+  const INPUT_FLUSH_MS = 8;
+  let inputBuffer = '';
+  let inputFlushTimer: ReturnType<typeof setTimeout> | null = null;
+  let inputSendChain: Promise<void> = Promise.resolve();
+  let outputQueue: Uint8Array[] = [];
+  let outputQueuedBytes = 0;
+  let outputRaf: number | null = null;
+  let scrollRaf: number | null = null;
+  let lastResizeCols = 0;
+  let lastResizeRows = 0;
+  let resizeInFlight = false;
+  let resizeQueued = false;
 
   // Reconnection policy: when SSE errors out, we close the current EventSource and
   // re-open after exponential backoff (max 10s). Because backend replays full
@@ -164,9 +181,63 @@
     return out;
   }
 
-  function writeBytes(bytes: Uint8Array) {
-    if (!term) return;
-    term.write(bytes);
+  function enqueueOutput(bytes: Uint8Array) {
+    if (!term || bytes.length === 0) return;
+    outputQueue.push(bytes);
+    outputQueuedBytes += bytes.length;
+    if (outputRaf !== null) return;
+    outputRaf = requestAnimationFrame(flushOutput);
+  }
+
+  function flushOutput() {
+    outputRaf = null;
+    if (!term || outputQueuedBytes === 0) {
+      outputQueue = [];
+      outputQueuedBytes = 0;
+      return;
+    }
+
+    const queued = outputQueue;
+    const queuedBytes = outputQueuedBytes;
+    outputQueue = [];
+    outputQueuedBytes = 0;
+    const bytes =
+      queued.length === 1
+        ? queued[0]
+        : (() => {
+            const merged = new Uint8Array(queuedBytes);
+            let offset = 0;
+            for (const chunk of queued) {
+              merged.set(chunk, offset);
+              offset += chunk.length;
+            }
+            return merged;
+          })();
+
+    const followTail = term.getViewportY() <= 1 && !term.hasSelection();
+    term.write(bytes, () => {
+      if (followTail) scrollTerminalToBottom();
+    });
+  }
+
+  function clearOutputQueue() {
+    if (outputRaf !== null) {
+      cancelAnimationFrame(outputRaf);
+      outputRaf = null;
+    }
+    outputQueue = [];
+    outputQueuedBytes = 0;
+  }
+
+  function scrollTerminalToBottom() {
+    const t = term;
+    if (!t || t.hasSelection()) return;
+    if (scrollRaf !== null) return;
+    scrollRaf = requestAnimationFrame(() => {
+      scrollRaf = null;
+      if (!term || term.hasSelection()) return;
+      term.scrollToBottom();
+    });
   }
 
   function focusGhosttyInput() {
@@ -184,7 +255,10 @@
     if (!term) return;
     connState = reconnectAttempts > 0 ? 'reconnecting' : 'connecting';
     // Reset terminal before catch-up replay so we don't duplicate output.
-    if (reconnectAttempts > 0) term.reset();
+    if (reconnectAttempts > 0) {
+      clearOutputQueue();
+      term.reset();
+    }
 
     sse = subscribeSSE(
       `/events?thread=${encodeURIComponent(threadId)}&session=${encodeURIComponent(sessionId)}`,
@@ -224,7 +298,7 @@
             const d = data as { session_id?: string; seq?: number; b64?: string };
             if (!d || typeof d.b64 !== 'string') return;
             try {
-              writeBytes(b64ToBytes(d.b64));
+              enqueueOutput(b64ToBytes(d.b64));
             } catch (err) {
               console.error('failed to decode session.output', err);
             }
@@ -235,7 +309,8 @@
             if (d.code !== undefined && d.code !== null) parts.push(`code ${d.code}`);
             if (d.signal) parts.push(`signal ${d.signal}`);
             const tail = parts.length > 0 ? ` (${parts.join(' | ')})` : '';
-            term?.write(`\r\n\x1b[33m[session ended${tail}]\x1b[0m\r\n`);
+            flushOutput();
+            term?.write(`\r\n\x1b[33m[session ended${tail}]\x1b[0m\r\n`, scrollTerminalToBottom);
             exited = true;
             connState = 'closed';
             sse?.close();
@@ -251,6 +326,7 @@
     if (!fitAddon || !term) return false;
     try {
       fitAddon.fit();
+      if (term.getViewportY() <= 1 && !term.hasSelection()) scrollTerminalToBottom();
     } catch {
       // fit may throw if not visible yet
       return false;
@@ -265,11 +341,27 @@
     if (!fitTerminal() || !term) return false;
     const cols = term.cols;
     const rows = term.rows;
+    if (cols === lastResizeCols && rows === lastResizeRows) return true;
+    if (resizeInFlight) {
+      resizeQueued = true;
+      return true;
+    }
+    resizeInFlight = true;
     try {
       await api.sessions.resize(sessionId, cols, rows);
+      lastResizeCols = cols;
+      lastResizeRows = rows;
     } catch (err) {
       // non-fatal; backend may be down
       console.warn('resize failed', err);
+    } finally {
+      resizeInFlight = false;
+      if (resizeQueued) {
+        resizeQueued = false;
+        queueMicrotask(() => {
+          void fitAndResize();
+        });
+      }
     }
     return true;
   }
@@ -279,6 +371,40 @@
     resizeTimer = setTimeout(() => {
       void fitAndResize();
     }, 100);
+  }
+
+  function queueInput(data: string) {
+    inputBuffer += data;
+    if (inputFlushTimer) return;
+    inputFlushTimer = setTimeout(flushInput, INPUT_FLUSH_MS);
+  }
+
+  function flushInput() {
+    if (inputFlushTimer) {
+      clearTimeout(inputFlushTimer);
+      inputFlushTimer = null;
+    }
+    if (!inputBuffer || exited || killed) {
+      inputBuffer = '';
+      return;
+    }
+    const payload = inputBuffer;
+    inputBuffer = '';
+    inputSendChain = inputSendChain
+      .catch(() => {
+        // Keep later keystrokes flowing even if one request failed.
+      })
+      .then(async () => {
+        try {
+          await api.sessions.input(sessionId, encoder.encode(payload));
+        } catch (err) {
+          if (err instanceof ApiError && err.status === 404) {
+            exited = true;
+          } else {
+            console.warn('input failed', err);
+          }
+        }
+      });
   }
 
   onMount(() => {
@@ -354,24 +480,22 @@
         if (!t) return false;
         const isMac = navigator.platform.toUpperCase().startsWith('MAC');
         const key = ev.key.toLowerCase();
-        const selection = t.getSelection();
-        const hasSelection = selection.length > 0;
-        const copyCombo =
-          ((isMac ? ev.metaKey : ev.ctrlKey) &&
-            !ev.shiftKey &&
-            !ev.altKey &&
-            key === 'c' &&
-            hasSelection) ||
+        const primaryCopyCombo =
+          (isMac ? ev.metaKey : ev.ctrlKey) && !ev.shiftKey && !ev.altKey && key === 'c';
+        const selectionCopyCombo = !isMac && ev.ctrlKey && key === 'insert';
+        const terminalCopyCombo =
           (!isMac && ev.ctrlKey && ev.shiftKey && key === 'c') ||
-          (!isMac && ev.ctrlKey && key === 'insert') ||
           (!isMac && ev.ctrlKey && ev.altKey && key === 'c');
+        const copyCombo =
+          primaryCopyCombo || selectionCopyCombo || terminalCopyCombo;
         const pasteCombo =
           (isMac && ev.metaKey && key === 'v') ||
           (!isMac && ev.shiftKey && key === 'insert') ||
           (!isMac && ev.ctrlKey && ev.altKey && key === 'v');
         if (copyCombo) {
-          ev.preventDefault();
           const sel = activeSelection();
+          if (!sel && !terminalCopyCombo) return false;
+          ev.preventDefault();
           if (sel) {
             void writeClipboard(sel)
               .then(() => toast.success('Copied to clipboard'))
@@ -395,21 +519,15 @@
       term.open(containerEl);
       await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
       fitTerminal();
+      scrollTerminalToBottom();
       if (cancelled) return;
 
-      // Char-at-a-time input forwarding — best UX for typical TTY apps.
-      term.onData(async (data) => {
+      // Buffered input forwarding. Sending one HTTP request per keystroke
+      // makes terminal typing visibly lag under load; a tiny buffer keeps TTY
+      // apps responsive while preserving byte order.
+      term.onData((data) => {
         if (exited || killed) return;
-        try {
-          await api.sessions.input(sessionId, encoder.encode(data));
-        } catch (err) {
-          if (err instanceof ApiError && err.status === 404) {
-            // session gone; mark exited
-            exited = true;
-          } else {
-            console.warn('input failed', err);
-          }
-        }
+        queueInput(data);
       });
 
       ro = new ResizeObserver(scheduleResize);
@@ -417,6 +535,7 @@
 
       openSSE();
       void fitAndResize();
+      scrollTerminalToBottom();
 
       window.addEventListener('keydown', onWindowKey, true);
 
@@ -443,6 +562,9 @@
     if (hideSelectionTimer) clearTimeout(hideSelectionTimer);
     if (reconnectTimer) clearTimeout(reconnectTimer);
     if (resizeTimer) clearTimeout(resizeTimer);
+    if (scrollRaf !== null) cancelAnimationFrame(scrollRaf);
+    if (inputFlushTimer) flushInput();
+    clearOutputQueue();
     ro?.disconnect();
     ro = null;
     sse?.close();
@@ -460,7 +582,8 @@
       sse?.close();
       sse = null;
       connState = 'closed';
-      term?.write('\r\n\x1b[31m[killed by user]\x1b[0m\r\n');
+      flushOutput();
+      term?.write('\r\n\x1b[31m[killed by user]\x1b[0m\r\n', scrollTerminalToBottom);
       toast.success('Session killed');
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);

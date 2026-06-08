@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::repos::RepoContext;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
@@ -168,6 +170,8 @@ pub struct Thread {
     pub execution_mode: Option<ExecutionMode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub autonomy_profile: Option<AutonomyProfile>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo: Option<RepoContext>,
 }
 
 impl Thread {
@@ -178,6 +182,7 @@ impl Thread {
             created_at,
             execution_mode: None,
             autonomy_profile: None,
+            repo: None,
         }
     }
 }

@@ -12,8 +12,9 @@ use crate::lease::{classify_txn, spawn_reaper, PinnedTab, TabLeases, TxnIntent};
 use crate::pool::{build_pool_for_input, build_read_only_pool, DbPool, PoolCache};
 use crate::query::{QueryRegistry, RunningQuery};
 use crate::row as row_ops;
-use crate::schema::introspect;
+use crate::schema::{introspect, introspect_filtered};
 use crate::storage::ConnectionsStore;
+use crate::structured::{self, SelectRequest, SelectResponse};
 use crate::types::{Connection, ConnectionInput, Engine, QueryResult, Row, SchemaTree, TestResult};
 use crate::value::Value;
 
@@ -155,6 +156,18 @@ impl Manager {
         introspect(&pool, conn.engine, database).await
     }
 
+    pub async fn schema_tree_filtered(
+        &self,
+        connection_id: &str,
+        database: Option<&str>,
+        schema: Option<&str>,
+        table: Option<&str>,
+    ) -> DbResult<SchemaTree> {
+        let conn = self.store.get(connection_id)?;
+        let pool = build_read_only_pool(&conn, database).await?;
+        introspect_filtered(&pool, conn.engine, database, schema, table).await
+    }
+
     // ---- Query -------------------------------------------------------------
 
     pub async fn query_run(
@@ -168,6 +181,17 @@ impl Manager {
     ) -> DbResult<QueryResult> {
         self.query_run_with_tab(connection_id, database, None, sql, _params, page_size, page)
             .await
+    }
+
+    pub async fn structured_select(
+        &self,
+        connection_id: &str,
+        database: Option<&str>,
+        req: SelectRequest,
+    ) -> DbResult<SelectResponse> {
+        let conn = self.store.get(connection_id)?;
+        let pool = build_read_only_pool(&conn, database).await?;
+        structured::select(&pool, req).await
     }
 
     /// Variant that participates in the per-tab lease system (Q13).

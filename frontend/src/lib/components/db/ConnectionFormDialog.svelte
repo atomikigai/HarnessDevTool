@@ -113,10 +113,11 @@
       fieldErrors = { params: paramsResult.error };
       return null;
     }
+    const trimmedDatabase = database.trim();
     const body: ConnectionInput = {
       name: name.trim(),
       engine,
-      database: database.trim()
+      database: engine === 'postgres' && !trimmedDatabase ? 'postgres' : trimmedDatabase
     };
     if (needsHost(engine)) {
       body.host = host.trim();

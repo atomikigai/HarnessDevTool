@@ -1,9 +1,10 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onDestroy, onMount } from 'svelte';
   import { goto } from '$app/navigation';
   import { page } from '$app/stores';
   import { Button } from '$lib/components/ui/button';
   import { sshApi, type Host, type SftpListResult, type SftpTransfer } from '$lib/api/ssh';
+  import { sshStore } from '$lib/stores/ssh.svelte';
   import {
     AlertTriangle,
     ArrowUp,
@@ -50,10 +51,41 @@
   );
 
   onMount(async () => {
+    sshStore.setActiveHost(hostId);
+    const saved = sshStore.workspace(hostId);
+    path = saved.path;
+    result = saved.result;
+    error = saved.error;
+    selectedRemotePath = saved.selectedRemotePath;
+    downloadLocalPath = saved.downloadLocalPath;
+    uploadLocalPath = saved.uploadLocalPath;
+    uploadRemotePath = saved.uploadRemotePath;
+    mkdirPath = saved.mkdirPath;
+    renameToPath = saved.renameToPath;
+    lastTransfer = saved.lastTransfer;
+    lastMutation = saved.lastMutation;
+
     await loadHost();
-    if (host) {
-      await loadRemote('.');
+    if (host && !result) {
+      await loadRemote(path || '.');
     }
+  });
+
+  onDestroy(() => {
+    if (!hostId) return;
+    sshStore.saveWorkspace(hostId, {
+      path,
+      result,
+      error,
+      selectedRemotePath,
+      downloadLocalPath,
+      uploadLocalPath,
+      uploadRemotePath,
+      mkdirPath,
+      renameToPath,
+      lastTransfer,
+      lastMutation
+    });
   });
 
   async function loadHost() {
@@ -242,7 +274,16 @@
       </p>
     </div>
     <div class="flex shrink-0 items-center gap-2">
-      <Button variant="outline" size="sm" onclick={() => goto('/ssh')}>Hosts</Button>
+      <Button
+        variant="outline"
+        size="sm"
+        onclick={() => {
+          sshStore.setActiveHost(null);
+          goto('/ssh');
+        }}
+      >
+        Hosts
+      </Button>
       <Button variant="outline" size="sm" onclick={() => loadRemote()} disabled={!host || loadingRemote}>
         {#if loadingRemote}<Loader2 class="h-3.5 w-3.5 animate-spin" />{:else}<RefreshCw class="h-3.5 w-3.5" />{/if}
         Refresh

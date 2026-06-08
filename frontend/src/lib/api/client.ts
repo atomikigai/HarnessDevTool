@@ -170,6 +170,7 @@ export interface ThreadSummary {
   created_at?: string;
   execution_mode?: ExecutionMode | null;
   autonomy_profile?: AutonomyProfile | null;
+  repo?: RepoContext | null;
   readiness?: ReadinessReport | null;
   sessions?: SessionMeta[];
 }
@@ -177,6 +178,60 @@ export interface ThreadSummary {
 export type ExecutionMode = 'quick' | 'standard' | 'project' | 'exploratory' | 'blocked';
 export type ReadinessStatus = 'ready' | 'ready_with_warnings' | 'blocked';
 export type AutonomyProfile = 'manual' | 'assisted' | 'autonomous' | 'ci';
+
+export interface RepoContext {
+  repo_id: string;
+  project_id?: string | null;
+  root_path: string;
+  canonical_path: string;
+  remote_url?: string | null;
+  branch?: string | null;
+  head_sha?: string | null;
+}
+
+export interface RepoRecord {
+  id: string;
+  profile: string;
+  project_id?: string | null;
+  root_path: string;
+  canonical_path: string;
+  remote_url?: string | null;
+  default_branch?: string | null;
+  last_branch?: string | null;
+  last_head_sha?: string | null;
+  last_thread_id?: string | null;
+  last_session_id?: string | null;
+  summary?: string | null;
+  first_seen_at: number;
+  last_seen_at: number;
+}
+
+export interface RepoThreadRecord {
+  repo_id: string;
+  thread_id: string;
+  branch?: string | null;
+  head_sha?: string | null;
+  started_at: number;
+  last_seen_at: number;
+  summary?: string | null;
+}
+
+export interface RepoIdentity {
+  project_id?: string | null;
+  root_path: string;
+  canonical_path: string;
+  remote_url?: string | null;
+  default_branch?: string | null;
+  branch?: string | null;
+  head_sha?: string | null;
+}
+
+export interface CurrentRepoReport {
+  detected: boolean;
+  identity?: RepoIdentity | null;
+  repo?: RepoRecord | null;
+  threads: RepoThreadRecord[];
+}
 
 export interface ReadinessIssue {
   id: string;
@@ -230,6 +285,8 @@ export interface SessionMeta {
   task_id?: string | null;
   /** Coarse resource/work scopes granted to this session. */
   scopes?: string[];
+  /** Repository/worktree identity detected by the harness when the session spawned. */
+  repo?: RepoContext | null;
   /** Parent session id when this session was spawned by an orchestrator. */
   parent_session_id?: string | null;
   /** Topmost ancestor in the session tree (equals `id` for root sessions). */
@@ -479,12 +536,17 @@ export const api = {
   },
   threads: {
     list: (signal?: AbortSignal) => apiRequest<ThreadSummary[]>('/threads', { signal }),
-    create: (title?: string, autonomyProfile?: AutonomyProfile, signal?: AbortSignal) =>
+    create: (
+      title?: string,
+      autonomyProfile?: AutonomyProfile,
+      cwd?: string,
+      signal?: AbortSignal
+    ) =>
       apiRequest<{ id: string; readiness: ReadinessReport }>('/threads', {
         method: 'POST',
         body:
-          title || autonomyProfile
-            ? { title: title || undefined, autonomy_profile: autonomyProfile }
+          title || autonomyProfile || cwd
+            ? { title: title || undefined, autonomy_profile: autonomyProfile, cwd }
             : undefined,
         signal
       }),
@@ -503,6 +565,13 @@ export const api = {
         body: { autonomy_profile: autonomyProfile },
         signal
       })
+  },
+  repos: {
+    current: (cwd: string, signal?: AbortSignal) =>
+      apiRequest<CurrentRepoReport>(`/repos/current?cwd=${encodeURIComponent(cwd)}`, { signal }),
+    get: (id: string, signal?: AbortSignal) => apiRequest<RepoRecord>(`/repos/${id}`, { signal }),
+    threads: (id: string, signal?: AbortSignal) =>
+      apiRequest<RepoThreadRecord[]>(`/repos/${id}/threads`, { signal })
   },
   spec: {
     get: (tid: string) =>

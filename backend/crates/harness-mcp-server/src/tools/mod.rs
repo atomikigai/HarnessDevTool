@@ -384,8 +384,7 @@ pub fn list_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "db_query".into(),
-            description: "Run a SQL query against a saved DB connection. Non-SELECT statements \
-                require `approved: true`."
+            description: "Run a targeted SQL query against a saved DB connection. Prefer small read-only SELECTs with exact filters and LIMIT for inspection; non-SELECT statements require `approved: true`."
                 .into(),
             input_schema: json!({
                 "type": "object",
@@ -393,22 +392,385 @@ pub fn list_descriptors() -> Vec<ToolDescriptor> {
                 "properties": {
                     "connection": { "type": "string", "description": "connection id" },
                     "database":   { "type": "string" },
-                    "sql":        { "type": "string" },
-                    "limit":      { "type": "integer", "minimum": 1 },
+                    "sql":        { "type": "string", "description": "single SQL statement; use exact schema/table filters and avoid broad scans for exploration" },
+                    "limit":      { "type": "integer", "minimum": 1, "description": "maximum rows returned; use 20 for exploratory samples unless more is requested" },
                     "approved":   { "type": "boolean" }
                 }
             }),
         },
         ToolDescriptor {
-            name: "db_schema".into(),
-            description: "Return the schema tree (schemas/tables/columns) of a connection."
+            name: "db_select".into(),
+            description: "Run a structured read-only SELECT. The agent fills table, columns, filters, ordering, and limit; the backend validates identifiers and builds SQL safely."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["connection", "table"],
+                "properties": {
+                    "connection": { "type": "string" },
+                    "database":   { "type": "string" },
+                    "schema":     { "type": "string" },
+                    "table":      { "type": "string" },
+                    "columns":    { "type": "array", "items": { "type": "string" } },
+                    "filters":    {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "required": ["column", "op"],
+                            "properties": {
+                                "column": { "type": "string" },
+                                "op": { "type": "string", "enum": ["eq", "neq", "gt", "gte", "lt", "lte", "like", "ilike", "contains", "starts_with", "in", "is_null", "is_not_null"] },
+                                "value": {},
+                                "values": { "type": "array", "items": {} }
+                            }
+                        }
+                    },
+                    "order_by":   {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "required": ["column"],
+                            "properties": {
+                                "column": { "type": "string" },
+                                "dir": { "type": "string", "enum": ["asc", "desc"] }
+                            }
+                        }
+                    },
+                    "limit":      { "type": "integer", "minimum": 1, "description": "default 20, capped at 500" }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "db_validate_query".into(),
+            description: "Validate a raw SQL or structured db_select request before execution. Checks read-only/single-statement SQL or table/column/operator validity for structured selects."
                 .into(),
             input_schema: json!({
                 "type": "object",
                 "required": ["connection"],
                 "properties": {
                     "connection": { "type": "string" },
-                    "database":   { "type": "string" }
+                    "database":   { "type": "string" },
+                    "sql":        { "type": "string" },
+                    "schema":     { "type": "string" },
+                    "table":      { "type": "string" },
+                    "columns":    { "type": "array", "items": { "type": "string" } },
+                    "filters":    { "type": "array", "items": { "type": "object" } },
+                    "order_by":   { "type": "array", "items": { "type": "object" } },
+                    "limit":      { "type": "integer", "minimum": 1 }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "db_schema".into(),
+            description: "Inspect database schema. For a specific table, pass `schema` and `table` to return only that table instead of the whole schema tree."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["connection"],
+                "properties": {
+                    "connection": { "type": "string" },
+                    "database":   { "type": "string" },
+                    "schema":     { "type": "string", "description": "schema name, e.g. public" },
+                    "table":      { "type": "string", "description": "table/view name, e.g. users" }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "db_table_info".into(),
+            description: "Return compact metadata for one table/view: columns, primary key flags, indexes, and foreign keys. Prefer this over broad schema introspection when the user names a table."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["connection", "table"],
+                "properties": {
+                    "connection": { "type": "string" },
+                    "database":   { "type": "string" },
+                    "schema":     { "type": "string", "description": "schema name, e.g. public" },
+                    "table":      { "type": "string", "description": "table/view name, e.g. users" }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "db_search_tables".into(),
+            description: "Search schemas, tables, and columns by name using catalog queries filtered by the search term. Use this when the exact table name is unknown."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["connection", "q"],
+                "properties": {
+                    "connection": { "type": "string" },
+                    "database":   { "type": "string" },
+                    "q":          { "type": "string", "description": "case-insensitive table/column search text" },
+                    "limit":      { "type": "integer", "minimum": 1, "description": "maximum matches; default 20" }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "db_sample".into(),
+            description: "Return a small read-only sample from one table using quoted identifiers and LIMIT. Prefer this over hand-written SELECTs for simple examples."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["connection", "table"],
+                "properties": {
+                    "connection": { "type": "string" },
+                    "database":   { "type": "string" },
+                    "schema":     { "type": "string" },
+                    "table":      { "type": "string" },
+                    "columns":    { "type": "array", "items": { "type": "string" }, "description": "optional columns to return; omit for all columns" },
+                    "limit":      { "type": "integer", "minimum": 1, "description": "default 20, capped at 100" }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "db_count".into(),
+            description: "Return COUNT(*) for one table using quoted identifiers. Prefer this over hand-written count queries for simple row counts."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["connection", "table"],
+                "properties": {
+                    "connection": { "type": "string" },
+                    "database":   { "type": "string" },
+                    "schema":     { "type": "string" },
+                    "table":      { "type": "string" }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "db_distinct_values".into(),
+            description: "Return distinct values for one column with frequency counts. Use for enum-like/status/category columns before filtering or summarizing."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["connection", "table", "column"],
+                "properties": {
+                    "connection": { "type": "string" },
+                    "database":   { "type": "string" },
+                    "schema":     { "type": "string" },
+                    "table":      { "type": "string" },
+                    "column":     { "type": "string" },
+                    "limit":      { "type": "integer", "minimum": 1, "description": "default 50, capped at 200" }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "db_find_rows".into(),
+            description: "Search text across selected columns of one table and return a small sample. Prefer this over hand-written LIKE queries."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["connection", "table", "q", "columns"],
+                "properties": {
+                    "connection": { "type": "string" },
+                    "database":   { "type": "string" },
+                    "schema":     { "type": "string" },
+                    "table":      { "type": "string" },
+                    "q":          { "type": "string" },
+                    "columns":    { "type": "array", "items": { "type": "string" }, "description": "columns to search" },
+                    "return_columns": { "type": "array", "items": { "type": "string" }, "description": "optional projected columns; omit for all columns" },
+                    "limit":      { "type": "integer", "minimum": 1, "description": "default 20, capped at 100" }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "db_aggregate".into(),
+            description: "Run a structured aggregate query with group_by and metrics such as count, count_distinct, sum, avg, min, max. Prefer this over raw GROUP BY SQL."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["connection", "table", "metrics"],
+                "properties": {
+                    "connection": { "type": "string" },
+                    "database":   { "type": "string" },
+                    "schema":     { "type": "string" },
+                    "table":      { "type": "string" },
+                    "group_by":   { "type": "array", "items": { "type": "string" } },
+                    "metrics":    {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "required": ["fn", "as"],
+                            "properties": {
+                                "fn": { "type": "string", "enum": ["count", "count_distinct", "sum", "avg", "min", "max"] },
+                                "column": { "type": "string", "description": "required except for count(*)" },
+                                "as": { "type": "string" }
+                            }
+                        }
+                    },
+                    "limit":      { "type": "integer", "minimum": 1, "description": "default 50, capped at 500" }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "db_extract_enriched".into(),
+            description: "Extract rows from one table and enrich foreign-key/id columns with readable labels from referenced tables. Use when the user asks to extract information with FK texts."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["connection", "table"],
+                "properties": {
+                    "connection": { "type": "string" },
+                    "database": { "type": "string" },
+                    "schema": { "type": "string" },
+                    "table": { "type": "string" },
+                    "columns": { "type": "array", "items": { "type": "string" }, "description": "base columns to return; omit for all columns" },
+                    "filters": { "type": "array", "items": { "type": "object" }, "description": "same structured filters as db_select" },
+                    "include_fk_labels": { "type": "boolean", "description": "default true" },
+                    "label_columns": { "type": "array", "items": { "type": "string" }, "description": "preferred columns for labels, e.g. name,title,email,code" },
+                    "limit": { "type": "integer", "minimum": 1, "description": "default 20, capped at 200" }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "db_relation_performance".into(),
+            description: "Return performance and maintenance stats for one table/view. PostgreSQL returns size, tuple estimates, scan counters, vacuum/analyze timestamps, and index stats. Prefer this over broad performance audits when the user names a relation."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["connection", "table"],
+                "properties": {
+                    "connection": { "type": "string" },
+                    "database":   { "type": "string" },
+                    "schema":     { "type": "string", "description": "schema name, e.g. public; defaults to public for PostgreSQL" },
+                    "table":      { "type": "string", "description": "table/view name" }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "db_row_insert".into(),
+            description: "Insert one row into a table. Mutating tool: requires approved=true after explicit user confirmation."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["connection", "table", "values"],
+                "properties": {
+                    "connection": { "type": "string" },
+                    "database": { "type": "string" },
+                    "schema": { "type": "string" },
+                    "table": { "type": "string" },
+                    "values": { "type": "object" },
+                    "approved": { "type": "boolean" }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "db_row_delete".into(),
+            description: "Delete one or more rows by primary-key maps. Mutating tool: requires approved=true after backup/explicit user confirmation."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["connection", "table"],
+                "properties": {
+                    "connection": { "type": "string" },
+                    "database": { "type": "string" },
+                    "schema": { "type": "string" },
+                    "table": { "type": "string" },
+                    "pk": { "type": "object" },
+                    "pks": { "type": "array", "items": { "type": "object" } },
+                    "approved": { "type": "boolean" }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "db_row_duplicate".into(),
+            description: "Duplicate one or more rows by primary-key maps. Mutating tool: requires approved=true after explicit user confirmation."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["connection", "table"],
+                "properties": {
+                    "connection": { "type": "string" },
+                    "database": { "type": "string" },
+                    "schema": { "type": "string" },
+                    "table": { "type": "string" },
+                    "pk": { "type": "object" },
+                    "pks": { "type": "array", "items": { "type": "object" } },
+                    "approved": { "type": "boolean" }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "db_export_table".into(),
+            description: "Export one table to a file under HARNESS_HOME/exports/db. Formats: json, csv, markdown, xlsx, sql_insert."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["connection", "table", "format"],
+                "properties": {
+                    "connection": { "type": "string" },
+                    "database": { "type": "string" },
+                    "schema": { "type": "string" },
+                    "table": { "type": "string" },
+                    "columns": { "type": "array", "items": { "type": "string" } },
+                    "format": { "type": "string", "enum": ["json", "csv", "markdown", "xlsx", "sql_insert"] },
+                    "limit": { "type": "integer", "minimum": 1, "description": "used for markdown/xlsx; default 5000, capped at 100000" }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "db_export_query".into(),
+            description: "Export the result of a read-only SQL query to a file under HARNESS_HOME/exports/db. Use for complex SELECTs with joins/laterals/JSON aggregates. Formats: json, csv, markdown, xlsx."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["connection", "sql", "format"],
+                "properties": {
+                    "connection": { "type": "string" },
+                    "database": { "type": "string" },
+                    "sql": { "type": "string", "description": "single read-only SQL statement" },
+                    "format": { "type": "string", "enum": ["json", "csv", "markdown", "xlsx"] },
+                    "filename": { "type": "string", "description": "optional filename without path" },
+                    "limit": { "type": "integer", "minimum": 1, "description": "default 5000, capped at 100000" }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "db_generate_view_sql".into(),
+            description: "Generate CREATE VIEW or CREATE MATERIALIZED VIEW SQL from a read-only SELECT. Does not execute DDL; returns migration-style SQL text."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["connection", "view", "sql"],
+                "properties": {
+                    "connection": { "type": "string" },
+                    "schema": { "type": "string" },
+                    "view": { "type": "string" },
+                    "sql": { "type": "string", "description": "single read-only SELECT statement" },
+                    "replace": { "type": "boolean", "description": "default true" },
+                    "materialized": { "type": "boolean", "description": "PostgreSQL only" }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "db_drop_table".into(),
+            description: "Drop a table. Dangerous mutating tool: requires approved=true and should only be called after db_backup."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["connection", "table"],
+                "properties": {
+                    "connection": { "type": "string" },
+                    "database": { "type": "string" },
+                    "schema": { "type": "string" },
+                    "table": { "type": "string" },
+                    "cascade": { "type": "boolean" },
+                    "approved": { "type": "boolean" }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "db_drop_schema".into(),
+            description: "Drop a schema. Dangerous mutating tool: requires approved=true and should only be called after db_backup."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["connection", "schema"],
+                "properties": {
+                    "connection": { "type": "string" },
+                    "database": { "type": "string" },
+                    "schema": { "type": "string" },
+                    "cascade": { "type": "boolean" },
+                    "approved": { "type": "boolean" }
                 }
             }),
         },

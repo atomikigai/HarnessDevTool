@@ -16,19 +16,42 @@ pub async fn introspect(
     _engine: Engine,
     database: Option<&str>,
 ) -> DbResult<SchemaTree> {
+    introspect_filtered(pool, _engine, database, None, None).await
+}
+
+pub async fn introspect_filtered(
+    pool: &DbPool,
+    _engine: Engine,
+    database: Option<&str>,
+    schema: Option<&str>,
+    table: Option<&str>,
+) -> DbResult<SchemaTree> {
     match pool {
-        DbPool::Sqlite(p) => sqlite_tree(p).await,
-        DbPool::Postgres(p) => postgres_tree(p).await,
-        DbPool::Mysql(p) => mysql_tree(p, database).await,
+        DbPool::Sqlite(p) => sqlite_tree(p, table).await,
+        DbPool::Postgres(p) => postgres_tree(p, schema, table).await,
+        DbPool::Mysql(p) => mysql_tree(p, database, table).await,
     }
 }
 
-async fn sqlite_tree(pool: &sqlx::SqlitePool) -> DbResult<SchemaTree> {
-    let tables = sqlx::query(
-        "SELECT name, type FROM sqlite_master WHERE type IN ('table','view') AND name NOT LIKE 'sqlite_%' ORDER BY name",
-    )
-    .fetch_all(pool)
-    .await?;
+async fn sqlite_tree(pool: &sqlx::SqlitePool, table_filter: Option<&str>) -> DbResult<SchemaTree> {
+    let tables = if let Some(table) = table_filter.filter(|table| !table.trim().is_empty()) {
+        sqlx::query(
+            "SELECT name, type FROM sqlite_master
+             WHERE type IN ('table','view') AND name NOT LIKE 'sqlite_%' AND name = ?
+             ORDER BY name",
+        )
+        .bind(table)
+        .fetch_all(pool)
+        .await?
+    } else {
+        sqlx::query(
+            "SELECT name, type FROM sqlite_master
+             WHERE type IN ('table','view') AND name NOT LIKE 'sqlite_%'
+             ORDER BY name",
+        )
+        .fetch_all(pool)
+        .await?
+    };
     let mut out = Vec::new();
     for t in tables {
         let name: String = t.try_get(0).unwrap_or_default();
@@ -140,13 +163,21 @@ async fn sqlite_tree(pool: &sqlx::SqlitePool) -> DbResult<SchemaTree> {
     })
 }
 
-async fn postgres_tree(pool: &sqlx::PgPool) -> DbResult<SchemaTree> {
+async fn postgres_tree(
+    pool: &sqlx::PgPool,
+    schema_filter: Option<&str>,
+    table_filter: Option<&str>,
+) -> DbResult<SchemaTree> {
     let rows = sqlx::query(
         "SELECT table_schema, table_name, table_type
          FROM information_schema.tables
          WHERE table_schema NOT IN ('pg_catalog','information_schema')
+           AND ($1::text IS NULL OR table_schema = $1)
+           AND ($2::text IS NULL OR table_name = $2)
          ORDER BY table_schema, table_name",
     )
+    .bind(schema_filter.filter(|schema| !schema.trim().is_empty()))
+    .bind(table_filter.filter(|table| !table.trim().is_empty()))
     .fetch_all(pool)
     .await?;
 
@@ -251,7 +282,11 @@ async fn postgres_tree(pool: &sqlx::PgPool) -> DbResult<SchemaTree> {
     Ok(SchemaTree { schemas })
 }
 
-async fn mysql_tree(pool: &sqlx::MySqlPool, database: Option<&str>) -> DbResult<SchemaTree> {
+async fn mysql_tree(
+    pool: &sqlx::MySqlPool,
+    database: Option<&str>,
+    table_filter: Option<&str>,
+) -> DbResult<SchemaTree> {
     let db = match database {
         Some(d) if !d.is_empty() => d.to_string(),
         _ => {
@@ -261,9 +296,12 @@ async fn mysql_tree(pool: &sqlx::MySqlPool, database: Option<&str>) -> DbResult<
     };
     let rows = sqlx::query(
         "SELECT table_name, table_type FROM information_schema.tables
-         WHERE table_schema = ? ORDER BY table_name",
+         WHERE table_schema = ? AND (? IS NULL OR table_name = ?)
+         ORDER BY table_name",
     )
     .bind(&db)
+    .bind(table_filter.filter(|table| !table.trim().is_empty()))
+    .bind(table_filter.filter(|table| !table.trim().is_empty()))
     .fetch_all(pool)
     .await?;
     let mut tables = Vec::new();

@@ -54,6 +54,9 @@
     onEdit?: (row: unknown[], idx: number) => void;
     onDuplicate?: (row: unknown[], idx: number) => void;
     onDelete?: (row: unknown[], idx: number) => void;
+    selectedRowIndex?: number | null;
+    onRowSelect?: (row: unknown[], idx: number) => void;
+    onRowContextMenu?: (row: unknown[], idx: number, x: number, y: number) => void;
     /** Commit a cell edit into the parent's pending buffer. */
     onCellCommit?: (rowIndex: number, columnName: string, newValue: unknown) => void;
     /** Commit an inline-insert cell edit (per tempId, per column). */
@@ -73,6 +76,9 @@
     onEdit,
     onDuplicate,
     onDelete,
+    selectedRowIndex = null,
+    onRowSelect,
+    onRowContextMenu,
     onCellCommit,
     onInsertCellCommit,
     onInsertDiscardRow
@@ -469,6 +475,17 @@
 
   /** True when there's a table to render (rows OR pending inserts). */
   const hasAnything = $derived(rows.length > 0 || pendingInserts.length > 0);
+
+  function selectRow(row: unknown[], idx: number) {
+    onRowSelect?.(row, idx);
+  }
+
+  function openRowMenu(event: MouseEvent, row: unknown[], idx: number) {
+    event.preventDefault();
+    event.stopPropagation();
+    onRowSelect?.(row, idx);
+    onRowContextMenu?.(row, idx, event.clientX, event.clientY);
+  }
 </script>
 
 <div class="flex h-full min-h-0 flex-col" style="background: var(--surface-canvas);">
@@ -759,9 +776,13 @@
               <tr
                 class="group"
                 style="position: absolute; top: 0; left: 0; right: 0; transform: translateY({v.start -
-                  scrollMargin}px); height: {v.size}px; background: {v.index % 2 === 1
-                  ? 'var(--row-stripe)'
-                  : 'transparent'};"
+                  scrollMargin}px); height: {v.size}px; background: {selectedRowIndex === v.index
+                  ? 'var(--accent-soft)'
+                  : v.index % 2 === 1
+                    ? 'var(--row-stripe)'
+                    : 'transparent'};"
+                onclick={() => selectRow(row, v.index)}
+                oncontextmenu={(event) => openRowMenu(event, row, v.index)}
               >
                 <td
                   class="px-3 py-2 text-right font-mono text-[11px]"
@@ -784,7 +805,13 @@
             {#each rows as row, ri (ri)}
               <tr
                 class="group"
-                style="background: {ri % 2 === 1 ? 'var(--row-stripe)' : 'transparent'};"
+                style="background: {selectedRowIndex === ri
+                  ? 'var(--accent-soft)'
+                  : ri % 2 === 1
+                    ? 'var(--row-stripe)'
+                    : 'transparent'};"
+                onclick={() => selectRow(row, ri)}
+                oncontextmenu={(event) => openRowMenu(event, row, ri)}
               >
                 <td
                   class="px-3 py-2 text-right font-mono text-[11px]"

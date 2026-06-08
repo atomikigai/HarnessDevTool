@@ -61,6 +61,7 @@ export {
   ArrowUp,
   Maximize2,
   Minimize2,
+  GripVertical,
   PanelLeftClose,
   PanelLeftOpen,
   PanelRightClose,

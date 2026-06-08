@@ -7,6 +7,7 @@ pub mod events;
 pub mod health;
 pub mod knowledge;
 pub mod profiles;
+pub mod repos;
 pub mod sessions;
 pub mod spec;
 pub mod ssh;

@@ -9,6 +9,7 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use crate::events::{Event, TimelineItem, TimelineReport};
+use crate::repos::RepoContext;
 use crate::threads::{AutonomyProfile, ExecutionMode, Handoff, ReadinessReport, Thread};
 use crate::{validate_profile_id, validate_task_id, validate_thread_id};
 
@@ -150,6 +151,21 @@ impl Store {
         let bytes = std::fs::read(&meta_path)?;
         let mut thread: Thread = serde_json::from_slice(&bytes)?;
         thread.autonomy_profile = Some(profile);
+        let mut meta = File::create(&meta_path)?;
+        meta.write_all(serde_json::to_vec_pretty(&thread)?.as_slice())?;
+        meta.sync_all()?;
+        Ok(thread)
+    }
+
+    pub fn set_thread_repo(&self, id: &str, repo: RepoContext) -> Result<Thread, StoreError> {
+        let _guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
+        let meta_path = self.thread_dir(id)?.join("meta.json");
+        if !meta_path.exists() {
+            return Err(StoreError::NotFound(id.to_string()));
+        }
+        let bytes = std::fs::read(&meta_path)?;
+        let mut thread: Thread = serde_json::from_slice(&bytes)?;
+        thread.repo = Some(repo);
         let mut meta = File::create(&meta_path)?;
         meta.write_all(serde_json::to_vec_pretty(&thread)?.as_slice())?;
         meta.sync_all()?;

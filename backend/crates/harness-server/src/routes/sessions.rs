@@ -7,9 +7,10 @@ use axum::extract::{Multipart, Path, State};
 use axum::http::StatusCode;
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
+use harness_core::RepoContext;
 use harness_session::{
     AgentKind, AgentState, MailboxMessage, MailboxStore, McpServerConfig, SessionError,
-    SessionMeta, SpawnOpts,
+    SessionMeta, SessionRepoContext, SpawnOpts,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
@@ -216,11 +217,21 @@ pub async fn spawn_session_internal(
             );
         }
     }
+    if matches!(underlying, AgentKind::Claude) {
+        if let Err(e) = ensure_claude_trust(&args.cwd) {
+            tracing::warn!(
+                cwd = %args.cwd.display(),
+                error = %e,
+                "could not pre-accept Claude workspace trust; claude may show the trust dialog"
+            );
+        }
+    }
 
     // Pre-mint the session id so we can embed it in the MCP config (so the
     // MCP child knows its own sid via `--session-id`, which lets the
     // `session.spawn_child` tool attribute spawns to the right parent).
     let session_id = uuid::Uuid::new_v4().to_string();
+    let repo_context = detect_and_touch_repo(state, &args.cwd, &args.thread_id, &session_id);
 
     let mut load_crawl4ai = args
         .auto_intro
@@ -252,6 +263,13 @@ pub async fn spawn_session_internal(
     )?;
     opts.session_id_override = Some(session_id.clone());
     opts.initial_size = args.initial_size;
+    if let Some(repo) = repo_context.as_ref() {
+        let project_context = project_context_brief(repo);
+        opts.auto_intro = Some(match opts.auto_intro.take() {
+            Some(existing) if !existing.is_empty() => format!("{existing}\n\n{project_context}"),
+            _ => project_context,
+        });
+    }
     if let Some(auto_intro) = args.auto_intro.as_deref() {
         opts.auto_intro = Some(match opts.auto_intro.take() {
             Some(existing) if !existing.is_empty() => format!("{existing}\n\n{auto_intro}"),
@@ -297,6 +315,7 @@ pub async fn spawn_session_internal(
     opts.owner_session_id = args.owner_session_id.clone();
     opts.task_id = args.task_id.clone();
     opts.scopes = args.scopes.clone();
+    opts.repo = repo_context.clone().map(session_repo_context);
 
     // For child spawns we also seed an explicit `role_prompt` so the worker
     // immediately sees its briefing as the first user turn. The role-template
@@ -368,6 +387,77 @@ pub async fn spawn_session_internal(
     }
 
     Ok(meta.id)
+}
+
+fn detect_and_touch_repo(
+    state: &Arc<AppState>,
+    cwd: &std::path::Path,
+    thread_id: &str,
+    session_id: &str,
+) -> Option<RepoContext> {
+    let identity = match state.repos.detect(cwd) {
+        Ok(identity) => identity,
+        Err(harness_core::RepoError::NotGitRepo(_)) => return None,
+        Err(e) => {
+            tracing::warn!(cwd = %cwd.display(), error = %e, "repo detection failed");
+            return None;
+        }
+    };
+    match state
+        .repos
+        .touch(&identity, Some(thread_id), Some(session_id), None)
+    {
+        Ok((_record, context)) => {
+            if let Err(e) = state.store.set_thread_repo(thread_id, context.clone()) {
+                tracing::warn!(
+                    thread_id,
+                    repo_id = %context.repo_id,
+                    error = %e,
+                    "failed to persist thread repo context"
+                );
+            }
+            Some(context)
+        }
+        Err(e) => {
+            tracing::warn!(cwd = %cwd.display(), error = %e, "repo index update failed");
+            None
+        }
+    }
+}
+
+fn session_repo_context(repo: RepoContext) -> SessionRepoContext {
+    SessionRepoContext {
+        repo_id: repo.repo_id,
+        project_id: repo.project_id,
+        root_path: repo.root_path,
+        canonical_path: repo.canonical_path,
+        remote_url: repo.remote_url,
+        branch: repo.branch,
+        head_sha: repo.head_sha,
+    }
+}
+
+fn project_context_brief(repo: &RepoContext) -> String {
+    let mut lines = vec![
+        "[harness project context] This session is inside a repository known to the harness."
+            .to_string(),
+        format!("repo_id: {}", repo.repo_id),
+        format!("root: {}", repo.root_path),
+    ];
+    if let Some(remote) = repo.remote_url.as_deref() {
+        lines.push(format!("remote: {remote}"));
+    }
+    if let Some(branch) = repo.branch.as_deref() {
+        lines.push(format!("branch: {branch}"));
+    }
+    if let Some(head) = repo.head_sha.as_deref() {
+        lines.push(format!("head: {head}"));
+    }
+    lines.push(
+        "Use harness repo/project context as continuity only; do not assume the model remembers prior sessions."
+            .to_string(),
+    );
+    lines.join("\n")
 }
 
 /// Resolve the Claude transcript JSONL path for a session and start the
@@ -550,7 +640,7 @@ pub(crate) fn harness_mcp_intro() -> &'static str {
      `task_update`, `task_release`, `task_submit` as NATIVE operations — call \
      them immediately when the user asks to create, list, or track work, \
      without asking for confirmation. \
-     `TodoWrite`/`TodoRead` are disabled. Permission prompts are skipped by \
+     Claude's `TodoWrite` tool is disabled. Permission prompts are skipped by \
      the harness; supervision is provided by the scheduler, role prompts, and \
      budget caps. In unfamiliar repositories, call `repo_analyze` first, then \
      use `repo_scan`, `repo_read_file`, `repo_git_status`, `repo_git_log`, and \
@@ -639,6 +729,9 @@ async fn get_session(
     if let Some(s) = state.manager.get(&sid) {
         return Ok(Json(s.meta().await));
     }
+    if state.manager.is_tombstoned(&sid) {
+        return Err(ApiError::SessionNotFound(sid));
+    }
     // Fall back to on-disk meta (session exited and may have been forgotten).
     let path = state.manager.sessions_root().join(&sid).join("meta.json");
     if !path.exists() {
@@ -717,6 +810,10 @@ async fn kill_session(
             tracing::warn!(session = %cid, parent = %sid, error = %e, "cascade kill: child returned error");
         }
         state.manager.remove(&cid);
+        state
+            .manager
+            .tombstone(&cid)
+            .map_err(|e| ApiError::Internal(format!("tombstone session {cid}: {e}")))?;
         cleanup_session_resources(&state, &cid);
     }
 
@@ -726,6 +823,10 @@ async fn kill_session(
         }
     }
     state.manager.remove(&sid);
+    state
+        .manager
+        .tombstone(&sid)
+        .map_err(|e| ApiError::Internal(format!("tombstone session {sid}: {e}")))?;
     cleanup_session_resources(&state, &sid);
     Ok(StatusCode::NO_CONTENT)
 }
@@ -951,12 +1052,20 @@ async fn cancel_child_route(
         let gid = grand.id().to_string();
         let _ = grand.kill().await;
         state.manager.remove(&gid);
+        state
+            .manager
+            .tombstone(&gid)
+            .map_err(|e| ApiError::Internal(format!("tombstone session {gid}: {e}")))?;
         cleanup_session_resources(&state, &gid);
     }
     if let Some(s) = state.manager.get(&child_sid) {
         let _ = s.kill().await;
     }
     state.manager.remove(&child_sid);
+    state
+        .manager
+        .tombstone(&child_sid)
+        .map_err(|e| ApiError::Internal(format!("tombstone session {child_sid}: {e}")))?;
     cleanup_session_resources(&state, &child_sid);
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1333,6 +1442,58 @@ fn ensure_codex_trust(cwd: &std::path::Path) -> Result<(), String> {
     std::fs::write(&tmp, doc.to_string()).map_err(|e| format!("write tmp: {e}"))?;
     std::fs::rename(&tmp, &path).map_err(|e| format!("rename: {e}"))?;
     tracing::info!(cwd = %canon, "wrote trust_level=trusted for codex");
+    Ok(())
+}
+
+/// Make sure `~/.claude.json` marks this cwd as trusted. Claude Code stores
+/// the interactive trust dialog result under `projects.<cwd>.hasTrustDialogAccepted`.
+fn ensure_claude_trust(cwd: &std::path::Path) -> Result<(), String> {
+    let path = dirs::home_dir()
+        .map(|h| h.join(".claude.json"))
+        .ok_or_else(|| "could not resolve $HOME for claude config".to_string())?;
+    if !path.exists() {
+        return Ok(());
+    }
+    let original =
+        std::fs::read_to_string(&path).map_err(|e| format!("read claude config: {e}"))?;
+    let mut value: Value =
+        serde_json::from_str(&original).map_err(|e| format!("parse claude config: {e}"))?;
+    let canon = std::fs::canonicalize(cwd)
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| cwd.to_string_lossy().to_string());
+
+    let root = value
+        .as_object_mut()
+        .ok_or_else(|| "claude config root is not an object".to_string())?;
+    let projects = root
+        .entry("projects".to_string())
+        .or_insert_with(|| Value::Object(Map::new()))
+        .as_object_mut()
+        .ok_or_else(|| "claude config `projects` is not an object".to_string())?;
+    let project = projects
+        .entry(canon.clone())
+        .or_insert_with(|| {
+            json!({
+                "allowedTools": [],
+                "mcpContextUris": [],
+                "mcpServers": {},
+                "enabledMcpjsonServers": [],
+                "disabledMcpjsonServers": []
+            })
+        })
+        .as_object_mut()
+        .ok_or_else(|| format!("claude config project `{canon}` is not an object"))?;
+
+    if project
+        .get("hasTrustDialogAccepted")
+        .and_then(Value::as_bool)
+        == Some(true)
+    {
+        return Ok(());
+    }
+    project.insert("hasTrustDialogAccepted".to_string(), Value::Bool(true));
+    write_private_json(&path, &value).map_err(|e| format!("write claude config: {e}"))?;
+    tracing::info!(cwd = %canon, "marked Claude cwd as trusted");
     Ok(())
 }
 

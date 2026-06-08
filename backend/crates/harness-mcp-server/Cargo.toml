@@ -23,6 +23,7 @@ module-ssh = { path = "../module-ssh" }
 tokio = { workspace = true }
 sha2 = "0.10"
 tempfile = "3"
+zip = { version = "0.6", default-features = false, features = ["deflate"] }
 # Tiny sync HTTP client used to ping the harness-server when an agent creates
 # a task via MCP — keeps the in-process broadcast bus (and SSE consumers) in
 # sync without polling the filesystem.

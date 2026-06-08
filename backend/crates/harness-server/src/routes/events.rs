@@ -29,7 +29,7 @@ pub fn router() -> Router<Arc<AppState>> {
     Router::new().route("/api/events", get(events))
 }
 
-const PTY_CATCHUP_CHUNK: usize = 4096;
+const PTY_CATCHUP_CHUNK: usize = 16 * 1024;
 
 async fn events(
     State(state): State<Arc<AppState>>,

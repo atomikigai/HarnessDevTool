@@ -10,7 +10,9 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { page } from '$app/stores';
+  import { goto } from '$app/navigation';
   import { Button } from '$lib/components/ui/button';
+  import * as Resizable from '$lib/components/ui/resizable';
   import type { SessionKind } from '$lib/api/client';
   import { dbStore, type DbTab } from '$lib/stores/db.svelte';
   import { engineLabel, type Column, type TableMeta } from '$lib/api/db';
@@ -24,6 +26,8 @@
   import ResultGrid from '$lib/components/db/ResultGrid.svelte';
   import RowEditorPanel from '$lib/components/db/RowEditorPanel.svelte';
   import TableSchemaView from '$lib/components/db/TableSchemaView.svelte';
+  import ConnectionFormDialog from '$lib/components/db/ConnectionFormDialog.svelte';
+  import { ContextMenu, type ContextMenuItem } from '$lib/components/ui/context-menu';
   import TerminalView from '$lib/components/app/TerminalView.svelte';
   import { api } from '$lib/api/client';
   import {
@@ -43,12 +47,21 @@
     MoreHorizontal,
     AlertTriangle,
     Bot,
+    Copy,
+    Database,
+    Download,
+    Edit3,
+    FileCode2,
+    FileJson,
+    FileSpreadsheet,
+    FileText,
     Maximize2,
     Minimize2,
     PanelLeftClose,
     PanelLeftOpen,
     PanelRightClose,
-    PanelRightOpen
+    PanelRightOpen,
+    Trash2
   } from '$lib/icons';
   import { dbApi } from '$lib/api/db';
   import { confirmDialog } from '$lib/components/ui/confirm-dialog';
@@ -77,13 +90,15 @@
   // Export dialog state (driven by SchemaTree right-click).
   let exportOpen = $state(false);
   let exportTarget = $state<ExportDialogTarget | null>(null);
+  let connectionDialogOpen = $state(false);
   let startingDbAgent = $state(false);
-  let schemaPanelCollapsed = $state(false);
-  let dbAgentPanelCollapsed = $state(false);
-  let dbAgentFullscreen = $state(false);
-  let dbAgentThreadId = $state<string | null>(null);
-  let dbAgentSessionId = $state<string | null>(null);
-  let dbAgentKind = $state<SessionKind>('claude');
+  let selectedDbAgentKind = $state<SessionKind>('claude');
+  const dbAgent = $derived(ws.agent);
+  const dbAgentSize = $derived(dbAgent.size ?? 30);
+
+  $effect(() => {
+    selectedDbAgentKind = dbAgent.kind;
+  });
 
   function onSchemaTreeExport(t: SchemaTreeExportTarget) {
     if (t.kind === 'table') {
@@ -112,6 +127,10 @@
 
   function safeName(value: string): string {
     return value.replace(/[^A-Za-z0-9_.-]+/g, '_').replace(/^_+|_+$/g, '') || 'export';
+  }
+
+  function resizeDbAgent(delta: number) {
+    dbStore.setAgentSize(connId, dbAgentSize + delta);
   }
 
   async function onSchemaTreeTableExport(t: SchemaTreeTableExport) {
@@ -170,6 +189,13 @@
   let editorOpen = $state(false);
   let editorMode = $state<'insert' | 'update' | 'duplicate'>('insert');
   let editorInitial = $state<Record<string, unknown> | undefined>(undefined);
+  let selectedRowByTab = $state<Record<string, number>>({});
+  let rowMenuOpen = $state(false);
+  let rowMenuX = $state(0);
+  let rowMenuY = $state(0);
+  let rowMenuTabId = $state<string | null>(null);
+  let rowMenuIndex = $state<number | null>(null);
+  let rowMenuItems = $state<ContextMenuItem[]>([]);
 
   // ── Inline cell-edit + insert pending buffer (derived from store) ───────
   /** This tab's cell-edit map (rowIndex → entry). */
@@ -200,6 +226,19 @@
     return { cells, rows: rowCount, inserts, errors };
   });
   let applyingPending = $state(false);
+  const selectedRowIndex = $derived(
+    activeTab?.kind === 'table' ? (selectedRowByTab[activeTab.id] ?? null) : null
+  );
+  const selectedRow = $derived(
+    activeTab?.kind === 'table' && selectedRowIndex != null
+      ? (activeTab.result?.rows?.[selectedRowIndex] ?? null)
+      : null
+  );
+  const selectedRecord = $derived(
+    activeMeta && selectedRow
+      ? rowToRecordWithPending(activeMeta.columns, selectedRow, selectedRowIndex ?? -1)
+      : null
+  );
 
   /** Heuristic — auto-increment columns are read-only on inserts. */
   function isAutoIncrement(col: Column): boolean {
@@ -462,20 +501,21 @@
     dbStore.closeTab(connId, tabId);
   }
 
-  // Inner sub-tab per table tab (Data / Schema). Keyed by tab id.
-  let tableSubTab = $state<Record<string, 'data' | 'schema'>>({});
   const activeSubTab = $derived<'data' | 'schema'>(
-    activeTab?.kind === 'table' ? (tableSubTab[activeTab.id] ?? 'data') : 'data'
+    activeTab?.kind === 'table' ? (ws.tableSubTab[activeTab.id] ?? 'data') : 'data'
   );
   function setSubTab(kind: 'data' | 'schema') {
     if (!activeTab || activeTab.kind !== 'table') return;
-    tableSubTab = { ...tableSubTab, [activeTab.id]: kind };
+    dbStore.setTableSubTab(connId, activeTab.id, kind);
   }
 
   onMount(async () => {
+    dbStore.setActiveConnection(connId);
     if (dbStore.connections.length === 0) await dbStore.refresh();
-    await dbStore.loadDatabases(connId);
-    await dbStore.loadSchema(connId, dbStore.workspace(connId).database ?? undefined);
+    const current = dbStore.workspace(connId);
+    if (current.databases.length === 0) await dbStore.loadDatabases(connId);
+    const next = dbStore.workspace(connId);
+    if (!next.schema) await dbStore.loadSchema(connId, next.database ?? undefined);
   });
 
   function changeDatabase(db: string) {
@@ -489,6 +529,11 @@
 
   function onNewSqlTab() {
     dbStore.openSqlTab(connId);
+  }
+
+  function switchConnection(id: string) {
+    dbStore.setActiveConnection(id);
+    goto(`/db/${id}`);
   }
 
   function closeTab(id: string) {
@@ -525,6 +570,136 @@
     if (!cols) return out;
     cols.forEach((c, i) => (out[c.name] = row[i]));
     return out;
+  }
+
+  function rowToRecordWithPending(
+    cols: Column[] | undefined,
+    row: unknown[],
+    rowIndex: number
+  ): Record<string, unknown> {
+    const out = rowToRecord(cols, row);
+    if (!activeTab || rowIndex < 0) return out;
+    const pending = ws.pendingEdits[activeTab.id]?.edits?.[rowIndex]?.changes ?? {};
+    return { ...out, ...pending };
+  }
+
+  function queryResultForRow(row: unknown[]) {
+    return {
+      columns: activeTab?.result?.columns ?? [],
+      rows: [row],
+      elapsed_ms: activeTab?.result?.elapsed_ms ?? 0,
+      truncated: false,
+      query_id: activeTab?.result?.query_id ?? 'row-preview'
+    };
+  }
+
+  function csvEscape(value: unknown): string {
+    if (value === null || value === undefined) return '';
+    const text = typeof value === 'object' ? JSON.stringify(value) : String(value);
+    return /[",\r\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
+  }
+
+  function rowCsv(row: unknown[]): string {
+    const headers = (activeTab?.result?.columns ?? []).map((c) => csvEscape(c.name)).join(',');
+    const values = row.map(csvEscape).join(',');
+    return `${headers}\n${values}\n`;
+  }
+
+  function sqlIdent(value: string): string {
+    const q = conn?.engine === 'mysql' ? '`' : '"';
+    return `${q}${value.replaceAll(q, `${q}${q}`)}${q}`;
+  }
+
+  function sqlLiteral(value: unknown): string {
+    if (value === null || value === undefined) return 'NULL';
+    if (typeof value === 'number') return Number.isFinite(value) ? String(value) : 'NULL';
+    if (typeof value === 'boolean') return value ? 'TRUE' : 'FALSE';
+    if (typeof value === 'object') return `'${JSON.stringify(value).replaceAll("'", "''")}'`;
+    return `'${String(value).replaceAll("'", "''")}'`;
+  }
+
+  function whereForRow(record: Record<string, unknown>): string {
+    const pk = activePkCols.length > 0 ? activePkCols : Object.keys(record).slice(0, 1);
+    return pk.map((name) => `${sqlIdent(name)} = ${sqlLiteral(record[name])}`).join(' AND ');
+  }
+
+  function rowSql(kind: 'select' | 'insert' | 'update', row: unknown[]): string {
+    if (!activeTab || !activeMeta) return '';
+    const schema = activeTab.schema ?? '';
+    const table = qualifiedTableName(conn?.engine, schema, activeMeta.name);
+    const record = rowToRecordWithPending(activeMeta.columns, row, selectedRowIndex ?? -1);
+    const entries = activeMeta.columns.map((c) => [c.name, record[c.name]] as const);
+    if (kind === 'select') {
+      return `SELECT *\nFROM ${table}\nWHERE ${whereForRow(record)};`;
+    }
+    if (kind === 'insert') {
+      const writable = entries.filter(([name]) => !activePkCols.includes(name));
+      const used = writable.length > 0 ? writable : entries;
+      return `INSERT INTO ${table} (${used.map(([name]) => sqlIdent(name)).join(', ')})\nVALUES (${used
+        .map(([, value]) => sqlLiteral(value))
+        .join(', ')});`;
+    }
+    const writable = entries.filter(([name]) => !activePkCols.includes(name));
+    return `UPDATE ${table}\nSET ${writable
+      .map(([name, value]) => `${sqlIdent(name)} = ${sqlLiteral(value)}`)
+      .join(',\n    ')}\nWHERE ${whereForRow(record)};`;
+  }
+
+  function openGeneratedRowSql(kind: 'select' | 'insert' | 'update', row: unknown[]) {
+    const sql = rowSql(kind, row);
+    if (!sql) return;
+    const id = dbStore.openSqlTab(connId, sql);
+    dbStore.patchTab(connId, id, { title: `${kind.toUpperCase()} row` });
+  }
+
+  function exportRow(row: unknown[], format: 'json' | 'csv' | 'markdown' | 'xlsx') {
+    if (!activeTab) return;
+    const base = safeName(`${activeTab.schema ?? 'schema'}.${activeTab.table ?? 'row'}-row`);
+    const result = queryResultForRow(row);
+    if (format === 'json') {
+      const record = rowToRecordWithPending(activeMeta?.columns, row, selectedRowIndex ?? -1);
+      triggerDownload(
+        new Blob([`${JSON.stringify(record, null, 2)}\n`], {
+          type: 'application/json;charset=utf-8'
+        }),
+        `${base}.json`
+      );
+    } else if (format === 'csv') {
+      triggerDownload(new Blob([rowCsv(row)], { type: 'text/csv;charset=utf-8' }), `${base}.csv`);
+    } else if (format === 'markdown') {
+      triggerDownload(
+        new Blob([resultToMarkdown(result)], { type: 'text/markdown;charset=utf-8' }),
+        `${base}.md`
+      );
+    } else {
+      triggerDownload(resultToXlsxBlob(result), `${base}.xlsx`);
+    }
+  }
+
+  function selectRow(tabId: string, row: unknown[], rowIndex: number) {
+    void row;
+    selectedRowByTab = { ...selectedRowByTab, [tabId]: rowIndex };
+  }
+
+  function openRowContextMenu(row: unknown[], rowIndex: number, x: number, y: number) {
+    if (!activeTab || !activeMeta) return;
+    rowMenuTabId = activeTab.id;
+    rowMenuIndex = rowIndex;
+    rowMenuX = x;
+    rowMenuY = y;
+    rowMenuItems = [
+      { label: 'Edit row', icon: Edit3, onSelect: () => onEditRow(row) },
+      { label: 'Duplicate row', icon: Copy, onSelect: () => onDuplicateRow(row) },
+      { label: 'Delete row', icon: Trash2, destructive: true, onSelect: () => void onDeleteRow(row) },
+      { label: 'Export JSON', icon: FileJson, onSelect: () => exportRow(row, 'json') },
+      { label: 'Export CSV', icon: Download, onSelect: () => exportRow(row, 'csv') },
+      { label: 'Export Markdown', icon: FileText, onSelect: () => exportRow(row, 'markdown') },
+      { label: 'Export Excel', icon: FileSpreadsheet, onSelect: () => exportRow(row, 'xlsx') },
+      { label: 'Open SELECT query', icon: FileCode2, onSelect: () => openGeneratedRowSql('select', row) },
+      { label: 'Open INSERT query', icon: FileCode2, onSelect: () => openGeneratedRowSql('insert', row) },
+      { label: 'Open UPDATE query', icon: FileCode2, onSelect: () => openGeneratedRowSql('update', row) }
+    ];
+    rowMenuOpen = true;
   }
 
   function onEditRow(row: unknown[]) {
@@ -587,10 +762,7 @@
   }
 
   function resetDbAgentPanel() {
-    dbAgentPanelCollapsed = false;
-    dbAgentFullscreen = false;
-    dbAgentThreadId = null;
-    dbAgentSessionId = null;
+    dbStore.resetAgent(connId);
   }
 
   async function stopDbAgentSession(sessionId: string) {
@@ -603,7 +775,7 @@
 
   async function startDbAgent() {
     if (startingDbAgent) return;
-    if (dbAgentSessionId) {
+    if (dbAgent.sessionId) {
       const ok = await confirmDialog({
         title: 'Start a new DB agent?',
         description:
@@ -612,11 +784,10 @@
         destructive: true
       });
       if (!ok) {
-        dbAgentPanelCollapsed = false;
-        dbAgentFullscreen = false;
+        dbStore.patchAgent(connId, { collapsed: false, fullscreen: false });
         return;
       }
-      await stopDbAgentSession(dbAgentSessionId);
+      await stopDbAgentSession(dbAgent.sessionId);
       resetDbAgentPanel();
     }
 
@@ -624,12 +795,15 @@
     try {
       const res = await dbApi.startAgent(connId, {
         database: ws.database ?? undefined,
-        kind: dbAgentKind
+        kind: selectedDbAgentKind
       });
-      dbAgentThreadId = res.data.thread_id;
-      dbAgentSessionId = res.data.session_id;
-      dbAgentPanelCollapsed = false;
-      dbAgentFullscreen = false;
+      dbStore.patchAgent(connId, {
+        threadId: res.data.thread_id,
+        sessionId: res.data.session_id,
+        kind: selectedDbAgentKind,
+        collapsed: false,
+        fullscreen: false
+      });
       toast.success('DB agent started in read-only mode');
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to start DB agent');
@@ -639,11 +813,11 @@
   }
 
   async function closeDbAgentPanel() {
-    if (!dbAgentSessionId) {
+    if (!dbAgent.sessionId) {
       resetDbAgentPanel();
       return;
     }
-    const sessionId = dbAgentSessionId;
+    const sessionId = dbAgent.sessionId;
     const ok = await confirmDialog({
       title: 'Close DB agent session?',
       description: 'This will kill the DB agent PTY session and remove the panel.',
@@ -667,6 +841,7 @@
     <div class="flex items-center gap-3">
       <a
         href="/db"
+        onclick={() => dbStore.setActiveConnection(null)}
         class="text-xs hover:underline"
         style="color: var(--fg-muted);"
         title="Back to connections"
@@ -688,9 +863,11 @@
     </div>
     <div class="flex items-center gap-2">
       <select
-        value={dbAgentKind}
-        onchange={(e) =>
-          (dbAgentKind = (e.currentTarget as HTMLSelectElement).value as SessionKind)}
+        value={selectedDbAgentKind}
+        onchange={(e) => {
+          selectedDbAgentKind = (e.currentTarget as HTMLSelectElement).value as SessionKind;
+          dbStore.patchAgent(connId, { kind: selectedDbAgentKind });
+        }}
         disabled={startingDbAgent || !conn}
         class="h-8 rounded-md border px-2 text-xs"
         style="border-color: var(--border-input); background: var(--surface-titlebar); color: var(--fg-default);"
@@ -782,8 +959,136 @@
     </div>
   {/if}
 
-  <div class="flex min-h-0 flex-1">
-    {#if schemaPanelCollapsed}
+  <Resizable.PaneGroup direction="horizontal" class="min-h-0 flex-1">
+    <Resizable.Pane
+      defaultSize={dbAgent.threadId && dbAgent.sessionId && !dbAgent.collapsed
+        ? 100 - dbAgentSize
+        : 100}
+      minSize={35}
+    >
+      <div class="flex h-full min-h-0">
+        {#if dbStore.connectionsSidebarCollapsed}
+      <aside
+        class="flex w-10 shrink-0 flex-col items-center border-r py-2"
+        style="background: var(--surface-window); border-color: var(--border-subtle);"
+      >
+        <button
+          type="button"
+          class="rounded p-1.5 hover:bg-[var(--accent-soft)]"
+          title="Expand connections"
+          aria-label="Expand connections"
+          onclick={() => dbStore.setConnectionsSidebarCollapsed(false)}
+        >
+          <PanelLeftOpen class="h-4 w-4" />
+        </button>
+        <button
+          type="button"
+          class="mt-2 rounded p-1.5 hover:bg-[var(--accent-soft)]"
+          title="New connection"
+          aria-label="New connection"
+          onclick={() => (connectionDialogOpen = true)}
+        >
+          <Plus class="h-4 w-4" />
+        </button>
+        <div class="mt-3 flex min-h-0 flex-1 flex-col items-center gap-1 overflow-auto">
+          {#each dbStore.connections as item (item.id)}
+            {@const selected = item.id === connId}
+            {@const itemWs = dbStore.workspace(item.id)}
+            <button
+              type="button"
+              class="relative rounded-md border p-1.5 transition-colors"
+              style={selected
+                ? 'background: var(--accent-soft); border-color: var(--accent); color: var(--accent);'
+                : 'background: transparent; border-color: transparent; color: var(--fg-muted);'}
+              onclick={() => switchConnection(item.id)}
+              title={item.name}
+              aria-label={item.name}
+            >
+              <Database class="h-4 w-4" />
+              {#if itemWs.agent.sessionId}
+                <span
+                  class="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full"
+                  style="background: var(--accent);"
+                ></span>
+              {/if}
+            </button>
+          {/each}
+        </div>
+      </aside>
+    {:else}
+      <aside
+        class="flex w-56 shrink-0 flex-col border-r"
+        style="background: var(--surface-window); border-color: var(--border-subtle);"
+      >
+        <div
+          class="flex h-9 shrink-0 items-center justify-between border-b px-3"
+          style="border-color: var(--border-subtle);"
+        >
+          <span class="h-eyebrow">Connections</span>
+          <div class="flex items-center gap-1">
+            <button
+              type="button"
+              class="rounded p-1 hover:bg-[var(--accent-soft)]"
+              title="Collapse connections"
+              aria-label="Collapse connections"
+              onclick={() => dbStore.setConnectionsSidebarCollapsed(true)}
+            >
+              <PanelLeftClose class="h-4 w-4" />
+            </button>
+            <button
+              type="button"
+              class="rounded p-1 hover:bg-[var(--accent-soft)]"
+              title="New connection"
+              aria-label="New connection"
+              onclick={() => (connectionDialogOpen = true)}
+            >
+              <Plus class="h-4 w-4" />
+            </button>
+          </div>
+        </div>
+        <div class="min-h-0 flex-1 overflow-auto p-2">
+          {#if dbStore.connections.length === 0}
+            <div class="px-2 py-6 text-center text-xs" style="color: var(--fg-muted);">
+              No saved connections.
+            </div>
+          {:else}
+            <div class="flex flex-col gap-1">
+              {#each dbStore.connections as item (item.id)}
+                {@const selected = item.id === connId}
+                {@const itemWs = dbStore.workspace(item.id)}
+                <button
+                  type="button"
+                  class="flex min-h-12 w-full flex-col items-start rounded-md border px-2.5 py-2 text-left transition-colors"
+                  style={selected
+                    ? 'background: var(--accent-soft); border-color: var(--accent); color: var(--accent);'
+                    : 'background: transparent; border-color: transparent; color: var(--fg-default);'}
+                  onclick={() => switchConnection(item.id)}
+                  title={item.name}
+                >
+                  <span class="flex w-full items-center justify-between gap-2">
+                    <span class="truncate text-xs font-semibold">{item.name}</span>
+                    {#if itemWs.agent.sessionId}
+                      <Bot class="h-3.5 w-3.5 shrink-0" />
+                    {/if}
+                  </span>
+                  <span
+                    class="mt-0.5 truncate font-mono text-[10px]"
+                    style="color: var(--fg-muted);"
+                  >
+                    {item.engine}
+                    {#if itemWs.tabs.length > 0}
+                      · {itemWs.tabs.length} tab{itemWs.tabs.length === 1 ? '' : 's'}
+                    {/if}
+                  </span>
+                </button>
+              {/each}
+            </div>
+          {/if}
+        </div>
+      </aside>
+    {/if}
+
+    {#if ws.schemaPanelCollapsed}
       <aside
         class="flex w-10 shrink-0 flex-col items-center border-r py-2"
         style="background: var(--surface-panel); border-color: var(--border-subtle);"
@@ -793,7 +1098,7 @@
           class="rounded p-1.5 hover:bg-[var(--accent-soft)]"
           title="Expand schema panel"
           aria-label="Expand schema panel"
-          onclick={() => (schemaPanelCollapsed = false)}
+          onclick={() => dbStore.setSchemaPanelCollapsed(connId, false)}
         >
           <PanelLeftOpen class="h-4 w-4" />
         </button>
@@ -814,7 +1119,7 @@
             class="rounded p-1 hover:bg-[var(--accent-soft)]"
             title="Collapse schema panel"
             aria-label="Collapse schema panel"
-            onclick={() => (schemaPanelCollapsed = true)}
+            onclick={() => dbStore.setSchemaPanelCollapsed(connId, true)}
           >
             <PanelLeftClose class="h-4 w-4" />
           </button>
@@ -1132,11 +1437,22 @@
         </div>
       {/if}
     </section>
+      </div>
+    </Resizable.Pane>
 
-    {#if dbAgentThreadId && dbAgentSessionId}
-      {#if dbAgentPanelCollapsed}
+    {#if dbAgent.threadId && dbAgent.sessionId}
+      <Resizable.Handle withHandle disabled={dbAgent.collapsed} />
+      <Resizable.Pane
+        defaultSize={dbAgent.collapsed ? 4 : dbAgentSize}
+        minSize={dbAgent.collapsed ? 4 : 24}
+        maxSize={dbAgent.collapsed ? 4 : 60}
+        onResize={(size) => {
+          if (!dbAgent.collapsed) dbStore.setAgentSize(connId, size);
+        }}
+      >
+      {#if dbAgent.collapsed}
         <aside
-          class="flex w-10 shrink-0 flex-col items-center border-l py-2"
+          class="flex h-full w-full flex-col items-center border-l py-2"
           style="background: var(--surface-panel); border-color: var(--border-subtle);"
         >
           <button
@@ -1144,7 +1460,7 @@
             class="rounded p-1.5 hover:bg-[var(--accent-soft)]"
             title="Expand DB agent"
             aria-label="Expand DB agent"
-            onclick={() => (dbAgentPanelCollapsed = false)}
+            onclick={() => dbStore.patchAgent(connId, { collapsed: false })}
           >
             <PanelRightOpen class="h-4 w-4" />
           </button>
@@ -1152,7 +1468,7 @@
         </aside>
       {:else}
         <aside
-          class="flex w-[420px] shrink-0 flex-col border-l"
+          class="flex h-full w-full min-w-0 flex-col border-l"
           style="background: var(--surface-panel); border-color: var(--border-subtle);"
         >
           <div
@@ -1165,16 +1481,34 @@
                 DB Agent
               </span>
               <span class="font-mono text-[10px]" style="color: var(--fg-muted);">
-                {dbAgentSessionId.slice(0, 8)}
+                {dbAgent.sessionId.slice(0, 8)}
               </span>
             </div>
             <div class="flex shrink-0 items-center gap-1">
               <button
                 type="button"
                 class="rounded p-1 hover:bg-[var(--accent-soft)]"
+                title="Make DB agent wider"
+                aria-label="Make DB agent wider"
+                onclick={() => resizeDbAgent(80)}
+              >
+                <ChevronLeft class="h-4 w-4" />
+              </button>
+              <button
+                type="button"
+                class="rounded p-1 hover:bg-[var(--accent-soft)]"
+                title="Make DB agent narrower"
+                aria-label="Make DB agent narrower"
+                onclick={() => resizeDbAgent(-80)}
+              >
+                <ChevronRight class="h-4 w-4" />
+              </button>
+              <button
+                type="button"
+                class="rounded p-1 hover:bg-[var(--accent-soft)]"
                 title="Collapse DB agent"
                 aria-label="Collapse DB agent"
-                onclick={() => (dbAgentPanelCollapsed = true)}
+                onclick={() => dbStore.patchAgent(connId, { collapsed: true })}
               >
                 <PanelRightClose class="h-4 w-4" />
               </button>
@@ -1183,7 +1517,7 @@
                 class="rounded p-1 hover:bg-[var(--accent-soft)]"
                 title="Fullscreen"
                 aria-label="Fullscreen DB agent"
-                onclick={() => (dbAgentFullscreen = true)}
+                onclick={() => dbStore.patchAgent(connId, { fullscreen: true })}
               >
                 <Maximize2 class="h-4 w-4" />
               </button>
@@ -1199,7 +1533,7 @@
             </div>
           </div>
           <div class="min-h-0 flex-1">
-            {#if dbAgentFullscreen}
+            {#if dbAgent.fullscreen}
               <div
                 class="flex h-full items-center justify-center px-4 text-xs"
                 style="color: var(--fg-muted);"
@@ -1207,12 +1541,22 @@
                 DB agent is open in fullscreen.
               </div>
             {:else}
-              <TerminalView threadId={dbAgentThreadId} sessionId={dbAgentSessionId} embedded />
+              <TerminalView threadId={dbAgent.threadId} sessionId={dbAgent.sessionId} embedded />
             {/if}
           </div>
         </aside>
       {/if}
+      </Resizable.Pane>
     {/if}
+  </Resizable.PaneGroup>
+
+    <ConnectionFormDialog
+      bind:open={connectionDialogOpen}
+      existing={null}
+      onSaved={async () => {
+        await dbStore.refresh();
+      }}
+    />
 
     <ExportDialog
       bind:open={exportOpen}
@@ -1234,9 +1578,8 @@
         onSaved={() => activeTab && dbStore.runTab(connId, activeTab.id)}
       />
     {/if}
-  </div>
 
-  {#if dbAgentFullscreen && dbAgentThreadId && dbAgentSessionId}
+  {#if dbAgent.fullscreen && dbAgent.threadId && dbAgent.sessionId}
     <div class="fixed inset-0 z-50 flex flex-col" style="background: var(--surface-window);">
       <div
         class="flex h-11 shrink-0 items-center justify-between border-b px-4"
@@ -1248,11 +1591,15 @@
             DB Agent
           </span>
           <span class="font-mono text-[11px]" style="color: var(--fg-muted);">
-            {dbAgentSessionId.slice(0, 8)}
+            {dbAgent.sessionId.slice(0, 8)}
           </span>
         </div>
         <div class="flex items-center gap-1">
-          <Button variant="outline" size="sm" onclick={() => (dbAgentFullscreen = false)}>
+          <Button
+            variant="outline"
+            size="sm"
+            onclick={() => dbStore.patchAgent(connId, { fullscreen: false })}
+          >
             <Minimize2 class="h-3.5 w-3.5" />
             Exit fullscreen
           </Button>
@@ -1263,7 +1610,7 @@
         </div>
       </div>
       <div class="min-h-0 flex-1">
-        <TerminalView threadId={dbAgentThreadId} sessionId={dbAgentSessionId} embedded />
+        <TerminalView threadId={dbAgent.threadId} sessionId={dbAgent.sessionId} embedded />
       </div>
     </div>
   {/if}

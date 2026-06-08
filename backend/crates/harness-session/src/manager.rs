@@ -7,14 +7,15 @@ use tokio::sync::broadcast;
 
 use crate::errors::SessionError;
 use crate::kind::AgentKind;
-use crate::meta::{SessionMeta, SessionStatus};
+use crate::meta::{SessionMeta, SessionRepoContext, SessionStatus};
 use crate::output::OutputWriter;
 use crate::session::{persist_meta, AgentSession};
 
-const DEFAULT_CLAUDE_MODEL: &str = "claude-opus-4-7";
+const DEFAULT_CLAUDE_MODEL: &str = "sonnet";
 const DEFAULT_CLAUDE_EFFORT: &str = "medium";
 const DEFAULT_CODEX_MODEL: &str = "gpt-5.5";
 const DEFAULT_CODEX_EFFORT: &str = "medium";
+const DELETED_MARKER: &str = ".deleted";
 
 /// Broadcast event published by sessions onto the shared bus.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -132,6 +133,9 @@ impl Manager {
             };
             let dir = entry.path();
             if !dir.is_dir() {
+                continue;
+            }
+            if dir.join(DELETED_MARKER).exists() {
                 continue;
             }
             let meta_path = dir.join("meta.json");
@@ -270,6 +274,7 @@ impl Manager {
             opts.owner_session_id.clone(),
             opts.task_id.clone(),
             opts.scopes.clone(),
+            opts.repo.clone(),
             parent_session_id,
             root_session_id,
             opts.initial_size,
@@ -332,6 +337,21 @@ impl Manager {
     /// Forget a session (does NOT delete on-disk state).
     pub fn remove(&self, sid: &str) {
         self.sessions.remove(sid);
+        self.detached.remove(sid);
+    }
+
+    /// Mark a session as deleted for future manager loads. This preserves
+    /// forensic artifacts such as `output.log` while hiding the session from
+    /// UI/API listings after a restart.
+    pub fn tombstone(&self, sid: &str) -> Result<(), SessionError> {
+        let dir = self.sessions_root.join(sid);
+        std::fs::create_dir_all(&dir)?;
+        std::fs::write(dir.join(DELETED_MARKER), b"deleted\n")?;
+        Ok(())
+    }
+
+    pub fn is_tombstoned(&self, sid: &str) -> bool {
+        self.sessions_root.join(sid).join(DELETED_MARKER).exists()
     }
 
     // ── Session-tree helpers (Zeus orchestrator) ─────────────────────────
@@ -418,6 +438,9 @@ pub struct SpawnOpts {
     pub task_id: Option<String>,
     /// Resource/work scopes granted to this session.
     pub scopes: Vec<String>,
+    /// Optional repository identity attached by the server from the per-profile
+    /// repo index.
+    pub repo: Option<SessionRepoContext>,
     /// Briefing appended to claude's system prompt via `--append-system-prompt`
     /// (NOT typed into the PTY). Used to tell the agent about the harness MCP
     /// tools so it doesn't fall back to its built-in todo list. Silent to the
@@ -453,7 +476,7 @@ pub struct McpServerConfig {
 ///   transcript filename (`~/.claude/projects/{cwd-slug}/{id}.jsonl`); the
 ///   budget reporter relies on this mapping. Also adds
 ///   `--mcp-config <path> --strict-mcp-config` when MCP injection is on, plus
-///   `--disallowed-tools TodoWrite TodoRead` so claude can't satisfy task-
+///   `--disallowed-tools TodoWrite` so claude can't satisfy task-
 ///   shaped requests with its in-process todo list (which never reaches the
 ///   harness TaskStore and so leaves the right-side Tasks panel empty).
 /// - `Codex`: injects the harness MCP with per-invocation `-c
@@ -477,16 +500,10 @@ fn build_extra_args(kind: AgentKind, opts: &SpawnOpts, session_id: &str) -> Vec<
     // have a documented flag for this skip silently.
     match kind {
         AgentKind::Codex => {
-            // Codex autonomous mode: never ask for approval, sandbox writes
-            // to the workspace dir. `--ask-for-approval never` + `-s
-            // workspace-write` is the documented combo (the older
-            // `--full-auto` flag was renamed). For Zeus workers this is
-            // what we want — the orchestrator is the one approving /
-            // validating, not a per-tool prompt.
-            out.push("--ask-for-approval".to_string());
-            out.push("never".to_string());
-            out.push("--sandbox".to_string());
-            out.push("workspace-write".to_string());
+            // Codex harness workers run behind the harness' own policy,
+            // budget and audit rails. Avoid per-call Codex approval prompts
+            // for harness MCP tools.
+            out.push("--dangerously-bypass-approvals-and-sandbox".to_string());
             out.push("--model".to_string());
             out.push(DEFAULT_CODEX_MODEL.to_string());
             out.push("-c".to_string());
@@ -566,12 +583,14 @@ fn build_extra_args(kind: AgentKind, opts: &SpawnOpts, session_id: &str) -> Vec<
                 // Flag confirmed via `claude --help`: `--disallowed-tools`
                 // accepts a space- or comma-separated list of tool names.
                 out.push("--disallowed-tools".to_string());
-                out.push("TodoWrite TodoRead".to_string());
+                out.push("TodoWrite".to_string());
                 // Harness sessions run under our supervision (scheduler, pause
                 // flag, budget caps, role-typed prompts) so the per-call
                 // permission prompts are noise — claude should treat the
-                // harness MCP tools as native operations.
-                out.push("--dangerously-skip-permissions".to_string());
+                // harness MCP tools as native operations. Prefer the explicit
+                // mode flag supported by current Claude Code builds.
+                out.push("--permission-mode".to_string());
+                out.push("bypassPermissions".to_string());
                 if let Some(intro) = opts.auto_intro.as_ref() {
                     // Silent system-prompt addendum — invisible to the user
                     // and not counted as a turn.
@@ -648,6 +667,7 @@ mod tests {
             owner_session_id: None,
             task_id: None,
             scopes: Vec::new(),
+            repo: None,
             parent_session_id: None,
             root_session_id: id.to_string(),
             detected_state: None,
@@ -709,10 +729,12 @@ mod tests {
 
         // Todo tools disabled
         let dis_idx = args.iter().position(|a| a == "--disallowed-tools").unwrap();
-        assert_eq!(args[dis_idx + 1], "TodoWrite TodoRead");
+        assert_eq!(args[dis_idx + 1], "TodoWrite");
 
         // Permission prompts skipped — harness supervises the session.
-        assert!(args.iter().any(|a| a == "--dangerously-skip-permissions"));
+        assert!(args
+            .windows(2)
+            .any(|w| w[0] == "--permission-mode" && w[1] == "bypassPermissions"));
 
         // No auto_intro set → no --append-system-prompt
         assert!(!args.iter().any(|a| a == "--append-system-prompt"));
@@ -781,11 +803,11 @@ mod tests {
         };
         let args = build_extra_args(AgentKind::Codex, &opts, "sid-c");
         assert!(args
-            .windows(2)
-            .any(|w| w[0] == "--ask-for-approval" && w[1] == "never"));
+            .iter()
+            .any(|a| a == "--dangerously-bypass-approvals-and-sandbox"));
         assert!(args
-            .windows(2)
-            .any(|w| w[0] == "--sandbox" && w[1] == "workspace-write"));
+            .iter()
+            .all(|a| a != "--ask-for-approval" && a != "--sandbox"));
         assert!(args
             .windows(2)
             .any(|w| w[0] == "--model" && w[1] == DEFAULT_CODEX_MODEL));
@@ -960,6 +982,54 @@ mod tests {
         assert_eq!(metas[0].id, "detached-1");
         assert_eq!(metas[0].status, SessionStatus::Exited);
         assert_eq!(manager.read_output("detached-1").expect("output"), b"hello");
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn remove_forgets_detached_session_metadata() {
+        let root = temp_test_dir("remove-detached");
+        let sessions_root = root.join("sessions");
+        write_meta(
+            &sessions_root,
+            &test_meta("detached-1", "thread-1", SessionStatus::Exited, 123),
+        );
+
+        let manager = Manager::new(&sessions_root).expect("manager");
+        manager.load_existing().expect("load existing");
+        assert_eq!(manager.list_metas().await.len(), 1);
+
+        manager.remove("detached-1");
+
+        assert!(manager.list_metas().await.is_empty());
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn load_existing_skips_tombstoned_session() {
+        let root = temp_test_dir("skip-tombstoned");
+        let sessions_root = root.join("sessions");
+        write_meta(
+            &sessions_root,
+            &test_meta("deleted-1", "thread-1", SessionStatus::Exited, 123),
+        );
+        write_meta(
+            &sessions_root,
+            &test_meta("visible-1", "thread-1", SessionStatus::Exited, 124),
+        );
+
+        let manager = Manager::new(&sessions_root).expect("manager");
+        manager.tombstone("deleted-1").expect("tombstone");
+        manager.load_existing().expect("load existing");
+
+        let ids: Vec<String> = manager
+            .list_metas()
+            .await
+            .into_iter()
+            .map(|m| m.id)
+            .collect();
+        assert_eq!(ids, vec!["visible-1".to_string()]);
 
         let _ = std::fs::remove_dir_all(root);
     }

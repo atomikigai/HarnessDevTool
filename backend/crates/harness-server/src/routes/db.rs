@@ -77,18 +77,14 @@ async fn start_db_agent(
     Json(body): Json<StartDbAgentBody>,
 ) -> ApiResult<Json<StartDbAgentResponse>> {
     let conn = s.db.connections_get(&id).map_err(map_db_err)?;
-    let schema =
-        s.db.schema_tree(&id, body.database.as_deref())
-            .await
-            .map_err(map_db_err)?;
     let thread = s
         .store
         .create_thread(Some(format!("DB Agent: {}", conn.name)))?;
-    let cwd = resolve_agent_cwd(body.cwd.as_deref())?;
-    let memory_path = ensure_db_memory(&s, &conn, body.database.as_deref(), &schema)?;
-    let prompt = db_agent_prompt(&conn, body.database.as_deref(), &schema, &memory_path);
+    let cwd = resolve_agent_cwd(body.cwd.as_deref(), &s.harness_home)?;
+    let memory_path = ensure_db_memory(&s, &conn, body.database.as_deref())?;
+    let prompt = db_agent_prompt(&conn, body.database.as_deref(), &memory_path);
     let kind = body.kind.unwrap_or(AgentKind::Claude);
-    let supports_system_context = matches!(kind.underlying_cli(), AgentKind::Claude);
+    let supports_system_context = db_agent_supports_system_context(kind);
     let session_id = spawn_session_internal(
         &s,
         SpawnArgs {
@@ -112,6 +108,10 @@ async fn start_db_agent(
     }))
 }
 
+fn db_agent_supports_system_context(kind: AgentKind) -> bool {
+    matches!(kind, AgentKind::Claude | AgentKind::Codex)
+}
+
 fn db_agent_scopes(connection_id: &str, database: Option<&str>) -> Vec<String> {
     let mut scopes = vec![format!("db:connection:{connection_id}")];
     if let Some(database) = database.filter(|database| !database.trim().is_empty()) {
@@ -120,11 +120,13 @@ fn db_agent_scopes(connection_id: &str, database: Option<&str>) -> Vec<String> {
     scopes
 }
 
-fn resolve_agent_cwd(raw: Option<&str>) -> Result<PathBuf, ApiError> {
+fn resolve_agent_cwd(
+    raw: Option<&str>,
+    default_cwd: &std::path::Path,
+) -> Result<PathBuf, ApiError> {
     let cwd = match raw {
         Some(cwd) if !cwd.is_empty() => PathBuf::from(cwd),
-        _ => dirs::home_dir()
-            .ok_or_else(|| ApiError::Internal("cannot resolve $HOME for DB agent cwd".into()))?,
+        _ => default_cwd.to_path_buf(),
     };
     if !cwd.exists() {
         return Err(ApiError::BadRequest(format!(
@@ -138,10 +140,8 @@ fn resolve_agent_cwd(raw: Option<&str>) -> Result<PathBuf, ApiError> {
 fn db_agent_prompt(
     conn: &Connection,
     database: Option<&str>,
-    schema: &SchemaTree,
     memory_path: &std::path::Path,
 ) -> String {
-    let table_count: usize = schema.schemas.iter().map(|s| s.tables.len()).sum();
     let selected_database = database.unwrap_or(&conn.database);
     let host = conn.host.as_deref().unwrap_or("(none)");
     let port = conn
@@ -154,35 +154,12 @@ fn db_agent_prompt(
         .map(|m| format!("{m:?}").to_ascii_lowercase())
         .unwrap_or_else(|| "(none)".into());
     let params = redacted_connection_params(conn);
-    let schema_overview = schema
-        .schemas
-        .iter()
-        .map(|s| {
-            let tables = s
-                .tables
-                .iter()
-                .map(|t| {
-                    let cols = t
-                        .columns
-                        .iter()
-                        .map(|c| format!("{}:{}", c.name, c.r#type))
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    format!("- {}.{} ({:?}) [{}]", s.name, t.name, t.kind, cols)
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
-            format!("Schema `{}`:\n{}", s.name, tables)
-        })
-        .collect::<Vec<_>>()
-        .join("\n\n");
 
     format!(
         r#"[harness-db-agent]
-You are a specialized database agent for the active Harness DB connection.
-Respond in the user's language.
+You are a database expert for the active Harness DB connection. Respond in the user's language.
 
-Saved connection snapshot (redacted):
+Connection defaults (redacted):
 - connection id: {connection_id}
 - connection name: {connection_name}
 - engine: {engine}
@@ -192,43 +169,24 @@ Saved connection snapshot (redacted):
 - username: {username}
 - ssl_mode: {ssl_mode}
 - params: {params}
-- schemas: {schema_count}
-- tables/views: {table_count}
 
-Available DB tools:
-- `db_schema`: inspect schemas, tables, columns, indexes, and foreign keys.
-- `db_query`: run SQL. Read-only SQL works directly. Non-read-only SQL requires `approved: true`.
-- `db_explain`: inspect query plans without changing data.
-- `db_performance_audit`: run a read-only PostgreSQL performance audit using catalog/statistics views.
-- `db_backup`: write a SQL backup file before approved modifications.
-- `db_memory_read`: read persistent DB architecture memory for this connection/database.
-- `db_memory_write`: update persistent DB architecture memory for future sessions.
+Use these defaults in DB tools: connection="{connection_id}", database="{database}".
+Persistent DB memory path: {memory_path}
 
-Default tool arguments for this session:
-- connection: "{connection_id}"
-- database: "{database}"
+Operate lazily:
+- Simple table/performance questions: use semantic helpers first (`db_table_info`, `db_search_tables`, `db_sample`, `db_count`, `db_distinct_values`, `db_find_rows`, `db_aggregate`, `db_relation_performance`) or targeted `db_schema`.
+- Extraction requests that need related-table text/labels: use `db_extract_enriched`.
+- Complex SELECT exports: use `db_export_query`. View/migration requests: use `db_generate_view_sql` unless the user explicitly asks to execute DDL.
+- Filtered reads: prefer structured `db_select`; use `db_validate_query` before uncertain raw SQL.
+- Custom raw SQL: use small read-only `db_query` calls with exact filters and `LIMIT 20` unless asked otherwise.
+- Broad architecture, relationships, performance, or business context: read DB memory first, then verify only the needed facts.
+- Do not introspect the full database, run parallel broad probes, or load extra context unless the current question requires it.
 
-Persistent DB memory:
-- path: {memory_path}
-- First read it with `db_memory_read` before answering architecture/schema questions.
-- Improve it with `db_memory_write` when you discover stable structure, business meaning, relationships, indexes, risks, naming conventions, or useful query patterns.
-- Keep it structured and quick to scan: Overview, Schemas, Tables, Relationships, Indexes, Known Queries, Risks, Open Questions, Changelog.
-
-Security and behavior rules:
-- Start in READ-ONLY mode.
-- You already have the active connection context. Do not ask the user for a DB connection id, database name, or schema before using the provided defaults.
-- If the `db_*` tools are not visible or callable, stop and report: "DB MCP tools are not loaded for this session; restart the DB Agent/backend." Do not present schema-snapshot guesses as verified audit results.
-- If the user asks about a table by name, inspect it directly with `db_schema` or a read-only `db_query` using the provided default connection/database.
-- If the user asks about performance, start with `db_performance_audit` when the engine is PostgreSQL, then use targeted `db_query`/`db_explain` for follow-up.
-- Use `db_schema` and `db_query` for inspection. Always pass `connection: "{connection_id}"` and `database: "{database}"` when the tool accepts it.
-- Do not run INSERT, UPDATE, DELETE, ALTER, DROP, TRUNCATE, CREATE, migration, or maintenance statements unless the user explicitly asks for a modification.
-- Before any modification, run `db_backup` for the table/schema/database you will modify, share the backup file path, and only then proceed if the user explicitly confirms the write.
-- Prefer proposing SQL or a migration task for coding agents instead of directly changing schema/data when the user is working on application code.
+Safety:
+- Stay read-only unless the user explicitly asks for a modification.
+- Before any write, create a `db_backup`, show the backup path, and wait for explicit confirmation.
+- If DB tools are unavailable, say exactly: "DB MCP tools are not loaded for this session; restart the DB Agent/backend."
 - Never reveal secrets, passwords, DSNs, tokens, or credential material.
-- Document useful schema findings and risks in your response so other Agents can reuse the context.
-
-Current schema snapshot:
-{schema_overview}
 "#,
         connection_id = conn.id,
         connection_name = conn.name,
@@ -239,10 +197,7 @@ Current schema snapshot:
         username = username,
         ssl_mode = ssl_mode,
         params = params,
-        memory_path = memory_path.display(),
-        schema_count = schema.schemas.len(),
-        table_count = table_count,
-        schema_overview = schema_overview
+        memory_path = memory_path.display()
     )
 }
 
@@ -250,7 +205,6 @@ fn ensure_db_memory(
     state: &AppState,
     conn: &Connection,
     database: Option<&str>,
-    schema: &SchemaTree,
 ) -> Result<PathBuf, ApiError> {
     let database = database.unwrap_or(&conn.database);
     let path = db_memory_path(&state.harness_home, &state.profile, &conn.id, database);
@@ -262,7 +216,7 @@ fn ensure_db_memory(
         .ok_or_else(|| ApiError::Internal("invalid DB memory path".into()))?;
     std::fs::create_dir_all(parent)
         .map_err(|e| ApiError::Internal(format!("create DB memory dir: {e}")))?;
-    let content = initial_db_memory(conn, database, schema);
+    let content = initial_db_memory(conn, database);
     std::fs::write(&path, content)
         .map_err(|e| ApiError::Internal(format!("write DB memory: {e}")))?;
     Ok(path)
@@ -281,41 +235,7 @@ fn db_memory_path(
         .join(format!("{}.md", sanitize_path_segment(database)))
 }
 
-fn initial_db_memory(conn: &Connection, database: &str, schema: &SchemaTree) -> String {
-    let table_count: usize = schema.schemas.iter().map(|s| s.tables.len()).sum();
-    let schema_index = schema
-        .schemas
-        .iter()
-        .map(|s| {
-            let tables = s
-                .tables
-                .iter()
-                .map(|t| {
-                    let pk = t
-                        .columns
-                        .iter()
-                        .filter(|c| c.pk)
-                        .map(|c| c.name.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    format!(
-                        "- `{}` ({:?}, {} columns{})",
-                        t.name,
-                        t.kind,
-                        t.columns.len(),
-                        if pk.is_empty() {
-                            String::new()
-                        } else {
-                            format!(", pk: {pk}")
-                        }
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
-            format!("## Schema `{}`\n{}", s.name, tables)
-        })
-        .collect::<Vec<_>>()
-        .join("\n\n");
+fn initial_db_memory(conn: &Connection, database: &str) -> String {
     format!(
         r#"# DB Memory: {connection_name} / {database}
 
@@ -323,11 +243,10 @@ fn initial_db_memory(conn: &Connection, database: &str, schema: &SchemaTree) -> 
 - Connection id: `{connection_id}`
 - Engine: `{engine}`
 - Database: `{database}`
-- Schemas: {schema_count}
-- Tables/views: {table_count}
+- Status: initialized empty; populate incrementally from verified `db_schema`, `db_query`, and `db_explain` findings.
 
 ## Schemas
-{schema_index}
+- Pending targeted inspection.
 
 ## Relationships
 - Pending deeper analysis.
@@ -345,15 +264,12 @@ fn initial_db_memory(conn: &Connection, database: &str, schema: &SchemaTree) -> 
 - Pending.
 
 ## Changelog
-- Initialized from current schema snapshot.
+- Initialized as an empty incremental memory file.
 "#,
         connection_name = conn.name,
         connection_id = conn.id,
         engine = conn.engine.as_str(),
-        database = database,
-        schema_count = schema.schemas.len(),
-        table_count = table_count,
-        schema_index = schema_index
+        database = database
     )
 }
 
@@ -694,7 +610,7 @@ mod tests {
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use chrono::Utc;
-    use module_db::{Column, Engine, SchemaTreeSchema, Table, TableKind};
+    use module_db::Engine;
     use std::collections::BTreeMap;
     use tower::ServiceExt;
 
@@ -765,44 +681,43 @@ mod tests {
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };
-        let schema = SchemaTree {
-            schemas: vec![SchemaTreeSchema {
-                name: "main".into(),
-                tables: vec![Table {
-                    name: "users".into(),
-                    kind: TableKind::Table,
-                    row_estimate: None,
-                    columns: vec![Column {
-                        name: "id".into(),
-                        r#type: "INTEGER".into(),
-                        nullable: false,
-                        pk: true,
-                        default: None,
-                        kind: None,
-                    }],
-                    indexes: Vec::new(),
-                    foreign_keys: Vec::new(),
-                }],
-            }],
-        };
-
         let memory_path = std::path::PathBuf::from("/tmp/db-memory/conn-1/main.md");
-        let prompt = db_agent_prompt(&conn, Some("main"), &schema, &memory_path);
-        assert!(prompt.contains("READ-ONLY mode"));
-        assert!(prompt.contains("Do not ask the user for a DB connection id"));
-        assert!(prompt.contains("Available DB tools"));
+        let prompt = db_agent_prompt(&conn, Some("main"), &memory_path);
+        assert!(prompt.contains("database expert"));
+        assert!(prompt.contains("Operate lazily"));
+        assert!(prompt.contains("db_table_info"));
+        assert!(prompt.contains("db_relation_performance"));
+        assert!(prompt.contains("db_distinct_values"));
+        assert!(prompt.contains("db_find_rows"));
+        assert!(prompt.contains("db_aggregate"));
+        assert!(prompt.contains("db_extract_enriched"));
+        assert!(prompt.contains("db_export_query"));
+        assert!(prompt.contains("db_generate_view_sql"));
+        assert!(prompt.contains("db_select"));
+        assert!(prompt.contains("db_validate_query"));
+        assert!(prompt.contains("targeted `db_schema`"));
+        assert!(prompt.contains("LIMIT 20"));
+        assert!(prompt.contains("Stay read-only"));
         assert!(prompt.contains("db_backup"));
-        assert!(prompt.contains("db_performance_audit"));
-        assert!(prompt.contains("db_memory_read"));
-        assert!(prompt.contains("db_memory_write"));
         assert!(prompt.contains("DB MCP tools are not loaded"));
         assert!(prompt.contains("/tmp/db-memory/conn-1/main.md"));
         assert!(prompt.contains("connection id: conn-1"));
         assert!(prompt.contains("application_name"));
         assert!(prompt.contains("harness-test"));
-        assert!(prompt.contains("main.users"));
-        assert!(prompt.contains("run `db_backup`"));
+        assert!(!prompt.contains("Current schema snapshot"));
+        assert!(!prompt.contains("Available DB tools"));
+        assert!(!prompt.contains("Query strategy"));
+        assert!(!prompt.contains("main.users"));
         assert!(!prompt.contains("secret-ref"));
         assert!(!prompt.contains("token-value"));
+    }
+
+    #[test]
+    fn codex_db_agent_uses_silent_context_channel() {
+        assert!(db_agent_supports_system_context(AgentKind::Codex));
+        assert!(db_agent_supports_system_context(AgentKind::Claude));
+        assert!(!db_agent_supports_system_context(AgentKind::Zeus));
+        assert!(!db_agent_supports_system_context(AgentKind::Cursor));
+        assert!(!db_agent_supports_system_context(AgentKind::Antigravity));
     }
 }

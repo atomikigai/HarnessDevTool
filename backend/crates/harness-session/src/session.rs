@@ -11,11 +11,11 @@ use tokio::sync::{broadcast, Mutex as AsyncMutex};
 use crate::errors::SessionError;
 use crate::kind::AgentKind;
 use crate::manager::SessionEvent;
-use crate::meta::{SessionMeta, SessionStatus};
+use crate::meta::{SessionMeta, SessionRepoContext, SessionStatus};
 use crate::output::OutputWriter;
 
 const PTY_FLUSH_INTERVAL_MS: u64 = 16;
-const PTY_CHUNK_TARGET: usize = 4096;
+const PTY_CHUNK_TARGET: usize = 16 * 1024;
 
 /// Handle to a running agent process.
 pub struct AgentSession {
@@ -25,6 +25,7 @@ pub struct AgentSession {
     /// PTY master writer (input side). `Box<dyn Write + Send>`.
     pty_writer: AsyncMutex<Box<dyn Write + Send>>,
     pty_master: AsyncMutex<Box<dyn portable_pty::MasterPty + Send>>,
+    pty_size: AsyncMutex<(u16, u16)>,
     /// Killer handle for the child process.
     killer: AsyncMutex<Box<dyn portable_pty::ChildKiller + Send + Sync>>,
     child_pid: u32,
@@ -98,6 +99,7 @@ impl AgentSession {
         owner_session_id: Option<String>,
         task_id: Option<String>,
         scopes: Vec<String>,
+        repo: Option<SessionRepoContext>,
         parent_session_id: Option<String>,
         root_session_id: String,
         initial_size: Option<(u16, u16)>,
@@ -193,6 +195,7 @@ impl AgentSession {
             owner_session_id: owner_session_id.clone(),
             task_id: task_id.clone(),
             scopes: scopes.clone(),
+            repo: repo.clone(),
             parent_session_id: parent_session_id.clone(),
             root_session_id: root_session_id.clone(),
             detected_state: None,
@@ -206,6 +209,7 @@ impl AgentSession {
             writer: output_writer.clone(),
             pty_writer: AsyncMutex::new(writer),
             pty_master: AsyncMutex::new(pty_pair.master),
+            pty_size: AsyncMutex::new((cols, rows)),
             killer: AsyncMutex::new(killer),
             child_pid,
             seq: AtomicU64::new(0),
@@ -229,7 +233,7 @@ impl AgentSession {
 
         // PTY reader task: blocking reads in a dedicated thread, forwarded
         // through a channel into the async runtime.
-        let (tx_bytes, mut rx_bytes) = tokio::sync::mpsc::channel::<Vec<u8>>(64);
+        let (tx_bytes, mut rx_bytes) = tokio::sync::mpsc::channel::<Vec<u8>>(128);
         let id_for_reader = id.clone();
         std::thread::spawn(move || {
             let mut reader = reader;
@@ -408,6 +412,10 @@ impl AgentSession {
     }
 
     pub async fn resize(&self, cols: u16, rows: u16) -> Result<(), SessionError> {
+        let mut current = self.pty_size.lock().await;
+        if *current == (cols, rows) {
+            return Ok(());
+        }
         let master = self.pty_master.lock().await;
         master
             .resize(PtySize {
@@ -417,6 +425,7 @@ impl AgentSession {
                 pixel_height: 0,
             })
             .map_err(|e| SessionError::Pty(e.to_string()))?;
+        *current = (cols, rows);
         Ok(())
     }
 

@@ -13,6 +13,22 @@ list:
 dev:
     just dev-raw
 
+# Run backend + frontend locally in parallel, restarting backend on Rust changes
+dev-watch:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source ./scripts/dev-env.sh
+    export_harness_dev_env
+    cleanup() {
+      trap - EXIT INT TERM
+      jobs -pr | xargs -r kill 2>/dev/null || true
+    }
+    trap cleanup EXIT INT TERM
+    ./scripts/dev-mcp.sh &
+    (cd backend && cargo watch -x 'build -p harness-mcp-server' -x 'run -p harness-server') &
+    (cd frontend && pnpm dev) &
+    wait
+
 # Run backend + frontend locally in parallel (no Zellij)
 dev-raw:
     #!/usr/bin/env bash
@@ -25,7 +41,7 @@ dev-raw:
     }
     trap cleanup EXIT INT TERM
     ./scripts/dev-mcp.sh &
-    (cd backend && cargo run -p harness-server) &
+    (cd backend && cargo build -p harness-mcp-server && cargo run -p harness-server) &
     (cd frontend && pnpm dev) &
     wait
 
@@ -36,7 +52,13 @@ dev-local: dev-raw
 dev-backend:
     source ./scripts/dev-env.sh; \
     export_harness_dev_env; \
-    cd backend && exec cargo run -p harness-server
+    cd backend && cargo build -p harness-mcp-server && exec cargo run -p harness-server
+
+# Run only backend (local), restarting on Rust changes
+dev-backend-watch:
+    source ./scripts/dev-env.sh; \
+    export_harness_dev_env; \
+    cd backend && exec cargo watch -x 'build -p harness-mcp-server' -x 'run -p harness-server'
 
 # Run only frontend (local)
 dev-frontend:

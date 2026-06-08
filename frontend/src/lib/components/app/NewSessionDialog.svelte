@@ -10,7 +10,13 @@
   import { Button } from '$lib/components/ui/button';
   import { Input } from '$lib/components/ui/input';
   import { Label } from '$lib/components/ui/label';
-  import { api, ApiError, type AutonomyProfile, type SessionKind } from '$lib/api/client';
+  import {
+    api,
+    ApiError,
+    type AutonomyProfile,
+    type CurrentRepoReport,
+    type SessionKind
+  } from '$lib/api/client';
   import { goto } from '$app/navigation';
   import { toast } from 'svelte-sonner';
   import { Loader2 } from '$lib/icons';
@@ -37,13 +43,38 @@
   let cwd = $state<string>('');
   let submitting = $state<boolean>(false);
   let error = $state<string | null>(null);
+  let repoReport = $state<CurrentRepoReport | null>(null);
+  let repoLookup = $state<'idle' | 'loading' | 'error'>('idle');
+  let repoMode = $state<'fresh' | 'resume'>('fresh');
 
   function reset() {
     kind = 'claude';
     autonomy = 'assisted';
     cwd = '';
     error = null;
+    repoReport = null;
+    repoLookup = 'idle';
+    repoMode = 'fresh';
     submitting = false;
+  }
+
+  async function lookupRepo() {
+    const requestedCwd = cwd.trim();
+    repoReport = null;
+    repoMode = 'fresh';
+    if (!requestedCwd) {
+      repoLookup = 'idle';
+      return;
+    }
+    repoLookup = 'loading';
+    try {
+      const res = await api.repos.current(requestedCwd);
+      repoReport = res.data.detected ? res.data : null;
+      repoLookup = 'idle';
+      if (repoReport?.repo?.last_thread_id) repoMode = 'resume';
+    } catch {
+      repoLookup = 'error';
+    }
   }
 
   /**
@@ -86,8 +117,11 @@
     try {
       let tid = threadId;
       const requestedCwd = cwd.trim() ? cwd.trim() : undefined;
+      if (!tid && repoMode === 'resume' && repoReport?.repo?.last_thread_id) {
+        tid = repoReport.repo.last_thread_id;
+      }
       if (!tid) {
-        const t = await api.threads.create(undefined, autonomy);
+        const t = await api.threads.create(undefined, autonomy, requestedCwd);
         tid = t.data.id;
         if (requestedCwd) {
           try {
@@ -180,10 +214,51 @@
       </div>
       <div class="flex flex-col gap-2">
         <Label for="cwd">Working directory (optional)</Label>
-        <Input id="cwd" bind:value={cwd} placeholder="/path/to/project" autocomplete="off" />
+        <Input
+          id="cwd"
+          bind:value={cwd}
+          placeholder="/path/to/project"
+          autocomplete="off"
+          onblur={lookupRepo}
+        />
         <p class="text-xs text-[var(--fg-muted)]">
           Defaults to the backend process cwd when empty.
         </p>
+        {#if repoLookup === 'loading'}
+          <p class="text-xs text-[var(--fg-muted)]">Checking project history…</p>
+        {:else if repoReport?.identity}
+          <div
+            class="rounded-md border px-3 py-2 text-xs"
+            style="border-color: var(--border-subtle); background: var(--surface-titlebar); color: var(--fg-muted);"
+          >
+            <div class="font-medium" style="color: var(--fg-default);">
+              {repoReport.repo ? 'Known project' : 'Git project detected'}
+            </div>
+            <div class="mt-1 truncate">{repoReport.identity.canonical_path}</div>
+            {#if repoReport.repo?.last_thread_id && !threadId}
+              <div class="mt-2 grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  class="rounded border px-2 py-1 text-left transition-colors {repoMode === 'resume'
+                    ? 'border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent)]'
+                    : 'border-[var(--border-input)] text-[var(--fg-muted)] hover:text-[var(--fg-default)]'}"
+                  onclick={() => (repoMode = 'resume')}
+                >
+                  Resume last thread
+                </button>
+                <button
+                  type="button"
+                  class="rounded border px-2 py-1 text-left transition-colors {repoMode === 'fresh'
+                    ? 'border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent)]'
+                    : 'border-[var(--border-input)] text-[var(--fg-muted)] hover:text-[var(--fg-default)]'}"
+                  onclick={() => (repoMode = 'fresh')}
+                >
+                  Start fresh
+                </button>
+              </div>
+            {/if}
+          </div>
+        {/if}
       </div>
       <div class="flex flex-col gap-2">
         <Label for="autonomy">Autonomy</Label>

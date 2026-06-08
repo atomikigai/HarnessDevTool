@@ -8,6 +8,7 @@ pub mod events;
 pub mod ids;
 pub mod knowledge;
 pub mod pause;
+pub mod repos;
 pub mod roles;
 pub mod scheduler;
 pub mod store;
@@ -28,6 +29,10 @@ pub use knowledge::{
     KnowledgeShard, PdfTextToolStatus,
 };
 pub use pause::PauseFlag;
+pub use repos::{
+    CurrentRepoReport, RepoContext, RepoError, RepoIdentity, RepoIndex, RepoRecord,
+    RepoThreadRecord,
+};
 pub use roles::{Role, RolesRegistry};
 pub use scheduler::{
     run_budget_pass, BudgetWiring, NoopSpawner, Scheduler, SessionSpawner, SpawnRequest,

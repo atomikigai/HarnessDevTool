@@ -16,6 +16,23 @@ pub enum SessionStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
 #[cfg_attr(feature = "ts-export", ts(export, export_to = "../../../bindings/"))]
+pub struct SessionRepoContext {
+    pub repo_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    pub root_path: String,
+    pub canonical_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head_sha: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export, export_to = "../../../bindings/"))]
 pub struct SessionMeta {
     pub id: String,
     pub kind: AgentKind,
@@ -44,6 +61,11 @@ pub struct SessionMeta {
     /// `backend`, `frontend`, `db:connection:<id>`, `task:T-0001`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub scopes: Vec<String>,
+    /// Repository/worktree identity detected by the harness when the session
+    /// was spawned. Dynamic continuity lives in HARNESS_HOME; this only links
+    /// the session back to the per-profile repo index.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo: Option<SessionRepoContext>,
 
     // ── Session tree (Zeus / orchestrator) ────────────────────────────────
     /// Parent session id when this session was spawned as a child of another

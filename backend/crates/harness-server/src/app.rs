@@ -68,6 +68,7 @@ pub fn build_router(state: Arc<AppState>, cfg: &Config) -> Router {
         .merge(routes::db::router())
         .merge(routes::ssh::router())
         .merge(routes::profiles::router())
+        .merge(routes::repos::router())
         .layer(api_timeout)
         .layer(compression);
 

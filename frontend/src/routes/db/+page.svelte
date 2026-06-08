@@ -22,7 +22,15 @@
   let testResults = $state<Record<string, { ok: boolean; text: string }>>({});
 
   onMount(() => {
-    void dbStore.refresh();
+    void (async () => {
+      await dbStore.refresh();
+      if (
+        dbStore.activeConnectionId &&
+        dbStore.connections.some((c) => c.id === dbStore.activeConnectionId)
+      ) {
+        goto(`/db/${dbStore.activeConnectionId}`, { replaceState: true });
+      }
+    })();
   });
 
   const filtered = $derived.by(() => {
@@ -96,6 +104,7 @@
   }
 
   function onConnect(c: Connection) {
+    dbStore.setActiveConnection(c.id);
     goto(`/db/${c.id}`);
   }
 

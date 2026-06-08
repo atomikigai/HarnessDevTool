@@ -52,6 +52,7 @@ revisar, aprobar y ejecutar sin mezclar scopes.
 35. **Task 31: Medición de eficiencia de tools por spawn** — benchmark de tokens, tool-calls y tasa de éxito por configuración de capacidades cargadas; identifica qué tools deben ser rails Rust o contexto pre-inyectado vs tools reales. Prerequisito: smart-loading implementado (spawn_hint / resolve_load).
 36. **Task 32: Reemplazar `pdftotext` por `pdf_oxide` embebido** — eliminar la dependencia del subprocess externo poppler/pdftotext en `harness-core/knowledge.rs`; embeber el crate `pdf_oxide` como extracción pure Rust (cero subprocess); agregar `pdf_oxide_mcp` como servicio MCP opcional en `docker-compose.mcp.yml` para que agentes lean PDFs directamente como tool.
 37. **Task 33: Capacidad `docs.build` con Starlight como backend default** — el doc-agent genera markdown; el harness compila un sitio navegable para el proyecto donde está desplegado. Backend Starlight (Astro) como default universal; arquitectura intercambiable para soporte futuro de mdBook/VitePress según stack detectado.
+38. **Task 34: Project Memory Binding** — el harness reconoce repos ya trabajados al iniciar sesiones nuevas, usando SQLite como índice operativo por profile y un marcador opcional `.harness/project.toml` en el repo solo para identidad estable.
 
 Nota F3 2026-06-04:
 - El routing base rol → CLI quedó cerrado para el scheduler: `Role.cli`
@@ -1189,5 +1190,96 @@ Resultado esperado:
 El orchestrator puede pedir `docs.build` y obtener un sitio estático en
 `<project>/docs-site/` listo para desplegar. `just setup` informa si Starlight
 (npx astro) está disponible.
+
+Estado: pendiente.
+
+## Task 34: Project Memory Binding
+
+Objetivo:
+Evitar que una sesión nueva arranque ciega cuando el usuario vuelve a trabajar
+en un repo que el harness ya conoce. El harness debe detectar el repo actual,
+enlazarlo con threads/sesiones previas y ofrecer resume o contexto de proyecto.
+
+Contexto:
+La memoria dinámica y privada vive en `HARNESS_HOME`, aislada por profile. El
+repo solo debe contener instrucciones estables (`AGENTS.md`) y, si el usuario
+lo acepta, un marcador mínimo de identidad. No guardar logs, transcripts,
+tasks ni memoria privada dentro del repo.
+
+Decisión de storage:
+- Fuente de verdad: SQLite por profile para el índice operativo de repos.
+- JSON/Markdown: solo snapshots legibles, debug/export o continuity derivada.
+- Motivo: el backend necesita consultas rápidas por repo/path/remote/thread,
+  updates transaccionales, orden por `last_seen_at` y migraciones limpias.
+
+Esquema inicial propuesto:
+```sql
+repos (
+  id TEXT PRIMARY KEY,
+  profile TEXT NOT NULL,
+  project_id TEXT,
+  root_path TEXT NOT NULL,
+  canonical_path TEXT NOT NULL,
+  remote_url TEXT,
+  default_branch TEXT,
+  last_branch TEXT,
+  last_head_sha TEXT,
+  last_thread_id TEXT,
+  last_session_id TEXT,
+  summary TEXT,
+  first_seen_at INTEGER NOT NULL,
+  last_seen_at INTEGER NOT NULL,
+  UNIQUE(profile, canonical_path),
+  UNIQUE(profile, remote_url)
+);
+
+repo_threads (
+  repo_id TEXT NOT NULL,
+  thread_id TEXT NOT NULL,
+  branch TEXT,
+  head_sha TEXT,
+  started_at INTEGER NOT NULL,
+  last_seen_at INTEGER NOT NULL,
+  summary TEXT,
+  PRIMARY KEY (repo_id, thread_id)
+);
+```
+
+Tarea:
+1. Implementar detector de identidad de repo: git root, remote principal,
+   branch, `HEAD`, canonical path y fallback para repos sin remote.
+2. Crear índice SQLite por profile para `repos` y `repo_threads`.
+3. Registrar/actualizar el repo al crear thread/sesión con `cwd`.
+4. Guardar en thread/session metadata el `repo_id`, `root_path`, `remote_url`,
+   `branch` y `head_sha` observados al spawn.
+5. Generar continuity breve por repo: último objetivo, pending tasks, blockers,
+   últimos archivos tocados y thread recomendado para resume.
+6. Inyectar un bloque corto de project context al spawn si el cwd pertenece a
+   un repo conocido.
+7. Exponer endpoints mínimos:
+   - `GET /api/repos/current?cwd=<path>`
+   - `GET /api/repos/:id`
+   - `GET /api/repos/:id/threads`
+8. UI al iniciar sesión en repo conocido:
+   - Resume last thread.
+   - Start fresh with project context.
+   - Start completely fresh.
+9. Agregar marcador opcional `.harness/project.toml` con `project_id`,
+   `profile_hint` y `harness_memory = "external"`; nunca escribirlo sin acción
+   humana explícita.
+
+Reglas:
+- El harness es la fuente de verdad del estado dinámico.
+- El repo no recibe memoria privada ni logs.
+- `AGENTS.md` queda para instrucciones estables del proyecto, no para estado de
+  sesión.
+- Si el repo se mueve o se clona, el marcador opcional permite reconectar con
+  el mismo `project_id`; si no existe, se usa canonical path + remote.
+- Agregar tests de detector, migración SQLite e endpoint de repo conocido.
+
+Resultado esperado:
+Al abrir una sesión nueva dentro de un repo ya visto, el harness reconoce el
+proyecto, muestra la continuidad relevante y permite reanudar o arrancar fresco
+con contexto sin depender de memoria del modelo.
 
 Estado: pendiente.

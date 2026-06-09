@@ -102,6 +102,29 @@ Cada skill describe cuándo usar la herramienta, patrones concretos y cuándo no
 | `rust-tooling` | CLIs cargo | Calidad, deps, tamaño binario y profiling Rust |
 | `security-tooling` | CLIs Rust/Go/sistema | Secret scanning, CVEs, containers, Dockerfiles y shell |
 
+## Uso esperado de skills/capabilities
+
+El harness debe tratar skills, MCPs y tools como un grafo de capacidades, no
+como listas aisladas. Para cada task, carga lo minimo necesario segun paths,
+keywords, rol y contrato afectado; registra lo cargado en `loaded_capabilities`.
+
+- **Frontend/UI**: cargar `agent-browser`; si hay diseno/pulido, tambien
+  `frontend-design`, `design-md` y `shadcn-svelte` cuando toque componentes UI.
+  Leer `frontend/DESIGN.md`, correr `pnpm check`, validar como usuario real con
+  `agent-browser`, y actualizar `DESIGN.md` si cambian estilos o direccion visual.
+- **Frontend + backend contract**: levantar ambos servicios y probar desde la
+  UI con `agent-browser`; API checks o tests estaticos no bastan.
+- **Performance**: cargar `performance-optimization`; medir baseline, encontrar
+  cuello de botella, corregir, medir despues y anotar numeros.
+- **Refactor de claridad**: cargar `code-simplification`; preservar comportamiento,
+  scope acotado, tests/checks enfocados y diff revisable.
+- **Revision/calidad**: cargar `code-review-and-quality` antes de merge/commit
+  relevante; revisar correctness, legibilidad, arquitectura, seguridad,
+  performance y evidencia QA.
+- **Diagramas**: usar `excalidraw-board` para la integracion editable/MCP y
+  `excalidraw-diagram` para que el diagrama argumente visualmente con evidencia
+  tecnica real.
+
 ## CLIs soportados y auth compartida (importante)
 
 El harness sabe spawnear 4 CLIs: `claude`, `codex`, `cursor` (binario

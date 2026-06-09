@@ -10,6 +10,8 @@ capabilities:
   kind: skill
   requires:
     - mcp:excalidraw
+  suggests:
+    - skill:excalidraw-diagram
   trigger:
     keywords:
       - diagram
@@ -25,6 +27,10 @@ capabilities:
 Use this skill when an agent needs a visual board: architecture diagrams,
 workflow maps, task decomposition, UI wireframes, sequence diagrams, or planning
 artifacts that should be editable in Excalidraw.
+
+For high-quality technical diagrams, also use `excalidraw-diagram`; it defines
+the visual argument, evidence artifacts, and section-by-section diagram design
+methodology.
 
 ## Runtime
 

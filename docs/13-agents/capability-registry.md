@@ -124,9 +124,12 @@ Reglas:
 | `git` | flujos, conflict resolution |
 | `markdown` | docs editing, frontmatter |
 | `skill-authoring` | creación, edición, triggers, evals y metadata de skills |
+| `excalidraw-diagram` | diagramas editables, arquitectura visual, evidence artifacts |
 | `security` | auth, secrets, sandboxing |
 | `performance` | profiling, optimization |
 | `refactor` | técnicas de refactor seguro |
+| `code-simplification` | refactors de claridad preservando comportamiento |
+| `code-review` | revision multi-eje: correctness, arquitectura, seguridad, performance |
 
 ## Tools del harness-bridge (siempre disponibles)
 

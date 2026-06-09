@@ -85,10 +85,14 @@ Cada skill describe cuándo usar la herramienta, patrones concretos y cuándo no
 | `context7` | MCP/CLI npm | Documentación actual de librerías para agentes de coding |
 | `crawl4ai-context` | MCP/CLI npm | Extracción/crawling de contexto web y docs externas |
 | `excalidraw-board` | MCP HTTP | Diagramas, boards y wireframes editables |
+| `excalidraw-diagram` | Skill harness | Diagramas Excalidraw técnicos con argumento visual |
 | `skill-creator` | Skill harness | Crear, adaptar y evaluar skills del harness |
 | `design-md` | Skill harness | Crear y mantener `DESIGN.md` como fuente visual |
 | `frontend-design` | Skill harness | Diseño UI frontend productivo y pulido |
 | `shadcn-svelte` | Skill harness/docs | Componentes shadcn-svelte, Bits UI y Tailwind v4 |
+| `performance-optimization` | Skill harness | Medicion y optimizacion performance frontend/backend |
+| `code-simplification` | Skill harness | Refactors de claridad sin cambiar comportamiento |
+| `code-review-and-quality` | Skill harness | Revision multi-eje antes de merge/commit |
 | `ast-grep` | CLI npm | Búsqueda estructural de código por AST |
 | `difftastic` | CLI cargo | Diffs semánticos sin ruido |
 | `cargo-nextest` | CLI cargo | Tests Rust más rápidos |

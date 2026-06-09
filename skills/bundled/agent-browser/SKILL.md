@@ -113,6 +113,11 @@ agent-browser open http://localhost:5173/threads
 Check rendering, overflow, clipping, density, responsive behavior, forms,
 dialogs, tabs, navigation, disabled/loading states, and stream-driven UI state.
 
+For any frontend change, browser validation is mandatory unless the final report
+states a concrete blocker. Static checks do not replace real-user inspection.
+For backend changes that affect frontend-consumed contracts, start backend and
+frontend together and validate the changed flow from the UI.
+
 ## QA Workflow
 
 Use this sequence for bugs and exploratory testing:
@@ -120,11 +125,14 @@ Use this sequence for bugs and exploratory testing:
 1. Define the target URL, role/persona, and workflow under test.
 2. Load `agent-browser skills get core --full`; load `dogfood --full` for broad
    exploratory QA.
-3. Navigate and inspect rendered state before acting.
-4. Capture relevant screenshot/DOM/console/network evidence.
-5. Reproduce the smallest action sequence that proves the bug or fix.
-6. Report whether the issue is reproduced, fixed, or inconclusive.
-7. Add or run Playwright only if the behavior is stable enough to guard as a
+3. Navigate like a user and inspect rendered state before acting.
+4. Evaluate screen quality: visual hierarchy, spacing, alignment, data
+   legibility, labels, empty/loading/error states, and whether the interface is
+   user friendly for the intended workflow.
+5. Capture relevant screenshot/DOM/console/network evidence.
+6. Reproduce the smallest action sequence that proves the bug or fix.
+7. Report whether the issue is reproduced, fixed, or inconclusive.
+8. Add or run Playwright only if the behavior is stable enough to guard as a
    regression.
 
 Evidence report:
@@ -134,6 +142,8 @@ URL:
 Viewport:
 Tool: agent-browser core|dogfood
 Observed:
+UX quality:
+Data legibility:
 Evidence:
 Console/network:
 Result: reproduced|fixed|inconclusive

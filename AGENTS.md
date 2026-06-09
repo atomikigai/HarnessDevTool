@@ -34,6 +34,18 @@ container).
 - **`.env` versionado**: el archivo `.env` se sube al repo deliberadamente. No
   lo ignores, elimines, renombres ni reemplaces por `.env.example` salvo pedido
   explicito.
+- **QA frontend como usuario real**: cualquier cambio en `frontend/**`, o cambio
+  backend que afecte contratos consumidos por frontend, requiere validacion con
+  `agent-browser` como usuario real. El agente QA debe revisar pantalla, flujo,
+  legibilidad de datos, estados visibles y que la interfaz sea user friendly.
+  `pnpm check`, tests unitarios o Playwright no sustituyen esta validacion
+  exploratoria; si el flujo cruza backend/frontend, levanta ambos servicios y
+  prueba desde la UI.
+- **`DESIGN.md` por repo frontend**: todo repo/app frontend trabajado por el
+  harness debe tener un `DESIGN.md` como fuente de verdad visual (`frontend/DESIGN.md`
+  si existe `frontend/`, si no `DESIGN.md` en la raiz). Si cambian tokens,
+  estilos globales, patrones de layout o direccion visual, el agente
+  correspondiente debe actualizarlo en la misma tarea.
 
 ## Propiedad por dominio (no cruzar paths)
 
@@ -74,7 +86,9 @@ Cada skill describe cuándo usar la herramienta, patrones concretos y cuándo no
 | `crawl4ai-context` | MCP/CLI npm | Extracción/crawling de contexto web y docs externas |
 | `excalidraw-board` | MCP HTTP | Diagramas, boards y wireframes editables |
 | `skill-creator` | Skill harness | Crear, adaptar y evaluar skills del harness |
+| `design-md` | Skill harness | Crear y mantener `DESIGN.md` como fuente visual |
 | `frontend-design` | Skill harness | Diseño UI frontend productivo y pulido |
+| `shadcn-svelte` | Skill harness/docs | Componentes shadcn-svelte, Bits UI y Tailwind v4 |
 | `ast-grep` | CLI npm | Búsqueda estructural de código por AST |
 | `difftastic` | CLI cargo | Diffs semánticos sin ruido |
 | `cargo-nextest` | CLI cargo | Tests Rust más rápidos |

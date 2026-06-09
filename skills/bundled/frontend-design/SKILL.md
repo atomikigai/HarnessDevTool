@@ -8,7 +8,9 @@ capabilities:
   kind: skill
   requires:
     - skill:agent-browser
+    - skill:design-md
   suggests:
+    - skill:shadcn-svelte
     - cli:agent-browser
     - mcp:playwright
   trigger:
@@ -124,15 +126,18 @@ For HarnessDevTool screens:
 
 ## Implementation Workflow
 
-1. Read nearby components and CSS before inventing patterns.
-2. Pick operational app mode or expressive visual mode.
-3. Define the visual hierarchy before changing details.
-4. Implement working code, not just a static mock.
-5. Add responsive constraints with grid/flex, min/max widths, stable heights,
+1. Read `frontend/DESIGN.md` or repo-root `DESIGN.md` when present.
+2. Read nearby components and CSS before inventing patterns.
+3. Pick operational app mode or expressive visual mode.
+4. Define the visual hierarchy before changing details.
+5. Implement working code, not just a static mock.
+6. Add responsive constraints with grid/flex, min/max widths, stable heights,
    aspect ratios, and overflow behavior.
-6. Validate with `agent-browser`: load `core --full`, inspect the rendered page,
+7. Update `DESIGN.md` when the task intentionally changes visual tokens,
+   component styling, layout rules, or design direction.
+8. Validate with `agent-browser`: load `core --full`, inspect the rendered page,
    and capture evidence when layout or interactions matter.
-7. Use Playwright only for stable regressions after the UI behavior is known.
+9. Use Playwright only for stable regressions after the UI behavior is known.
 
 ## Review Checklist
 

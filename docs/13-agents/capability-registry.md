@@ -71,7 +71,9 @@ Reglas:
 | `svelte` | SvelteKit, Svelte 5, stores, runes |
 | `tailwind` | Tailwind v4, tokens, utility patterns |
 | `shadcn` | shadcn-svelte components |
+| `shadcn-svelte` | shadcn-svelte CLI/docs, Bits UI primitives, components.json |
 | `frontend-design` | layout, spacing, color, typography |
+| `design-md` | DESIGN.md, tokens visuales, consistencia de sistema UI |
 | `a11y` | accessibility (ARIA, semantic HTML) |
 | `forms` | form validation con valibot |
 | `xterm` | xterm.js, ANSI rendering |

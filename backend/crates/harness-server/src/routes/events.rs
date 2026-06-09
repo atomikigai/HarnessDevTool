@@ -108,35 +108,50 @@ fn session_stream(
     sid: String,
 ) -> impl Stream<Item = Result<SseEvent, Infallible>> + Send {
     let manager = state.manager.clone();
+    let rx = manager.subscribe();
+    let next_seq = Arc::new(AtomicU64::new(0));
 
-    // 1) Catch-up.
-    let history = match manager.read_output(&sid) {
-        Ok(bytes) => bytes,
-        Err(e) => {
-            tracing::warn!(error = %e, session = %sid, "no output.log for catch-up");
-            Vec::new()
+    // 1) Catch-up. Subscribe to the live bus first so output appended while
+    // this blocking disk read runs is buffered in `rx` and not lost.
+    let manager_for_history = manager.clone();
+    let sid_for_history = sid.clone();
+    let next_seq_for_history = next_seq.clone();
+    let catchup_stream = stream::once(async move {
+        let sid_for_read = sid_for_history.clone();
+        let history = match tokio::task::spawn_blocking(move || {
+            manager_for_history.read_output(&sid_for_read)
+        })
+        .await
+        {
+            Ok(Ok(bytes)) => bytes,
+            Ok(Err(e)) => {
+                tracing::warn!(error = %e, session = %sid_for_history, "no output.log for catch-up");
+                Vec::new()
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, session = %sid_for_history, "output catch-up task failed");
+                Vec::new()
+            }
+        };
+
+        let mut catchup_events: Vec<Result<SseEvent, Infallible>> = Vec::new();
+        for chunk in history.chunks(PTY_CATCHUP_CHUNK) {
+            let seq = next_seq_for_history.fetch_add(1, Ordering::SeqCst);
+            let payload = json!({
+                "type": "session.output",
+                "session_id": sid_for_history,
+                "seq": seq,
+                "b64": B64.encode(chunk),
+            });
+            catchup_events.push(Ok(SseEvent::default()
+                .event("session.output")
+                .data(payload.to_string())));
         }
-    };
-
-    let mut catchup_events: Vec<Result<SseEvent, Infallible>> = Vec::new();
-    let mut seq: u64 = 0;
-    for chunk in history.chunks(PTY_CATCHUP_CHUNK) {
-        let payload = json!({
-            "type": "session.output",
-            "session_id": sid,
-            "seq": seq,
-            "b64": B64.encode(chunk),
-        });
-        catchup_events.push(Ok(SseEvent::default()
-            .event("session.output")
-            .data(payload.to_string())));
-        seq += 1;
-    }
-    let catchup_stream = stream::iter(catchup_events);
+        catchup_events
+    })
+    .flat_map(stream::iter);
 
     // 2) Live tail. Wrap `seq` in an atomic so the per-item closure can mutate it.
-    let next_seq = Arc::new(AtomicU64::new(seq));
-    let rx = manager.subscribe();
     let sid_filter = sid.clone();
     let live = BroadcastStream::new(rx).filter_map(move |res| {
         let sid_filter = sid_filter.clone();

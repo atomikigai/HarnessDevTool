@@ -119,11 +119,20 @@ impl PoolCache {
             .filter(|e| e.key().0 == connection_id)
             .map(|e| e.key().clone())
             .collect();
+        let lock_keys: Vec<PoolKey> = self
+            .locks
+            .iter()
+            .filter(|e| e.key().0 == connection_id)
+            .map(|e| e.key().clone())
+            .collect();
         for k in keys {
             if let Some((_, pool)) = self.inner.remove(&k) {
                 // Drop closes async; spawn so we don't block.
                 tokio::spawn(async move { pool.close().await });
             }
+        }
+        for k in lock_keys {
+            self.locks.remove(&k);
         }
     }
 }
@@ -230,5 +239,32 @@ pub async fn build_pool_for_input(input: &crate::types::ConnectionInput) -> DbRe
                 .map_err(DbError::from)?;
             Ok(DbPool::Mysql(pool))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn invalidate_removes_matching_creation_locks() {
+        let cache = PoolCache::new();
+        let target: PoolKey = ("conn-a".into(), Some("db1".into()));
+        let other_conn: PoolKey = ("conn-b".into(), Some("db1".into()));
+        let other_db: PoolKey = ("conn-a".into(), Some("db2".into()));
+
+        cache.locks.insert(target.clone(), Arc::new(Mutex::new(())));
+        cache
+            .locks
+            .insert(other_conn.clone(), Arc::new(Mutex::new(())));
+        cache
+            .locks
+            .insert(other_db.clone(), Arc::new(Mutex::new(())));
+
+        cache.invalidate("conn-a");
+
+        assert!(!cache.locks.contains_key(&target));
+        assert!(!cache.locks.contains_key(&other_db));
+        assert!(cache.locks.contains_key(&other_conn));
     }
 }

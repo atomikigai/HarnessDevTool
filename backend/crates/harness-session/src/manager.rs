@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
@@ -73,6 +74,8 @@ pub struct Manager {
     sessions: DashMap<String, Arc<AgentSession>>,
     detached: DashMap<String, SessionMeta>,
     bus: broadcast::Sender<SessionEvent>,
+    shutting_down: AtomicBool,
+    lifecycle_lock: Mutex<()>,
 }
 
 impl std::fmt::Debug for Manager {
@@ -83,6 +86,12 @@ impl std::fmt::Debug for Manager {
             .field("detached_sessions", &self.detached.len())
             .finish()
     }
+}
+
+#[derive(Debug)]
+pub struct KillTreeResult {
+    pub affected: Vec<String>,
+    pub tombstone_error: Option<SessionError>,
 }
 
 impl Manager {
@@ -96,6 +105,8 @@ impl Manager {
             sessions: DashMap::new(),
             detached: DashMap::new(),
             bus,
+            shutting_down: AtomicBool::new(false),
+            lifecycle_lock: Mutex::new(()),
         })
     }
 
@@ -191,6 +202,28 @@ impl Manager {
         self.sessions.iter().map(|e| e.value().clone()).collect()
     }
 
+    /// Kill every live session in leaf-up order without removing or
+    /// tombstoning them. Used for server reload/shutdown where persisted
+    /// session state must remain available for detached replay after restart.
+    pub async fn shutdown_all(&self) -> Vec<String> {
+        let sessions = {
+            let _guard = self.lifecycle_lock.lock().expect("lifecycle lock poisoned");
+            self.shutting_down.store(true, Ordering::SeqCst);
+            let mut sessions = self.all();
+            sessions.sort_by_key(|session| std::cmp::Reverse(self.tree_depth(session.id())));
+            sessions
+        };
+        let mut ids = Vec::with_capacity(sessions.len());
+        for session in sessions {
+            let sid = session.id().to_string();
+            if let Err(e) = session.kill().await {
+                tracing::warn!(session = %sid, error = %e, "kill during manager shutdown");
+            }
+            ids.push(sid);
+        }
+        ids
+    }
+
     /// Snapshot of all session metadata known to the manager. Includes live
     /// sessions plus detached read-only metadata loaded from disk.
     pub async fn list_metas(&self) -> Vec<SessionMeta> {
@@ -242,6 +275,12 @@ impl Manager {
         cwd: PathBuf,
         opts: SpawnOpts,
     ) -> Result<Arc<AgentSession>, SessionError> {
+        let _guard = self.lifecycle_lock.lock().expect("lifecycle lock poisoned");
+        if self.shutting_down.load(Ordering::SeqCst) {
+            return Err(SessionError::Invalid(
+                "session manager is shutting down".to_string(),
+            ));
+        }
         let id = opts
             .session_id_override
             .clone()
@@ -357,6 +396,61 @@ impl Manager {
 
     // ── Session-tree helpers (Zeus orchestrator) ─────────────────────────
 
+    /// Kill a session tree, remove it from the in-memory manager, and mark
+    /// every affected session as tombstoned. Returned ids are ordered in the
+    /// same leaf-up order used for killing so callers can clean runtime
+    /// resources deterministically.
+    pub async fn kill_tree_and_tombstone(&self, sid: &str) -> KillTreeResult {
+        let (sessions_to_kill, affected, tombstone_error) = {
+            let _guard = self.lifecycle_lock.lock().expect("lifecycle lock poisoned");
+            let mut affected = Vec::new();
+            let mut sessions_to_kill = Vec::new();
+            let mut tombstone_error = None;
+
+            for child in self.descendants_of(sid).into_iter().rev() {
+                let cid = child.id().to_string();
+                self.remove(&cid);
+                affected.push(cid);
+                sessions_to_kill.push(child);
+                if let Err(e) = self.tombstone(affected.last().expect("just pushed")) {
+                    if tombstone_error.is_none() {
+                        tombstone_error = Some(e);
+                    }
+                }
+            }
+
+            if let Some(session) = self.get(sid) {
+                sessions_to_kill.push(session);
+            }
+            self.remove(sid);
+            affected.push(sid.to_string());
+            if let Err(e) = self.tombstone(sid) {
+                if tombstone_error.is_none() {
+                    tombstone_error = Some(e);
+                }
+            }
+
+            (sessions_to_kill, affected, tombstone_error)
+        };
+
+        for session in sessions_to_kill {
+            let cid = session.id().to_string();
+            if let Err(e) = session.kill().await {
+                tracing::warn!(
+                    session = %cid,
+                    parent = %sid,
+                    error = %e,
+                    "cascade kill: session returned error"
+                );
+            }
+        }
+
+        KillTreeResult {
+            affected,
+            tombstone_error,
+        }
+    }
+
     /// Direct children of `parent_sid` (one level only). Order is unspecified.
     pub fn children_of(&self, parent_sid: &str) -> Vec<Arc<AgentSession>> {
         self.sessions
@@ -409,6 +503,20 @@ impl Manager {
         }
         false
     }
+
+    fn tree_depth(&self, sid: &str) -> usize {
+        let mut depth = 0;
+        let mut current = self
+            .get(sid)
+            .and_then(|s| s.parent_session_id_static().map(str::to_string));
+        while let Some(pid) = current {
+            depth += 1;
+            current = self
+                .get(&pid)
+                .and_then(|p| p.parent_session_id_static().map(str::to_string));
+        }
+        depth
+    }
 }
 
 /// Per-spawn options.
@@ -446,6 +554,10 @@ pub struct SpawnOpts {
     /// in SessionMeta so later efficiency analysis can compare spawn shape
     /// against transcript/tool outcomes.
     pub loaded_capabilities: LoadedCapabilities,
+    /// Optional CLI model override for this spawn.
+    pub model: Option<String>,
+    /// Optional CLI reasoning/effort override for this spawn.
+    pub effort: Option<String>,
     /// Briefing appended to claude's system prompt via `--append-system-prompt`
     /// (NOT typed into the PTY). Used to tell the agent about the harness MCP
     /// tools so it doesn't fall back to its built-in todo list. Silent to the
@@ -493,9 +605,19 @@ fn build_extra_args(kind: AgentKind, opts: &SpawnOpts, session_id: &str) -> Vec<
         out.push("--session-id".to_string());
         out.push(session_id.to_string());
         out.push("--model".to_string());
-        out.push(DEFAULT_CLAUDE_MODEL.to_string());
+        out.push(
+            opts.model
+                .as_deref()
+                .unwrap_or(DEFAULT_CLAUDE_MODEL)
+                .to_string(),
+        );
         out.push("--effort".to_string());
-        out.push(DEFAULT_CLAUDE_EFFORT.to_string());
+        out.push(
+            opts.effort
+                .as_deref()
+                .unwrap_or(DEFAULT_CLAUDE_EFFORT)
+                .to_string(),
+        );
     }
 
     // ── Per-CLI autonomous-mode flags ──────────────────────────────────────
@@ -510,11 +632,16 @@ fn build_extra_args(kind: AgentKind, opts: &SpawnOpts, session_id: &str) -> Vec<
             // for harness MCP tools.
             out.push("--dangerously-bypass-approvals-and-sandbox".to_string());
             out.push("--model".to_string());
-            out.push(DEFAULT_CODEX_MODEL.to_string());
+            out.push(
+                opts.model
+                    .as_deref()
+                    .unwrap_or(DEFAULT_CODEX_MODEL)
+                    .to_string(),
+            );
             out.push("-c".to_string());
             out.push(format!(
                 "model_reasoning_effort={}",
-                toml_string(DEFAULT_CODEX_EFFORT)
+                toml_string(opts.effort.as_deref().unwrap_or(DEFAULT_CODEX_EFFORT))
             ));
             if let Some(command) = opts.mcp_server_command.as_ref() {
                 out.push("-c".to_string());
@@ -711,6 +838,21 @@ mod tests {
     }
 
     #[test]
+    fn claude_model_and_effort_can_be_overridden_per_spawn() {
+        let opts = SpawnOpts {
+            model: Some("opus".into()),
+            effort: Some("high".into()),
+            ..SpawnOpts::default()
+        };
+        let args = build_extra_args(AgentKind::Claude, &opts, "sid-123");
+
+        assert!(args.windows(2).any(|w| w[0] == "--model" && w[1] == "opus"));
+        assert!(args
+            .windows(2)
+            .any(|w| w[0] == "--effort" && w[1] == "high"));
+    }
+
+    #[test]
     fn claude_with_mcp_disables_todo_tools() {
         let opts = SpawnOpts {
             mcp_config_path: Some(PathBuf::from("/tmp/cfg.json")),
@@ -869,6 +1011,22 @@ mod tests {
         );
     }
 
+    #[test]
+    fn codex_model_and_effort_can_be_overridden_per_spawn() {
+        let opts = SpawnOpts {
+            model: Some("gpt-5.4".into()),
+            effort: Some("xhigh".into()),
+            ..SpawnOpts::default()
+        };
+
+        let args = build_extra_args(AgentKind::Codex, &opts, "sid-c");
+
+        assert!(args
+            .windows(2)
+            .any(|w| w[0] == "--model" && w[1] == "gpt-5.4"));
+        assert!(args.iter().any(|a| a == "model_reasoning_effort=\"xhigh\""));
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn session_tree_tracks_active_and_exited_direct_children() {
@@ -1008,6 +1166,175 @@ mod tests {
         manager.remove("detached-1");
 
         assert!(manager.list_metas().await.is_empty());
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn kill_tree_and_tombstone_is_idempotent_for_missing_session() {
+        let root = temp_test_dir("kill-tree-missing");
+        let sessions_root = root.join("sessions");
+        let manager = Manager::new(&sessions_root).expect("manager");
+
+        let result = manager.kill_tree_and_tombstone("missing").await;
+
+        assert_eq!(result.affected, vec!["missing".to_string()]);
+        assert!(result.tombstone_error.is_none());
+        assert!(manager.is_tombstoned("missing"));
+        assert!(sessions_root.join("missing").join(DELETED_MARKER).exists());
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn shutdown_all_kills_leaf_up_without_tombstones() {
+        let root = temp_test_dir("shutdown-all");
+        let sessions_root = root.join("sessions");
+        let cwd = root.join("workspace");
+        std::fs::create_dir_all(&cwd).expect("create cwd");
+        let manager = Manager::new(&sessions_root).expect("manager");
+        let shell = PathBuf::from("/bin/sh");
+
+        let parent = manager
+            .spawn_with_opts(
+                AgentKind::Cursor,
+                shell.clone(),
+                "thread-1".to_string(),
+                cwd.clone(),
+                SpawnOpts {
+                    session_id_override: Some("parent".to_string()),
+                    ..SpawnOpts::default()
+                },
+            )
+            .expect("spawn parent");
+        let child = manager
+            .spawn_with_opts(
+                AgentKind::Cursor,
+                shell.clone(),
+                "thread-1".to_string(),
+                cwd.clone(),
+                SpawnOpts {
+                    session_id_override: Some("child".to_string()),
+                    parent_session_id: Some(parent.id().to_string()),
+                    ..SpawnOpts::default()
+                },
+            )
+            .expect("spawn child");
+        let grandchild = manager
+            .spawn_with_opts(
+                AgentKind::Cursor,
+                shell,
+                "thread-1".to_string(),
+                cwd,
+                SpawnOpts {
+                    session_id_override: Some("grandchild".to_string()),
+                    parent_session_id: Some(child.id().to_string()),
+                    ..SpawnOpts::default()
+                },
+            )
+            .expect("spawn grandchild");
+
+        let affected = manager.shutdown_all().await;
+
+        assert_eq!(
+            affected,
+            vec![
+                grandchild.id().to_string(),
+                child.id().to_string(),
+                parent.id().to_string()
+            ]
+        );
+        assert!(manager.get(parent.id()).is_some());
+        assert!(manager.get(child.id()).is_some());
+        assert!(manager.get(grandchild.id()).is_some());
+        assert!(!manager.is_tombstoned(parent.id()));
+        assert!(!manager.is_tombstoned(child.id()));
+        assert!(!manager.is_tombstoned(grandchild.id()));
+        assert_eq!(parent.meta().await.status, SessionStatus::Killed);
+        assert_eq!(child.meta().await.status, SessionStatus::Killed);
+        assert_eq!(grandchild.meta().await.status, SessionStatus::Killed);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn shutdown_all_rejects_late_spawns() {
+        let root = temp_test_dir("shutdown-all-gate");
+        let sessions_root = root.join("sessions");
+        let cwd = root.join("workspace");
+        std::fs::create_dir_all(&cwd).expect("create cwd");
+        let manager = Manager::new(&sessions_root).expect("manager");
+
+        assert!(manager.shutdown_all().await.is_empty());
+
+        let result = manager.spawn_with_opts(
+            AgentKind::Cursor,
+            PathBuf::from("/bin/sh"),
+            "thread-1".to_string(),
+            cwd,
+            SpawnOpts::default(),
+        );
+
+        assert!(matches!(
+            result,
+            Err(SessionError::Invalid(msg)) if msg.contains("shutting down")
+        ));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn exit_event_is_emitted_after_meta_is_persisted() {
+        let root = temp_test_dir("exit-meta-before-event");
+        let sessions_root = root.join("sessions");
+        let cwd = root.join("workspace");
+        std::fs::create_dir_all(&cwd).expect("create cwd");
+        let manager = Manager::new(&sessions_root).expect("manager");
+        let mut events = manager.subscribe();
+
+        let session = manager
+            .spawn_with_opts(
+                AgentKind::Cursor,
+                PathBuf::from("/bin/true"),
+                "thread-1".to_string(),
+                cwd,
+                SpawnOpts {
+                    session_id_override: Some("quick-exit".to_string()),
+                    ..SpawnOpts::default()
+                },
+            )
+            .expect("spawn quick exit");
+
+        let code = loop {
+            let event = tokio::time::timeout(std::time::Duration::from_secs(2), events.recv())
+                .await
+                .expect("exit event timeout")
+                .expect("receive event");
+            if let SessionEvent::Exit {
+                session_id, code, ..
+            } = event
+            {
+                if session_id == session.id() {
+                    break code;
+                }
+            }
+        };
+
+        let meta = session.meta().await;
+        assert_eq!(code, Some(0));
+        assert_eq!(meta.status, SessionStatus::Exited);
+        assert_eq!(meta.exit_code, Some(0));
+
+        let persisted: SessionMeta = serde_json::from_slice(
+            &std::fs::read(sessions_root.join("quick-exit").join("meta.json"))
+                .expect("read persisted meta"),
+        )
+        .expect("parse persisted meta");
+        assert_eq!(persisted.status, SessionStatus::Exited);
+        assert_eq!(persisted.exit_code, Some(0));
 
         let _ = std::fs::remove_dir_all(root);
     }

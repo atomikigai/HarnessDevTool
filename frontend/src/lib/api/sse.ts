@@ -7,11 +7,26 @@ export interface SSEHandle {
 export interface SubscribeOptions {
   onError?: (err: Event) => void;
   onOpen?: (ev: Event) => void;
+  onLagged?: (payload: LaggedEvent, raw: MessageEvent) => void;
+  onResync?: (payload: LaggedEvent, raw: MessageEvent) => void;
+  reconnect?: boolean;
+  maxReconnectAttempts?: number;
+  baseDelayMs?: number;
+  maxDelayMs?: number;
   /**
    * Map from SSE `event:` name → handler. Data is parsed as JSON when possible.
    * Anonymous (default) messages still flow through `onMessage`.
    */
   events?: Record<string, (data: unknown, raw: MessageEvent) => void>;
+}
+
+export interface LaggedEvent {
+  type?: 'lagged';
+  stream?: string;
+  skipped?: number;
+  resync?: string;
+  thread_id?: string;
+  session_id?: string;
 }
 
 function buildUrl(path: string): string {
@@ -44,25 +59,82 @@ export function subscribeSSE<T = unknown>(
   onMessage: (data: T, raw: MessageEvent) => void,
   opts: SubscribeOptions = {}
 ): SSEHandle {
-  const es = new EventSource(buildUrl(path));
+  let es: EventSource | null = null;
+  let closed = false;
+  let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  let attempts = 0;
+  const reconnect = opts.reconnect ?? false;
+  const maxAttempts = opts.maxReconnectAttempts ?? Infinity;
+  const baseDelay = opts.baseDelayMs ?? 500;
+  const maxDelay = opts.maxDelayMs ?? 10_000;
+  const url = buildUrl(path);
 
-  es.onmessage = (ev) => {
-    onMessage(tryParse(ev.data) as T, ev);
-  };
-
-  if (opts.events) {
-    for (const [name, handler] of Object.entries(opts.events)) {
-      es.addEventListener(name, (ev) => {
-        const me = ev as MessageEvent;
-        handler(tryParse(me.data), me);
-      });
+  function clearReconnectTimer(): void {
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
     }
   }
 
-  if (opts.onOpen) es.onopen = opts.onOpen;
-  if (opts.onError) es.onerror = opts.onError;
+  function open(): void {
+    if (closed) return;
+    es = new EventSource(url);
+
+    es.onmessage = (ev) => {
+      onMessage(tryParse(ev.data) as T, ev);
+    };
+
+    es.addEventListener('lagged', (ev) => {
+      const me = ev as MessageEvent;
+      const payload = tryParse(me.data) as LaggedEvent;
+      opts.onLagged?.(payload, me);
+      if (payload?.resync === 'reconnect') {
+        opts.onResync?.(payload, me);
+        if (reconnect) scheduleReconnect();
+      }
+    });
+
+    if (opts.events) {
+      for (const [name, handler] of Object.entries(opts.events)) {
+        if (name === 'lagged') continue;
+        es.addEventListener(name, (ev) => {
+          const me = ev as MessageEvent;
+          handler(tryParse(me.data), me);
+        });
+      }
+    }
+
+    es.onopen = (ev) => {
+      attempts = 0;
+      opts.onOpen?.(ev);
+    };
+
+    es.onerror = (err) => {
+      opts.onError?.(err);
+      if (reconnect) scheduleReconnect();
+    };
+  }
+
+  function scheduleReconnect(): void {
+    if (closed || reconnectTimer || attempts >= maxAttempts) return;
+    es?.close();
+    es = null;
+    const delay = Math.min(maxDelay, baseDelay * 2 ** attempts);
+    attempts += 1;
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null;
+      open();
+    }, delay);
+  }
+
+  open();
 
   return {
-    close: () => es.close()
+    close: () => {
+      closed = true;
+      clearReconnectTimer();
+      es?.close();
+      es = null;
+    }
   };
 }

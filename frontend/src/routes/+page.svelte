@@ -153,28 +153,16 @@
     }
   });
 
-  // ── Polling ───────────────────────────────────────────────────────────────
-  // The IconRail also polls sessions, but it may be unmounted later (when the
-  // user navigates to a different route). Keeping a dedicated poller here
-  // makes the home page self-sufficient.
-  const POLL_MS = 5_000;
-  let timer: ReturnType<typeof setInterval> | null = null;
-  let controller: AbortController | null = null;
-
   function refreshSessions() {
-    controller?.abort();
-    controller = new AbortController();
-    sessionsState.refresh(controller.signal);
+    void sessionsState.refresh();
   }
 
   onMount(() => {
-    refreshSessions();
-    timer = setInterval(refreshSessions, POLL_MS);
+    sessionsState.start();
   });
 
   onDestroy(() => {
-    if (timer) clearInterval(timer);
-    controller?.abort();
+    sessionsState.stop();
     tasksState.stop();
   });
 

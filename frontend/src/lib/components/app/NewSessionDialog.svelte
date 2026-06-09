@@ -16,7 +16,8 @@
     type AutonomyProfile,
     type CapabilityProfile,
     type CurrentRepoReport,
-    type SessionKind
+    type SessionKind,
+    type ZeusRoleSelection
   } from '$lib/api/client';
   import { goto } from '$app/navigation';
   import { toast } from 'svelte-sonner';
@@ -49,6 +50,24 @@
   let repoMode = $state<'resume' | 'context' | 'none'>('context');
   let capabilityProfile = $state<Extract<CapabilityProfile, 'auto' | 'none'>>('auto');
 
+  const zeusRoleLabels: Record<string, string> = {
+    orchestrator: 'Orquestador',
+    planner: 'Planner',
+    generator: 'Generator',
+    evaluator: 'Evaluator',
+    'frontend-visual': 'Frontend visual'
+  };
+  const codexModels = ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex-spark'];
+  const claudeModels = ['claude-opus-4-8', 'claude-sonnet-4-6', 'claude-haiku-4-5-20251001'];
+  const efforts = ['low', 'medium', 'high', 'xhigh'];
+  let zeusRoles = $state<ZeusRoleSelection[]>([
+    { role: 'orchestrator', provider: 'claude', model: 'claude-sonnet-4-6', effort: 'medium' },
+    { role: 'planner', provider: 'claude', model: 'claude-opus-4-8', effort: 'medium' },
+    { role: 'generator', provider: 'codex', model: 'gpt-5.5', effort: 'medium' },
+    { role: 'evaluator', provider: 'claude', model: 'claude-sonnet-4-6', effort: 'medium' },
+    { role: 'frontend-visual', provider: 'claude', model: 'claude-sonnet-4-6', effort: 'medium' }
+  ]);
+
   function reset() {
     kind = 'claude';
     autonomy = 'assisted';
@@ -58,7 +77,31 @@
     repoLookup = 'idle';
     repoMode = 'context';
     capabilityProfile = 'auto';
+    zeusRoles = [
+      { role: 'orchestrator', provider: 'claude', model: 'claude-sonnet-4-6', effort: 'medium' },
+      { role: 'planner', provider: 'claude', model: 'claude-opus-4-8', effort: 'medium' },
+      { role: 'generator', provider: 'codex', model: 'gpt-5.5', effort: 'medium' },
+      { role: 'evaluator', provider: 'claude', model: 'claude-sonnet-4-6', effort: 'medium' },
+      { role: 'frontend-visual', provider: 'claude', model: 'claude-sonnet-4-6', effort: 'medium' }
+    ];
     submitting = false;
+  }
+
+  function modelOptions(provider: ZeusRoleSelection['provider']): string[] {
+    return provider === 'codex' ? codexModels : claudeModels;
+  }
+
+  function patchZeusRole(roleName: string, patch: Partial<ZeusRoleSelection>) {
+    zeusRoles = zeusRoles.map((role) => {
+      if (role.role !== roleName) return role;
+      const next = { ...role, ...patch };
+      if (patch.provider) {
+        const models = modelOptions(patch.provider);
+        next.model = models[0];
+        next.effort = 'medium';
+      }
+      return next;
+    });
   }
 
   async function lookupRepo() {
@@ -145,6 +188,7 @@
         cwd: requestedCwd,
         include_project_context: repoMode !== 'none',
         capability_profile: capabilityProfile,
+        zeus_roles: kind === 'zeus' ? zeusRoles : [],
         cols,
         rows
       });
@@ -183,7 +227,7 @@
 </script>
 
 <Dialog bind:open {onOpenChange}>
-  <DialogContent class="sm:max-w-md">
+  <DialogContent class="{kind === 'zeus' ? 'sm:max-w-xl' : 'sm:max-w-md'} overflow-y-auto max-h-[85vh]">
     <DialogHeader>
       <DialogTitle>New session</DialogTitle>
       <DialogDescription>
@@ -200,9 +244,7 @@
               role="radio"
               aria-checked={kind === opt}
               class="rounded-md border px-3 py-2 text-sm transition-colors {kind === opt
-                ? opt === 'zeus'
-                  ? 'border-emerald-500/70 bg-emerald-500/10 text-emerald-400 font-medium'
-                  : 'border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent)] font-medium'
+                ? 'border-[var(--accent-soft-border)] bg-[var(--accent-soft)] text-[var(--accent)] font-medium'
                 : 'border-[var(--border-input)] bg-[var(--surface-titlebar)] text-[var(--fg-muted)] hover:text-[var(--fg-default)]'}"
               onclick={() => (kind = opt)}
               title={opt === 'zeus'
@@ -214,11 +256,63 @@
           {/each}
         </div>
         {#if kind === 'zeus'}
-          <p class="text-[11px] leading-relaxed text-emerald-400/90">
+          <p class="text-[11px] leading-relaxed" style="color: var(--accent); opacity: 0.9;">
             Zeus is an orchestrator session — it plans and delegates work across the CLIs by role,
-            falling back to Claude on quota/error. Under the hood it runs a Codex PTY with the Zeus
-            orchestrator briefing; real multi-CLI worker spawning lands with F3.
+            using the provider/model matrix below as its routing contract.
           </p>
+          <div
+            class="mt-2 grid gap-2 rounded-md border p-3"
+            style="border-color: var(--border-subtle); background: var(--surface-titlebar);"
+          >
+            <div class="grid items-center gap-x-2 gap-y-0 px-0 pb-1.5" style="grid-template-columns: 108px 76px minmax(0,1fr) 72px; border-bottom: 1px solid var(--border-subtle);">
+              <div class="text-[10px] font-medium" style="color: var(--fg-label);">Role</div>
+              <div class="text-[10px] font-medium" style="color: var(--fg-label);">Provider</div>
+              <div class="text-[10px] font-medium" style="color: var(--fg-label);">Model</div>
+              <div class="text-[10px] font-medium" style="color: var(--fg-label);">Effort</div>
+            </div>
+            {#each zeusRoles as role (role.role)}
+              <div class="grid items-center gap-x-2" style="grid-template-columns: 108px 76px minmax(0,1fr) 72px;">
+                <div class="min-w-0 truncate text-xs font-medium" style="color: var(--fg-default);">
+                  {zeusRoleLabels[role.role] ?? role.role}
+                </div>
+                <select
+                  class="h-8 w-full min-w-0 rounded-md border bg-transparent px-2 text-xs"
+                  style="border-color: var(--border-input); color: var(--fg-default);"
+                  value={role.provider}
+                  onchange={(ev) =>
+                    patchZeusRole(role.role, {
+                      provider: (ev.currentTarget as HTMLSelectElement)
+                        .value as ZeusRoleSelection['provider']
+                    })}
+                >
+                  <option value="codex">Codex</option>
+                  <option value="claude">Claude</option>
+                </select>
+                <select
+                  class="h-8 w-full min-w-0 rounded-md border bg-transparent px-2 text-xs"
+                  style="border-color: var(--border-input); color: var(--fg-default);"
+                  value={role.model ?? modelOptions(role.provider)[0]}
+                  onchange={(ev) =>
+                    patchZeusRole(role.role, { model: (ev.currentTarget as HTMLSelectElement).value })}
+                >
+                  {#each modelOptions(role.provider) as model (model)}
+                    <option value={model}>{model}</option>
+                  {/each}
+                </select>
+                <select
+                  class="h-8 w-full min-w-0 rounded-md border bg-transparent px-2 text-xs"
+                  style="border-color: var(--border-input); color: var(--fg-default);"
+                  value={role.effort ?? 'medium'}
+                  onchange={(ev) =>
+                    patchZeusRole(role.role, { effort: (ev.currentTarget as HTMLSelectElement).value })}
+                >
+                  {#each efforts as effort (effort)}
+                    <option value={effort}>{effort}</option>
+                  {/each}
+                </select>
+              </div>
+            {/each}
+          </div>
         {/if}
       </div>
       <div class="flex flex-col gap-2">

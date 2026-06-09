@@ -1,6 +1,6 @@
 use std::io::{Read, Write};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -28,6 +28,8 @@ pub struct AgentSession {
     pty_size: AsyncMutex<(u16, u16)>,
     /// Killer handle for the child process.
     killer: AsyncMutex<Box<dyn portable_pty::ChildKiller + Send + Sync>>,
+    kill_lock: AsyncMutex<()>,
+    shutdown_requested: AtomicBool,
     child_pid: u32,
     seq: AtomicU64,
     /// Immutable identity, cached outside the async meta lock so non-async
@@ -213,6 +215,8 @@ impl AgentSession {
             pty_master: AsyncMutex::new(pty_pair.master),
             pty_size: AsyncMutex::new((cols, rows)),
             killer: AsyncMutex::new(killer),
+            kill_lock: AsyncMutex::new(()),
+            shutdown_requested: AtomicBool::new(false),
             child_pid,
             seq: AtomicU64::new(0),
             id_static: id.clone(),
@@ -305,6 +309,9 @@ impl AgentSession {
                                 &B64,
                             );
                         }
+                        if session_for_output.shutdown_requested.load(Ordering::SeqCst) {
+                            break;
+                        }
                     }
                 }
             }
@@ -314,6 +321,7 @@ impl AgentSession {
         let bus_for_exit = bus.clone();
         let session_for_exit = session.clone();
         let id_for_exit = id.clone();
+        let handle_for_exit = tokio::runtime::Handle::current();
         tokio::task::spawn_blocking(move || {
             let exit_status = match child.wait() {
                 Ok(s) => s,
@@ -324,10 +332,13 @@ impl AgentSession {
             };
             let code = exit_status.exit_code() as i32;
             let signal: Option<String> = None; // portable-pty 0.8 doesn't expose signal info portably.
+            session_for_exit
+                .shutdown_requested
+                .store(true, Ordering::SeqCst);
 
             // Update meta on disk + in memory.
             let dir = session_for_exit.dir.clone();
-            tokio::spawn(async move {
+            handle_for_exit.block_on(async move {
                 let mut m = session_for_exit.meta.lock().await;
                 // Heuristic: nonzero with killed flag set elsewhere? We update
                 // status to Exited unless a prior explicit kill set Killed.
@@ -358,6 +369,9 @@ impl AgentSession {
             let mut prev: AgentState = AgentState::Unknown;
             loop {
                 tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+                if session_for_state.shutdown_requested.load(Ordering::SeqCst) {
+                    break;
+                }
 
                 // Stop polling once the child exited.
                 let still_running = {
@@ -433,17 +447,26 @@ impl AgentSession {
 
     /// Send SIGTERM, wait up to 3s, then SIGKILL. Marks status as `Killed`.
     pub async fn kill(&self) -> Result<(), SessionError> {
+        let _guard = self.kill_lock.lock().await;
+        self.shutdown_requested.store(true, Ordering::SeqCst);
         {
             let mut m = self.meta.lock().await;
+            if m.status != SessionStatus::Running {
+                return Ok(());
+            }
             m.status = SessionStatus::Killed;
             let _ = persist_meta(&self.dir, &m);
         }
 
         let pid = self.child_pid as i32;
         #[cfg(unix)]
-        unsafe {
-            // SIGTERM = 15
-            libc::kill(pid, libc::SIGTERM);
+        {
+            if pid > 0 {
+                unsafe {
+                    // SIGTERM = 15
+                    libc::kill(pid, libc::SIGTERM);
+                }
+            }
         }
         #[cfg(not(unix))]
         {
@@ -453,7 +476,7 @@ impl AgentSession {
         // Give the child up to 3s to exit gracefully.
         let deadline = std::time::Instant::now() + Duration::from_secs(3);
         loop {
-            if !pid_alive(pid) {
+            if pid <= 0 || !pid_alive(pid) {
                 return Ok(());
             }
             if std::time::Instant::now() >= deadline {
@@ -471,14 +494,17 @@ impl AgentSession {
 
 #[cfg(unix)]
 pub(crate) fn pid_alive(pid: i32) -> bool {
+    if pid <= 0 {
+        return false;
+    }
     // kill(pid, 0) returns 0 if process exists and we have permission,
     // -1 with ESRCH if it doesn't exist.
     unsafe { libc::kill(pid, 0) == 0 }
 }
 
 #[cfg(not(unix))]
-pub(crate) fn pid_alive(_pid: i32) -> bool {
-    true
+pub(crate) fn pid_alive(pid: i32) -> bool {
+    pid > 0
 }
 
 /// Read up to `max` bytes from the end of the session's active `output.log`.
@@ -528,4 +554,15 @@ pub(crate) fn persist_meta(dir: &std::path::Path, meta: &SessionMeta) -> Result<
     std::fs::write(&tmp, &bytes)?;
     std::fs::rename(&tmp, &path)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pid_alive;
+
+    #[test]
+    fn non_positive_pid_is_never_alive() {
+        assert!(!pid_alive(0));
+        assert!(!pid_alive(-1));
+    }
 }

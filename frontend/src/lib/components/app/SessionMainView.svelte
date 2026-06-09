@@ -168,7 +168,10 @@
       }
       const res = await api.sessions.create(thread_id, {
         kind,
-        cwd: cwd ?? undefined
+        cwd: cwd ?? undefined,
+        include_project_context: true,
+        capability_profile: 'auto',
+        zeus_roles: []
       });
       toast.success('Session restarted');
       onSessionReplaced?.(res.data.session_id);

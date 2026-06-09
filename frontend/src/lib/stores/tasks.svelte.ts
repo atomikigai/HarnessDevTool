@@ -90,6 +90,10 @@ class TasksState {
         /* default channel ignored */
       },
       {
+        reconnect: true,
+        onResync: () => {
+          void this.refresh();
+        },
         events: {
           'task.created': (data) => {
             const tid = (data as { task_id?: string })?.task_id;
@@ -120,9 +124,7 @@ class TasksState {
             if (tid) void this.refreshOne(tid);
           }
         },
-        onError: () => {
-          // EventSource auto-reconnects; surface only persistent errors.
-        }
+        onError: () => {}
       }
     );
   }

@@ -101,6 +101,9 @@ async fn start_db_agent(
             initial_size: None,
             include_project_context: true,
             capability_profile: crate::routes::sessions::CapabilityProfile::Auto,
+            zeus_roles: Vec::new(),
+            model: None,
+            effort: None,
         },
     )
     .await?;

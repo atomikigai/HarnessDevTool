@@ -215,13 +215,9 @@ async fn build_lease_pool(conn: &Connection, database_override: Option<&str>) ->
 /// Drop the lease's pool out-of-band. `DbPool::close` is async — we spawn so
 /// the caller doesn't block on connection teardown.
 fn drop_lease_async(lease: Arc<Lease>) {
+    let pool = lease.pool.clone();
     tokio::spawn(async move {
-        // Need to extract the pool — `Arc::try_unwrap` may fail if a query is
-        // mid-flight, in which case the connection closes when that task
-        // finishes. Either path is correct.
-        if let Ok(l) = Arc::try_unwrap(lease) {
-            l.pool.close().await;
-        }
+        pool.close().await;
     });
 }
 
@@ -269,5 +265,32 @@ mod tests {
         assert_eq!(classify_txn("SELECT 1"), TxnIntent::Plain);
         assert_eq!(classify_txn("UPDATE t SET x=1"), TxnIntent::Plain);
         assert_eq!(classify_txn(""), TxnIntent::Plain);
+    }
+
+    #[tokio::test]
+    async fn drop_lease_closes_pool_even_when_arc_is_shared() {
+        let sqlite = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        let lease = Arc::new(Lease {
+            connection_id: "conn".into(),
+            database: None,
+            pool: DbPool::Sqlite(sqlite.clone()),
+            last_used: Mutex::new(Instant::now()),
+        });
+        let _shared = lease.clone();
+
+        drop_lease_async(lease);
+
+        for _ in 0..20 {
+            if sqlite.is_closed() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        assert!(sqlite.is_closed(), "lease pool should be closed");
     }
 }

@@ -52,6 +52,12 @@
         ) {
           handleWarning(data as { thread_id?: string; pct?: number });
         }
+      },
+      {
+        reconnect: true,
+        onResync: () => {
+          void budgetStore.loadBudget(threadId);
+        }
       }
     );
     return () => sse.close();

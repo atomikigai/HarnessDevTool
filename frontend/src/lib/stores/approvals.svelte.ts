@@ -11,8 +11,7 @@ class ApprovalsState {
 
   #handle: SSEHandle | null = null;
 
-  async start(): Promise<void> {
-    if (this.#handle) return;
+  async refresh(): Promise<void> {
     this.loading = true;
     try {
       const res = await api.approvals.list();
@@ -23,6 +22,11 @@ class ApprovalsState {
     } finally {
       this.loading = false;
     }
+  }
+
+  async start(): Promise<void> {
+    if (this.#handle) return;
+    await this.refresh();
 
     this.#handle = subscribeSSE(
       '/events',
@@ -30,6 +34,10 @@ class ApprovalsState {
         /* default channel ignored */
       },
       {
+        reconnect: true,
+        onResync: () => {
+          void this.refresh();
+        },
         events: {
           'approval.requested': (data) => {
             const summary = (data as { summary?: ApprovalSummary })?.summary;

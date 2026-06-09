@@ -32,6 +32,12 @@ impl WatcherHandle {
     }
 }
 
+impl Drop for WatcherHandle {
+    fn drop(&mut self) {
+        self.join.abort();
+    }
+}
+
 /// Spawn the watcher. `source_path` is the JSONL Claude (or future CLI) is
 /// writing to; `store` is our own per-session normalised log; `bus`
 /// broadcasts every ingested event to live SSE subscribers.
@@ -165,4 +171,26 @@ async fn read_new_lines(
         }
     }
     Ok((new_offset, completed))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::future;
+    use std::time::Duration;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn dropping_watcher_handle_aborts_task() {
+        let join = tokio::spawn(async {
+            future::pending::<()>().await;
+        });
+        let abort_handle = join.abort_handle();
+        let handle = WatcherHandle { join };
+
+        drop(handle);
+        tokio::time::sleep(Duration::from_millis(10)).await;
+
+        assert!(abort_handle.is_finished(), "watcher task should be aborted");
+    }
 }

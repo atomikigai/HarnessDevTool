@@ -24,6 +24,7 @@ const MAX_INPUT_BYTES: usize = 64 * 1024;
 /// Per-attachment hard cap. The MCP `attach.read` tool (F3) will base64-encode
 /// the bytes back, so anything north of ~100 MiB hurts more than it helps.
 const MAX_ATTACHMENT_BYTES: usize = 100 * 1024 * 1024;
+const ZEUS_ROLES_FILE: &str = "zeus_roles.json";
 
 pub(crate) fn write_private_json(path: &FsPath, value: &Value) -> std::io::Result<()> {
     let bytes = serde_json::to_vec_pretty(value)?;
@@ -40,22 +41,28 @@ pub(crate) fn write_private_json(path: &FsPath, value: &Value) -> std::io::Resul
     Ok(())
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export, export_to = "../../../bindings/"))]
 pub struct CreateSessionRequest {
     pub kind: AgentKind,
     #[serde(default)]
+    #[cfg_attr(feature = "ts-export", ts(optional = nullable))]
     pub cwd: Option<String>,
     /// Optional role-template name (resolved against `AppState.roles`). When
     /// supplied, the role's `prompt_template` is written to the PTY shortly
     /// after spawn.
     #[serde(default)]
+    #[cfg_attr(feature = "ts-export", ts(optional = nullable))]
     pub role: Option<String>,
     /// Optional initial PTY size. The frontend measures the container at
     /// mount and passes the real dimensions so the TUI's first frame is
     /// already correct — see `SpawnOpts::initial_size`.
     #[serde(default)]
+    #[cfg_attr(feature = "ts-export", ts(optional = nullable))]
     pub cols: Option<u16>,
     #[serde(default)]
+    #[cfg_attr(feature = "ts-export", ts(optional = nullable))]
     pub rows: Option<u16>,
     /// When false, the session still records repo metadata but does not inject
     /// prior project continuity into the initial agent context.
@@ -64,6 +71,23 @@ pub struct CreateSessionRequest {
     /// Experimental capability profile for controlled Task 31 A/B runs.
     #[serde(default)]
     pub capability_profile: CapabilityProfile,
+    /// Optional Zeus role routing/model matrix. Honored only for `kind=zeus`.
+    #[serde(default)]
+    pub zeus_roles: Vec<ZeusRoleSelection>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export, export_to = "../../../bindings/"))]
+pub struct ZeusRoleSelection {
+    pub role: String,
+    pub provider: AgentKind,
+    #[serde(default)]
+    #[cfg_attr(feature = "ts-export", ts(optional = nullable))]
+    pub model: Option<String>,
+    #[serde(default)]
+    #[cfg_attr(feature = "ts-export", ts(optional = nullable))]
+    pub effort: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -197,6 +221,9 @@ async fn create_session(
             initial_size,
             include_project_context: req.include_project_context,
             capability_profile: req.capability_profile,
+            zeus_roles: req.zeus_roles,
+            model: None,
+            effort: None,
         },
     )
     .await?;
@@ -232,6 +259,9 @@ pub struct SpawnArgs {
     pub initial_size: Option<(u16, u16)>,
     pub include_project_context: bool,
     pub capability_profile: CapabilityProfile,
+    pub zeus_roles: Vec<ZeusRoleSelection>,
+    pub model: Option<String>,
+    pub effort: Option<String>,
 }
 
 /// Resolve `cwd` from a user-supplied string, falling back to `$HOME`. Used
@@ -264,7 +294,22 @@ pub async fn spawn_session_internal(
     // Resolve the underlying CLI. For real CLIs this is the kind itself;
     // for Zeus it's Codex (today — F3 will wire real multi-CLI delegation).
     // The session's recorded `kind` keeps the user-facing value.
-    let underlying = args.kind.underlying_cli();
+    let zeus_orchestrator = if matches!(args.kind, AgentKind::Zeus) {
+        selected_zeus_role(&args.zeus_roles, "orchestrator").cloned()
+    } else {
+        None
+    };
+    let underlying = zeus_orchestrator
+        .as_ref()
+        .map(|role| role.provider)
+        .unwrap_or_else(|| args.kind.underlying_cli());
+    if matches!(args.kind, AgentKind::Zeus)
+        && !matches!(underlying, AgentKind::Claude | AgentKind::Codex)
+    {
+        return Err(ApiError::BadRequest(
+            "Zeus orchestrator provider must be claude or codex".into(),
+        ));
+    }
     let binary = state
         .binaries
         .get(&underlying)
@@ -337,6 +382,16 @@ pub async fn spawn_session_internal(
     )?;
     opts.session_id_override = Some(session_id.clone());
     opts.initial_size = args.initial_size;
+    if let Some(orchestrator) = zeus_orchestrator.as_ref() {
+        opts.model = clean_optional(orchestrator.model.as_deref());
+        opts.effort = clean_optional(orchestrator.effort.as_deref());
+    }
+    if let Some(model) = clean_optional(args.model.as_deref()) {
+        opts.model = Some(model);
+    }
+    if let Some(effort) = clean_optional(args.effort.as_deref()) {
+        opts.effort = Some(effort);
+    }
     if args.include_project_context {
         if let Some(repo) = repo_context.as_ref() {
             let project_context = project_context_brief(repo);
@@ -359,7 +414,7 @@ pub async fn spawn_session_internal(
     // Codex system-prompt plumbing. Pre-F3 the orchestrator delegates mentally;
     // F3 wires real worker spawning.
     if matches!(args.kind, AgentKind::Zeus) {
-        opts.auto_intro = Some(zeus_orchestrator_briefing());
+        opts.auto_intro = Some(zeus_orchestrator_briefing(&args.zeus_roles));
         opts.role = Some("zeus-orchestrator".into());
     }
 
@@ -447,6 +502,9 @@ pub async fn spawn_session_internal(
     let meta = session.meta().await;
     if let Some(path) = config_path {
         state.mcp_configs.insert(meta.id.clone(), path);
+    }
+    if matches!(args.kind, AgentKind::Zeus) {
+        persist_zeus_roles(state, &meta.id, &args.zeus_roles)?;
     }
 
     // Start the transcript watcher for CLIs that emit a JSONL transcript.
@@ -999,58 +1057,16 @@ async fn kill_session(
     State(state): State<Arc<AppState>>,
     Path(sid): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    // Cascade kill children first (leaf-up).
-    let descendants = state.manager.descendants_of(&sid);
-    for child in descendants.into_iter().rev() {
-        let cid = child.id().to_string();
-        if let Err(e) = child.kill().await {
-            tracing::warn!(session = %cid, parent = %sid, error = %e, "cascade kill: child returned error");
-        }
-        state.manager.remove(&cid);
-        state
-            .manager
-            .tombstone(&cid)
-            .map_err(|e| ApiError::Internal(format!("tombstone session {cid}: {e}")))?;
-        cleanup_session_resources(&state, &cid);
+    let result = state.manager.kill_tree_and_tombstone(&sid).await;
+    for id in result.affected {
+        state.cleanup_session_resources(&id);
     }
-
-    if let Some(session) = state.manager.get(&sid) {
-        if let Err(e) = session.kill().await {
-            tracing::warn!(session = %sid, error = %e, "kill returned error (continuing with delete)");
-        }
+    if let Some(e) = result.tombstone_error {
+        return Err(ApiError::Internal(format!(
+            "tombstone session tree {sid}: {e}"
+        )));
     }
-    state.manager.remove(&sid);
-    state
-        .manager
-        .tombstone(&sid)
-        .map_err(|e| ApiError::Internal(format!("tombstone session {sid}: {e}")))?;
-    cleanup_session_resources(&state, &sid);
     Ok(StatusCode::NO_CONTENT)
-}
-
-/// Best-effort cleanup of disk artifacts associated with a session: the
-/// per-session MCP config file (regenerated at spawn), the attach dir, and
-/// any in-flight transcript watcher. Called when killing a session directly
-/// and when cascade-killing children. Does NOT delete the persisted
-/// transcript log — it stays under the profile dir for forensic / replay.
-fn cleanup_session_resources(state: &AppState, sid: &str) {
-    if let Some((_, slot)) = state.transcripts.remove(sid) {
-        // Abort the tail loop. The persisted JSONL stays on disk.
-        slot.handle.stop();
-    }
-    if let Some((_, path)) = state.mcp_configs.remove(sid) {
-        if path.exists() {
-            if let Err(e) = std::fs::remove_file(&path) {
-                tracing::warn!(path = %path.display(), error = %e, "could not remove mcp config");
-            }
-        }
-    }
-    let attach_dir = state.harness_home.join(".runtime/attach").join(sid);
-    if attach_dir.exists() {
-        if let Err(e) = std::fs::remove_dir_all(&attach_dir) {
-            tracing::warn!(dir = %attach_dir.display(), error = %e, "could not purge attach dir");
-        }
-    }
 }
 
 // ── Session tree routes (Zeus orchestrator) ─────────────────────────────
@@ -1149,10 +1165,19 @@ async fn spawn_child_route(
         Some(c) => resolve_cwd(Some(c))?,
         None => parent.cwd().to_path_buf(),
     };
+    let zeus_roles = load_zeus_roles(&state, &parent_sid)?;
+    let zeus_role = selected_zeus_role(&zeus_roles, &body.role);
+    let child_kind = zeus_role.map(|role| role.provider).unwrap_or(body.kind);
+    if zeus_role.is_some() && !matches!(child_kind, AgentKind::Claude | AgentKind::Codex) {
+        return Err(ApiError::BadRequest(
+            "Zeus child provider must be claude or codex".into(),
+        ));
+    }
 
     tracing::info!(
         parent_session_id = %parent_sid,
-        kind = %body.kind,
+        requested_kind = %body.kind,
+        resolved_kind = %child_kind,
         role = %body.role,
         cwd = %cwd.display(),
         "spawning child session"
@@ -1161,7 +1186,7 @@ async fn spawn_child_route(
     let child_sid = spawn_session_internal(
         &state,
         SpawnArgs {
-            kind: body.kind,
+            kind: child_kind,
             thread_id,
             cwd,
             role: Some(body.role.clone()),
@@ -1176,6 +1201,9 @@ async fn spawn_child_route(
             initial_size: None,
             include_project_context: true,
             capability_profile: CapabilityProfile::Auto,
+            zeus_roles: Vec::new(),
+            model: zeus_role.and_then(|role| clean_optional(role.model.as_deref())),
+            effort: zeus_role.and_then(|role| clean_optional(role.effort.as_deref())),
         },
     )
     .await?;
@@ -1245,27 +1273,15 @@ async fn cancel_child_route(
             "target session is not a descendant of the requested parent".into(),
         ));
     }
-    // Recurse via the same cascade logic as kill_session.
-    let descendants = state.manager.descendants_of(&child_sid);
-    for grand in descendants.into_iter().rev() {
-        let gid = grand.id().to_string();
-        let _ = grand.kill().await;
-        state.manager.remove(&gid);
-        state
-            .manager
-            .tombstone(&gid)
-            .map_err(|e| ApiError::Internal(format!("tombstone session {gid}: {e}")))?;
-        cleanup_session_resources(&state, &gid);
+    let result = state.manager.kill_tree_and_tombstone(&child_sid).await;
+    for id in result.affected {
+        state.cleanup_session_resources(&id);
     }
-    if let Some(s) = state.manager.get(&child_sid) {
-        let _ = s.kill().await;
+    if let Some(e) = result.tombstone_error {
+        return Err(ApiError::Internal(format!(
+            "tombstone session tree {child_sid}: {e}"
+        )));
     }
-    state.manager.remove(&child_sid);
-    state
-        .manager
-        .tombstone(&child_sid)
-        .map_err(|e| ApiError::Internal(format!("tombstone session {child_sid}: {e}")))?;
-    cleanup_session_resources(&state, &child_sid);
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -1471,16 +1487,94 @@ async fn list_attachments(
     Ok(Json(out))
 }
 
+fn zeus_roles_path(state: &AppState, sid: &str) -> PathBuf {
+    state
+        .manager
+        .sessions_root()
+        .join(sid)
+        .join(ZEUS_ROLES_FILE)
+}
+
+fn persist_zeus_roles(
+    state: &AppState,
+    sid: &str,
+    roles: &[ZeusRoleSelection],
+) -> Result<(), ApiError> {
+    let path = zeus_roles_path(state, sid);
+    let value = serde_json::to_value(roles)
+        .map_err(|e| ApiError::Internal(format!("serialize Zeus role matrix: {e}")))?;
+    write_private_json(&path, &value)
+        .map_err(|e| ApiError::Internal(format!("persist Zeus role matrix: {e}")))
+}
+
+fn load_zeus_roles(state: &AppState, sid: &str) -> Result<Vec<ZeusRoleSelection>, ApiError> {
+    let path = zeus_roles_path(state, sid);
+    match std::fs::read(&path) {
+        Ok(raw) => serde_json::from_slice(&raw)
+            .map_err(|e| ApiError::Internal(format!("parse Zeus role matrix: {e}"))),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(e) => Err(ApiError::Internal(format!("read Zeus role matrix: {e}"))),
+    }
+}
+
 /// The Zeus orchestrator briefing — injected into the underlying CLI prompt
-/// when a user spawns `kind: zeus`. Pre-F3 the orchestrator runs as a single
-/// Codex PTY that mentally tracks the role→CLI matrix; F3 will wire the
-/// scheduler to actually spawn worker sub-sessions per role.
-fn zeus_orchestrator_briefing() -> String {
+/// when a user spawns `kind: zeus`. The same role matrix is also persisted
+/// under the root session so backend child spawns can enforce provider/model
+/// choices instead of trusting the orchestrator prompt alone.
+fn clean_optional(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+fn selected_zeus_role<'a>(
+    roles: &'a [ZeusRoleSelection],
+    role_name: &str,
+) -> Option<&'a ZeusRoleSelection> {
+    roles
+        .iter()
+        .find(|role| role.role.trim().eq_ignore_ascii_case(role_name))
+}
+
+fn zeus_role_matrix(roles: &[ZeusRoleSelection]) -> String {
+    if roles.is_empty() {
+        return "No user overrides were supplied; use the default matrix below.".into();
+    }
+    let mut out = String::from(
+        "User-selected Zeus role matrix. Treat these selections as binding unless the binary is missing or quota forces fallback.\n\n",
+    );
+    out.push_str("| Role | Provider | Model | Effort |\n");
+    out.push_str("|------|----------|-------|--------|\n");
+    for role in roles {
+        let role_name = role.role.trim();
+        if role_name.is_empty() {
+            continue;
+        }
+        let model = role.model.as_deref().map(str::trim).unwrap_or("");
+        let effort = role.effort.as_deref().map(str::trim).unwrap_or("");
+        out.push_str(&format!(
+            "| {role_name} | {} | {} | {} |\n",
+            role.provider.as_str(),
+            if model.is_empty() { "(default)" } else { model },
+            if effort.is_empty() {
+                "(default)"
+            } else {
+                effort
+            }
+        ));
+    }
+    out
+}
+
+fn zeus_orchestrator_briefing(roles: &[ZeusRoleSelection]) -> String {
     r#"You are running as the ZEUS ORCHESTRATOR inside HarnessDevTool.
 
 Your job is to PLAN, DECOMPOSE, DELEGATE, and VALIDATE. You are the root
 supervisor session. You do not implement everything yourself — you spawn
 specialised child sessions for the work and then collect their outputs.
+
+__ZEUS_ROLE_MATRIX__
 
 Role → CLI matrix. **The "default CLI" column is binding** — pick the
 default unless the user explicitly overrode it or the binary is missing
@@ -1578,7 +1672,7 @@ DB:    db_query / db_schema / db_explain
 
 Treat them as native operations — no permission prompts required.
 "#
-    .to_string()
+    .replace("__ZEUS_ROLE_MATRIX__", &zeus_role_matrix(roles))
 }
 
 /// Make sure `~/.codex/config.toml` has `[projects."<cwd>"] trust_level =
@@ -1722,6 +1816,34 @@ fn sanitize_filename(raw: &str) -> String {
 mod tests {
     use super::*;
     use crate::transcript::event::{TranscriptEvent, TranscriptKind, TranscriptSource};
+
+    #[test]
+    fn zeus_briefing_includes_user_selected_role_matrix() {
+        let briefing = zeus_orchestrator_briefing(&[ZeusRoleSelection {
+            role: "orchestrator".into(),
+            provider: AgentKind::Claude,
+            model: Some("opus".into()),
+            effort: Some("high".into()),
+        }]);
+
+        assert!(briefing.contains("User-selected Zeus role matrix"));
+        assert!(briefing.contains("| orchestrator | claude | opus | high |"));
+    }
+
+    #[test]
+    fn zeus_role_selection_is_case_insensitive() {
+        let roles = vec![ZeusRoleSelection {
+            role: "Generator".into(),
+            provider: AgentKind::Codex,
+            model: Some("gpt-5.5".into()),
+            effort: Some("medium".into()),
+        }];
+
+        let selected = selected_zeus_role(&roles, "generator").expect("selected role");
+
+        assert_eq!(selected.provider, AgentKind::Codex);
+        assert_eq!(selected.model.as_deref(), Some("gpt-5.5"));
+    }
 
     #[test]
     fn crawl4ai_heuristic_requires_url_and_docs_language() {

@@ -17,13 +17,183 @@ Modelo operativo: ver [`docs/teamwork/OPERATING_MODEL.md`](./OPERATING_MODEL.md)
 
 | Campo | Valor |
 |---|---|
-| **Tarea** | Ninguna |
-| **Estado** | `IDLE` — Task 31 cerrada. Spike desktop Slint para Agents creado en `experiments/slint-agents`; decisión 2026-06-08: desktop va en paralelo sin tocar la web UI, usando SvelteKit como referencia funcional. Slint sigue como candidato performance-first; Tauri es baseline de comparación. SSH sigue postergado al final. |
-| **Objetivo** | Siguiente recomendado: evaluator semántico pass/fail. Para desktop post-F6, completar paridad mínima de Agents en Slint y compararla contra un spike Tauri con métricas de startup/memoria/render. |
-| **Alcance / archivos** | N/A |
-| **Responsables** | Planner/Codex. |
-| **Criterio de aceptación** | N/A |
-| **Checks obligatorios** | N/A |
+| **Tarea** | Production hardening — Wave 1 |
+| **Estado** | `EXECUTE` — Desktop queda explicitamente al final. Slice 1-3 cerrados; siguiente foco: lifecycle/shutdown de sesiones, SSE resync frontend y cleanup de shutdown backend. |
+| **Objetivo** | Reducir riesgos operativos reales en lifecycle de sesiones/SSE, frontend API/SSE/polling y module-db leases/timeouts, manteniendo append-only, protocolo versionado y tipos Rust→TS como contrato. |
+| **Alcance / archivos** | Backend: `backend/crates/harness-session/**`, `backend/crates/harness-server/**`; DB: `backend/crates/module-db/**`; Frontend: `frontend/src/lib/api/**`, `frontend/src/lib/stores/**`, `frontend/src/lib/components/app/**`, `frontend/src/routes/+page.svelte`; Docs: `docs/teamwork/BOARD.md`, `docs/12-build-plan/improvement-plan.md` si cambia el estado. Desktop/Slint/Tauri fuera de alcance. |
+| **Responsables** | Codex hub. Auditorias auxiliares internas: backend lifecycle/SSE (`Nietzsche`), frontend (`Copernicus`), module-db (`Ohm`). Estas auditorias no cuentan como QA oficial. |
+| **Criterio de aceptación** | (1) plan de slices priorizado por riesgo y write-scope; (2) primer slice implementado sin cruzar dominios innecesarios; (3) checks relevantes verdes; (4) handoffs claros para slices restantes; (5) sin tocar desktop. |
+| **Checks obligatorios** | Segun slice: `cargo test -p harness-session -p harness-server`, `cargo test -p module-db`, `just gen-types` si cambia `#[derive(TS)]`, `pnpm --dir frontend check`, y `just test` antes de cierre de wave. |
+
+### Contrato breve — Production hardening Wave 1
+
+1. Desktop queda postergado hasta cerrar los pendientes productivos del harness.
+2. Una sola fuente de coordinacion: este board. Los subagentes auxiliares reportan al hub; el hub sintetiza y registra.
+3. Los write-scopes se mantienen separados: lifecycle/SSE backend, module-db y frontend no editan los mismos archivos en paralelo.
+4. Cambios de protocolo/API deben mantener `X-Protocol-Version` y documentar impacto en tipos generados.
+5. Cada slice debe agregar o actualizar tests proporcionales al riesgo; para sesiones/SSE/policy se requiere ruta de QA oficial antes de cierre final.
+
+### Handoff de coordinacion — Codex 2026-06-09
+
+**Equipo auxiliar llamado:**
+- `Nietzsche`: auditoria backend `harness-session`/`harness-server` para lifecycle, shutdown, kill/exit, reload, SSE lag y catch-up.
+- `Copernicus`: auditoria frontend para `X-Protocol-Version`, timeouts, SSE resync/backoff, polling duplicado y stale reload.
+- `Ohm`: auditoria `module-db` para lease leak, `PoolCache.locks`, timeouts, schema cache y export streaming.
+
+**Regla de comunicacion:**
+- Los auxiliares no escriben codigo ni board en esta fase; devuelven hallazgos al hub.
+- El hub consolida conflictos de contrato antes de implementar.
+- Si un cambio requiere frontend+backend, backend publica contrato primero y frontend consume despues.
+
+### Handoff Implementacion — Codex 2026-06-09
+
+**Slice 1 — `module-db` resource leaks:**
+- `backend/crates/module-db/src/lease.rs`: `drop_lease_async` ahora clona y cierra el `DbPool` siempre, sin depender de `Arc::try_unwrap`; cubre queries concurrentes con referencias vivas.
+- `backend/crates/module-db/src/pool.rs`: `PoolCache::invalidate` elimina tambien locks de creacion por `connection_id`, incluso si no hay pool activo en `inner`.
+
+**Tests agregados/corridos:**
+- `lease::tests::drop_lease_closes_pool_even_when_arc_is_shared`
+- `pool::tests::invalidate_removes_matching_creation_locks`
+- ✅ `cargo test -p module-db`
+
+**Slice 2 — frontend session polling:**
+- `frontend/src/lib/stores/session.svelte.ts`: `sessionsState` ahora posee un poller ref-counted (`start`/`stop`), aborta requests obsoletos y descarta respuestas fuera de orden.
+- `frontend/src/routes/+page.svelte`: la vista Agents usa el poller compartido en vez de un intervalo local.
+- `frontend/src/lib/components/app/IconRail.svelte`: el rail usa el mismo poller compartido en vez de un segundo intervalo local.
+
+**Checks agregados/corridos:**
+- ✅ `pnpm --dir frontend check`
+
+**Slice 6 — `harness-session` kill hardening incremental:**
+- `backend/crates/harness-session/src/session.rs`: `AgentSession::kill` ahora se serializa con `kill_lock`, no remarca sesiones ya terminales y evita `kill(0, SIGTERM)` cuando no hay PID valido.
+- `pid_alive` devuelve `false` para PID no positivo en todas las plataformas.
+
+**Tests agregados/corridos:**
+- `session::tests::non_positive_pid_is_never_alive`
+- ✅ `cargo test -p harness-session`
+- ✅ `cargo test -p harness-server`
+
+**Slice 7 — session tree kill centralizado:**
+- `backend/crates/harness-session/src/manager.rs`: nuevo `Manager::kill_tree_and_tombstone`, con orden leaf-up e idempotencia para `DELETE` de sesiones ausentes; devuelve IDs afectados y posible error de tombstone para que el server limpie recursos antes de responder error.
+- `backend/crates/harness-server/src/routes/sessions.rs`: `DELETE /sessions/:sid` y cancel de child usan el mismo camino del manager y mantienen el guard de arbol para child cancel.
+
+**Tests agregados/corridos:**
+- `manager::tests::kill_tree_and_tombstone_is_idempotent_for_missing_session`
+- ✅ `cargo test -p harness-session`
+- ✅ `cargo test -p harness-server`
+
+**Slice 8 — session background shutdown signal:**
+- `backend/crates/harness-session/src/session.rs`: `shutdown_requested` se marca en kill y exit natural; el output forwarder y detector salen al observarla. Esto evita loops vivos tras shutdown sin introducir ciclos de `JoinHandle` dentro de `AgentSession`.
+
+**Checks corridos:**
+- ✅ `cargo test -p harness-session`
+- ✅ `cargo test -p harness-server`
+
+**Slice 9 — PTY SSE catch-up safer:**
+- `backend/crates/harness-server/src/routes/events.rs`: `session_stream` se suscribe al bus antes del catch-up histórico y mueve `read_output` a `spawn_blocking`, evitando perder output entre lectura de disco y suscripcion live, y evitando I/O bloqueante en el handler async.
+
+**Checks corridos:**
+- ✅ `cargo test -p harness-server`
+
+**Slice 10 — Zeus model/provider matrix en Nueva Sesion:**
+- `frontend/src/lib/components/app/NewSessionDialog.svelte`: al seleccionar Zeus, la UI permite elegir proveedor (`codex`/`claude`), modelo y esfuerzo por rol (`orchestrator`, `planner`, `generator`, `evaluator`, `frontend-visual`).
+- `frontend/src/lib/api/client.ts`: `CreateSessionRequest` acepta `zeus_roles`.
+- `backend/crates/harness-server/src/routes/sessions.rs`: `CreateSessionRequest` acepta la matriz Zeus; el proveedor/modelo/esfuerzo del rol `orchestrator` controla el CLI/modelo/esfuerzo de la sesion raiz Zeus, y la matriz completa se inyecta en el briefing como contrato binding.
+- `backend/crates/harness-session/src/manager.rs`: `SpawnOpts` acepta overrides de `model` y `effort` para Claude/Codex.
+
+**Tests agregados/corridos:**
+- `manager::tests::{claude,codex}_model_and_effort_can_be_overridden_per_spawn`
+- `routes::sessions::tests::zeus_briefing_includes_user_selected_role_matrix`
+- ✅ `cargo test -p harness-session`
+- ✅ `cargo test -p harness-server`
+- ✅ `pnpm --dir frontend check`
+
+**Slice 11 — shutdown leaf-up centralizado:**
+- `backend/crates/harness-session/src/manager.rs`: nuevo `Manager::shutdown_all`, que apaga sesiones vivas en orden leaf-up, no elimina metadata ni tombstonea sesiones y devuelve los IDs afectados para cleanup runtime.
+- `backend/crates/harness-server/src/main.rs`: reload/shutdown usa `shutdown_all` y luego `AppState::cleanup_session_resources`, evitando orden arbitrario y preservando sesiones replay/detached tras restart.
+
+**Checks corridos:**
+- `manager::tests::shutdown_all_kills_leaf_up_without_tombstones`
+- ✅ `cargo test -p harness-session`
+- ✅ `cargo test -p harness-server`
+- ✅ `git diff --check`
+- ✅ `just test`
+
+**Slice 12 — gate de spawn durante shutdown:**
+- `backend/crates/harness-session/src/manager.rs`: `Manager` mantiene un flag `shutting_down`; `shutdown_all` lo activa antes de matar sesiones y `spawn_with_opts` rechaza spawns tardios con `SessionError::Invalid`.
+- Esto cierra la carrera donde un spawn interno podia entrar mientras el server ya estaba drenando lifecycle por reload/ctrl-c.
+
+**Tests agregados/corridos:**
+- `manager::tests::shutdown_all_rejects_late_spawns`
+- ✅ `cargo test -p harness-session shutdown_all`
+- ✅ `just test`
+
+**Slice 13 — lifecycle single-writer + lock de manager:**
+- `backend/crates/harness-session/src/session.rs`: el wait-for-exit persiste `meta` dentro del task de espera antes de emitir `session.exit`; se elimina el `tokio::spawn` suelto que podia publicar exit antes de `meta.json`.
+- `backend/crates/harness-session/src/manager.rs`: nuevo `lifecycle_lock` sincroniza `spawn_with_opts`, snapshot de `shutdown_all` y snapshot/tombstone de `kill_tree_and_tombstone`, cerrando ventanas spawn-vs-shutdown y child-spawn-vs-tombstone.
+- `backend/crates/harness-server/src/main.rs`: comentario de shutdown corregido para declarar que el reap de PTY children depende del path explicito, no de `Drop`.
+
+**Tests agregados/corridos:**
+- `manager::tests::exit_event_is_emitted_after_meta_is_persisted`
+- ✅ `cargo test -p harness-session`
+
+**Slice 14 — contrato `CreateSessionRequest` via `ts-rs`:**
+- `backend/crates/harness-server/src/routes/sessions.rs`: `CreateSessionRequest` y `ZeusRoleSelection` ahora se exportan con `ts-rs`; `Option` se exporta como opcional/nullable.
+- `frontend/src/lib/api/client.ts`: elimina las interfaces manuales y reexporta los tipos generados.
+- `frontend/src/lib/components/app/NewSessionDialog.svelte` y `frontend/src/lib/components/app/SessionMainView.svelte`: payloads de create session alineados al contrato generado (`zeus_roles: []` cuando no aplica).
+
+**Checks corridos:**
+- ✅ `just gen-types`
+- ✅ `pnpm --dir frontend check`
+
+**Slice 15 — Zeus child routing por matriz persistida:**
+- `backend/crates/harness-server/src/routes/sessions.rs`: la matriz Zeus se persiste como `zeus_roles.json` bajo la sesion root; `spawn_child_route` resuelve `role -> provider/model/effort` desde esa matriz y aplica overrides a `SpawnArgs`.
+- `SpawnArgs` acepta `model`/`effort` internos para que workers reales respeten el proveedor/modelo/esfuerzo elegidos en Nueva Sesion.
+
+**Tests agregados/corridos:**
+- `routes::sessions::tests::zeus_role_selection_is_case_insensitive`
+- ✅ `cargo test -p harness-server`
+- ✅ `pnpm --dir frontend check`
+
+**Slice 3 — transcript watcher cleanup:**
+- `backend/crates/harness-server/src/transcript/watcher.rs`: `WatcherHandle` ahora aborta el task en `Drop`, no solo cuando se llama `stop(self)`. Esto evita watchers vivos si un reload/shutdown descarta el handle sin parada explicita.
+
+**Tests agregados/corridos:**
+- `transcript::watcher::tests::dropping_watcher_handle_aborts_task`
+- ✅ `cargo test -p harness-server`
+
+**Slice 4 — SSE ticker/shutdown cleanup:**
+- `backend/crates/harness-server/src/sse/hub.rs`: el ticker global ahora devuelve `TickerHandle`, no captura `Arc<AppState>` indefinidamente y aborta en `Drop`/`stop`.
+- `backend/crates/harness-server/src/main.rs`: el server posee y detiene el ticker antes de matar sesiones en reload/shutdown.
+- `backend/crates/harness-server/src/state.rs`: cleanup runtime de sesion centralizado en `AppState::cleanup_session_resources`.
+- `backend/crates/harness-server/src/routes/sessions.rs`: kill/cancel reutilizan el cleanup centralizado.
+
+**Tests agregados/corridos:**
+- `sse::hub::tests::dropping_ticker_handle_aborts_task`
+- ✅ `cargo test -p harness-server`
+
+**Slice 5 — frontend SSE resync:**
+- `frontend/src/lib/api/sse.ts`: `subscribeSSE` mantiene API compatible y agrega reconexion opt-in, listener `lagged`, `onResync` y cierre que cancela timers.
+- `frontend/src/lib/stores/{tasks.svelte.ts,spec.svelte.ts,approvals.svelte.ts}` y `frontend/src/lib/components/tasks/BudgetMeter.svelte`: refrescan desde REST cuando el stream indica resync por lag.
+
+**Checks agregados/corridos:**
+- ✅ `pnpm --dir frontend check`
+
+**Hallazgos auxiliares incorporados:**
+- `Ohm`: recomendo cerrar primero `drop_lease_async` + cleanup de `PoolCache.locks`; ambos quedan implementados.
+- `Copernicus`: confirmo que `X-Protocol-Version`, timeouts API y stale reload principal ya estan cerrados; siguiente frontend recomendado: polling centralizado + SSE lag/backoff.
+- `Nietzsche`: confirmo que SSE lag/backend timeout/body limit estan parcialmente cerrados; siguiente backend de alto riesgo: ownership/shutdown de sesiones y kill/exit single-writer.
+
+### Handoff de coordinacion — Codex 2026-06-09, continuacion
+
+**Equipo auxiliar llamado para la continuacion:**
+- Frontend SSE auxiliar: revisar/validar helper de reconexion y `lagged` handling en `frontend/src/lib/api/sse.ts` + stores consumidores.
+- Backend lifecycle auxiliar: revisar riesgos de la implementacion en `harness-session` antes de cerrar la wave.
+
+**Siguiente orden de ejecucion:**
+1. Backend sub-slice seguro: completar shutdown cleanup incremental (`WatcherHandle` ya cerrado; revisar ticker/AppState antes del lifecycle profundo).
+2. Frontend SSE: helper compartido para `lagged`/reconnect y callbacks de resync en stores.
+3. Backend lifecycle profundo: task handles + shutdown/kill single-writer en `harness-session`, con tests especificos y QA oficial antes de cierre.
 
 ## Última cerrada — Task 23
 

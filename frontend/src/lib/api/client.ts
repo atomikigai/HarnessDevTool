@@ -6,6 +6,11 @@
  */
 
 import { env } from '$env/dynamic/public';
+import type { CreateSessionRequest } from './types/CreateSessionRequest';
+import type { ZeusRoleSelection } from './types/ZeusRoleSelection';
+
+export type { CreateSessionRequest } from './types/CreateSessionRequest';
+export type { ZeusRoleSelection } from './types/ZeusRoleSelection';
 
 export const API_BASE: string = (import.meta.env.PUBLIC_API_BASE as string | undefined) ?? '/api';
 
@@ -387,22 +392,6 @@ export interface TranscriptEvent {
   /** User-facing label for `system_note` events ("init", "compact", ...). */
   subtype?: string | null;
   raw?: unknown;
-}
-
-export interface CreateSessionRequest {
-  kind: SessionKind;
-  cwd?: string;
-  include_project_context?: boolean;
-  capability_profile?: CapabilityProfile;
-  /**
-   * Optional initial PTY size. When provided, the backend opens the PTY at
-   * exactly this size instead of the 80x24 default, so the TUI's first frame
-   * lands at the right dimensions. The SSE catch-up otherwise replays bytes
-   * calibrated for 80 cols into a wider terminal and the user sees a mangled
-   * first frame until they trigger a repaint.
-   */
-  cols?: number;
-  rows?: number;
 }
 
 export interface CreateSessionResponse {

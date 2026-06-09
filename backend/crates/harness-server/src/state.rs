@@ -218,6 +218,31 @@ impl AppState {
             tick_tx,
         })
     }
+
+    /// Best-effort cleanup of runtime artifacts associated with a session.
+    /// Persisted transcript/output logs stay on disk for replay and forensics.
+    pub fn cleanup_session_resources(&self, sid: &str) {
+        if let Some((_, slot)) = self.transcripts.remove(sid) {
+            slot.handle.stop();
+        }
+        if let Some((_, path)) = self.mcp_configs.remove(sid) {
+            if path.exists() {
+                if let Err(e) = std::fs::remove_file(&path) {
+                    tracing::warn!(
+                        path = %path.display(),
+                        error = %e,
+                        "could not remove mcp config"
+                    );
+                }
+            }
+        }
+        let attach_dir = self.harness_home.join(".runtime/attach").join(sid);
+        if attach_dir.exists() {
+            if let Err(e) = std::fs::remove_dir_all(&attach_dir) {
+                tracing::warn!(dir = %attach_dir.display(), error = %e, "could not purge attach dir");
+            }
+        }
+    }
 }
 
 /// Bridges `harness-session::Manager` to the scheduler's budget pass without

@@ -54,7 +54,7 @@ async fn main() -> anyhow::Result<()> {
         let router = app::build_router(state.clone(), &cfg);
 
         // Kick off the periodic tick broadcaster.
-        sse::hub::spawn_ticker(state.clone());
+        let ticker = sse::hub::spawn_ticker(state.clone());
 
         let listener = TcpListener::bind(cfg.bind)
             .await
@@ -81,14 +81,13 @@ async fn main() -> anyhow::Result<()> {
             })
             .await?;
 
-        // Kill all live sessions before tearing down state. AppState's Drop
-        // would do the same via Manager::drop but doing it explicitly here
-        // gives us a window to log + makes the lifecycle predictable.
-        for s in state.manager.all() {
-            let sid = s.id().to_string();
-            if let Err(e) = s.kill().await {
-                tracing::warn!(session = %sid, error = %e, "kill during reload");
-            }
+        ticker.stop();
+
+        // Kill all live sessions before tearing down state. This explicit
+        // path is the lifecycle owner for subprocess shutdown; dropping
+        // AppState alone is not enough to reap PTY children.
+        for sid in state.manager.shutdown_all().await {
+            state.cleanup_session_resources(&sid);
         }
 
         if !reload.load(std::sync::atomic::Ordering::SeqCst) {

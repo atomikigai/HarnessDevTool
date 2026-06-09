@@ -28,9 +28,44 @@ class SessionsState {
   loaded = $state<boolean>(false);
   lastError = $state<string | null>(null);
 
+  #pollMs = 5_000;
+  #startRefs = 0;
+  #timer: ReturnType<typeof setInterval> | null = null;
+  #controller: AbortController | null = null;
+  #requestSeq = 0;
+
+  start(): void {
+    this.#startRefs += 1;
+    if (this.#timer) return;
+    void this.refresh();
+    this.#timer = setInterval(() => {
+      void this.refresh();
+    }, this.#pollMs);
+  }
+
+  stop(): void {
+    this.#startRefs = Math.max(0, this.#startRefs - 1);
+    if (this.#startRefs > 0) return;
+    if (this.#timer) {
+      clearInterval(this.#timer);
+      this.#timer = null;
+    }
+    this.#controller?.abort();
+    this.#controller = null;
+  }
+
   async refresh(signal?: AbortSignal): Promise<void> {
+    const seq = ++this.#requestSeq;
+    let controller: AbortController | null = null;
+    if (!signal) {
+      this.#controller?.abort();
+      controller = new AbortController();
+      this.#controller = controller;
+      signal = controller.signal;
+    }
     try {
       const res = await api.threads.list(signal);
+      if (seq !== this.#requestSeq) return;
       const threads = res.data ?? [];
       this.threads = threads;
       const active: SessionMeta[] = [];
@@ -46,7 +81,12 @@ class SessionsState {
       this.lastError = null;
     } catch (err) {
       if ((err as { name?: string }).name === 'AbortError') return;
+      if (seq !== this.#requestSeq) return;
       this.lastError = err instanceof Error ? err.message : String(err);
+    } finally {
+      if (controller && this.#controller === controller) {
+        this.#controller = null;
+      }
     }
   }
 }

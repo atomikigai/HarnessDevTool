@@ -68,6 +68,10 @@ class SpecState {
         /* default channel ignored */
       },
       {
+        reconnect: true,
+        onResync: () => {
+          void this.refresh();
+        },
         events: {
           'spec.changed': (data) => {
             const ev = data as SpecChangedEvent;
@@ -79,9 +83,7 @@ class SpecState {
             this.artifacts = [{ path: ev.path, kind: ev.kind, at: ev.at }, ...this.artifacts];
           }
         },
-        onError: () => {
-          // EventSource reconnects automatically.
-        }
+        onError: () => {}
       }
     );
   }

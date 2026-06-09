@@ -39,24 +39,12 @@
   let { currentPath = '/' }: { currentPath?: string } = $props();
   let dialogOpen = $state(false);
 
-  const POLL_MS = 5_000;
-  let timer: ReturnType<typeof setInterval> | null = null;
-  let controller: AbortController | null = null;
-
-  function refresh() {
-    controller?.abort();
-    controller = new AbortController();
-    sessionsState.refresh(controller.signal);
-  }
-
   onMount(() => {
-    refresh();
-    timer = setInterval(refresh, POLL_MS);
+    sessionsState.start();
   });
 
   onDestroy(() => {
-    if (timer) clearInterval(timer);
-    controller?.abort();
+    sessionsState.stop();
   });
 
   function isActive(href: string) {

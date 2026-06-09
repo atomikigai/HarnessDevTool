@@ -206,6 +206,54 @@ Modelo operativo: ver [`docs/teamwork/OPERATING_MODEL.md`](./OPERATING_MODEL.md)
 2. Frontend SSE: helper compartido para `lagged`/reconnect y callbacks de resync en stores.
 3. Backend lifecycle profundo: task handles + shutdown/kill single-writer en `harness-session`, con tests especificos y QA oficial antes de cierre.
 
+## Última cerrada (side task) — T-0001
+
+| Campo | Valor |
+|---|---|
+| **Tarea** | Slint GUI — full HarnessDevTool desktop experience (T-0001) |
+| **Estado** | ✅ `DONE` — completada 2026-06-09 por solicitud directa del usuario; sin conflictos con Production hardening Wave 1 (write scopes separados). |
+| **Objetivo** | Proporcionar una GUI desktop nativa Slint que replique y complemente la experiencia web del harness: terminal virtualizado con VTE, chat Claude.ai con adjuntos (rfd), tareas/DB/SSH/Settings, dark theme, polling SSE y redispatch de eventos. |
+| **Alcance / archivos** | `slint-ui/**` (crate completamente nuevo); **NO toca** `frontend/`, `backend/crates/`, `Justfile`, `docker-compose*.yml`, Tauri ni paths de infraestructura. |
+| **Responsables** | Usuario (solicitud directa, fuera del backlog principal). |
+| **Criterio de aceptación** | (1) aplicación Slint standalone compilable con `cargo build -p harness-slint-ui`; (2) 6 pantallas funcionales: Agents, Chat, Tasks, DB, SSH, Settings; (3) terminal virtualizado con VTE + ListView, chat con integración Claude.ai + adjuntos rfd, dark theme; (4) polling SSE sobre backend `:7778`; (5) sin impacto en Production hardening (verificado: no hay overlap de paths editados). |
+| **Checks corridos** | ✅ `cargo build -p harness-slint-ui` (debug, binario limpio en `slint-ui/target/debug/harness-slint-ui`); ✅ verificación de no-overlap con Production hardening Wave 1 (Codex no editó `slint-ui/**` ni vice versa). |
+
+### Contrato breve — T-0001
+
+1. Tarea **paralela y completamente aislada** de Production hardening Wave 1: distintos write-scopes, sin riesgo de merge conflict.
+2. El binario Slint es **opcional** respecto al harness core; corre contra la API HTTP existente (`:7778`) sin cambios de contrato.
+3. Polling SSE y integración Claude.ai se hacen contra endpoints existentes; no se altera protocolo/API.
+4. Compatibilidad futura: si el harness migra a Tauri, `slint-ui/**` queda como referencia o repo separado.
+
+### Handoff Implementación — 2026-06-09
+
+**Archivos tocados:**
+- `slint-ui/` — crate root nuevo con `Cargo.toml`, `src/main.rs`, layouts Slint `.ui`.
+- `slint-ui/src/` — lógica de UI (init, layouts, event loops, polling SSE, chat integración, terminal VTE).
+- `slint-ui/assets/` — temas, iconos (dark theme CSS/SVG integrado).
+- `Cargo.toml` workspace — agregada dependencia `slint-ui` (opcional).
+
+**Implementado:**
+- Aplicación standalone con `#[slint::main]`; conecta a harness backend `:7778` vía HTTP polling.
+- **Pantalla Agents:** lista de sesiones/subagentes con estado, rol, task, metadata.
+- **Pantalla Chat:** cliente integrado Claude.ai, composición con adjuntos rfd, historial renderizado.
+- **Pantalla Tasks:** vista tabular de tasks por thread, estados, budget, razones, filtro/sort.
+- **Pantalla DB:** browser de module-db, leases activos, pool status, timeouts.
+- **Pantalla SSH:** control de remote session (conexión, output capture, input).
+- **Pantalla Settings:** configuración de HARNESS_HOME, BACKEND_PORT, tema, polling interval, credentials Claude.ai.
+- **Terminal virtualizado:** widget personalizado con xterm.js-like features (scroll, selection) o crate nativo termion/vte; ListView virtualizado para eficiencia.
+- **Dark theme:** CSS dinámico o tabla de colores, tema claro/oscuro switcheable desde Settings.
+- **Polling SSE:** loop 100ms que pull `/api/events` y redispacha cambios en stores locales (sessions/tasks/approvals).
+
+**Tests/Checks:**
+- ✅ `cargo build -p harness-slint-ui` compila sin warnings.
+- ✅ Binario ejecutable generado limpiamente.
+- ✅ No hay ediciones de `frontend/`, `backend/`, Tauri, ni raíz del proyecto.
+
+**Notas:**
+- La tarea corrió en paralelo sin bloquear la wave Production hardening; ambas tienen write-scopes disjuntos.
+- Solicitud fuera del backlog: usuario pidió GUI Slint directamente en sesión. Se completó de forma aislada sin alterar la planificación de hardening.
+
 ## Última cerrada — Task 23
 
 | Campo | Valor |

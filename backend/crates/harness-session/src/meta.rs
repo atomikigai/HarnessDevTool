@@ -51,6 +51,30 @@ impl LoadedCapabilities {
     }
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export, export_to = "../../../bindings/"))]
+pub struct ProcessIdentity {
+    /// Linux `/proc/<pid>/stat` field 22. Strong guard against PID reuse.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-export", ts(optional = nullable))]
+    pub linux_start_time_ticks: Option<u64>,
+    /// NUL-separated `/proc/<pid>/cmdline`, normalized to spaces.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-export", ts(optional = nullable))]
+    pub cmdline: Option<String>,
+    /// Process name from `/proc/<pid>/comm` or `/proc/<pid>/stat`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-export", ts(optional = nullable))]
+    pub comm: Option<String>,
+}
+
+impl ProcessIdentity {
+    pub fn is_empty(&self) -> bool {
+        self.linux_start_time_ticks.is_none() && self.cmdline.is_none() && self.comm.is_none()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
 #[cfg_attr(feature = "ts-export", ts(export, export_to = "../../../bindings/"))]
@@ -60,6 +84,9 @@ pub struct SessionMeta {
     pub thread_id: String,
     pub cwd: String,
     pub pid: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-export", ts(optional = nullable))]
+    pub process_identity: Option<ProcessIdentity>,
     pub status: SessionStatus,
     /// Unix epoch ms.
     pub started_at: i64,
@@ -137,6 +164,7 @@ mod tests {
         let meta: SessionMeta = serde_json::from_str(raw).expect("deserialize old meta");
         assert_eq!(meta.kind, AgentKind::Codex);
         assert!(meta.loaded_capabilities.is_empty());
+        assert!(meta.process_identity.is_none());
     }
 
     #[test]
@@ -147,6 +175,7 @@ mod tests {
             thread_id: "t1".to_string(),
             cwd: "/tmp".to_string(),
             pid: 42,
+            process_identity: None,
             status: SessionStatus::Running,
             started_at: 1_700_000_000_000,
             exit_code: None,

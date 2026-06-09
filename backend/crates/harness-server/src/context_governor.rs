@@ -1,9 +1,15 @@
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::Duration;
 
 use chrono::Utc;
+use dashmap::DashMap;
 use harness_core::{Event, Handoff, Item, Store};
-use harness_session::{AgentState, Manager, SessionEvent};
+use harness_session::{AgentState, Manager, SessionEvent, SessionMeta, SessionStatus};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::sync::OnceLock;
 use tokio::sync::broadcast;
 
 use crate::transcript::event::{TranscriptKind, TranscriptSource};
@@ -12,6 +18,12 @@ use crate::transcript::TranscriptEvent;
 const CHECKPOINT_THRESHOLD: f64 = 0.35;
 const CLEAR_THRESHOLD: f64 = 0.40;
 const MIN_CHECKPOINT_CHARS: usize = 120;
+const GOVERNOR_STATE_FILE: &str = "context_governor.json";
+const GOVERNOR_PERSIST_DEBOUNCE: Duration = Duration::from_secs(1);
+
+type GovernorPersistence = Arc<DebouncedGovernorPersistence>;
+
+static LIVE_CONTEXT_PRESSURE: OnceLock<DashMap<String, f64>> = OnceLock::new();
 
 #[derive(Debug, Clone)]
 pub struct ContextGovernorTarget {
@@ -21,17 +33,34 @@ pub struct ContextGovernorTarget {
     pub role: Option<String>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq)]
 struct GovernorState {
+    #[serde(default)]
     checkpoint_requested: bool,
+    #[serde(default)]
     checkpoint_saved: bool,
+    #[serde(default)]
     clear_pending: bool,
+    #[serde(default)]
     clear_in_progress: bool,
+    #[serde(default)]
     cleared: bool,
+    #[serde(default)]
     latest_pressure: Option<ContextPressure>,
+    #[serde(default)]
+    checkpoint: Option<PersistedCheckpoint>,
+    #[serde(default)]
+    last_seq_processed: Option<u64>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+struct PersistedCheckpoint {
+    transcript_seq: u64,
+    checkpoint: String,
+    checkpoint_structured: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 struct ContextPressure {
     model: String,
     context_tokens: u64,
@@ -50,8 +79,17 @@ pub fn spawn_context_governor(
     let transcript_store = store.clone();
     let transcript_manager = manager.clone();
     tokio::spawn(async move {
-        let state = Arc::new(Mutex::new(GovernorState::default()));
+        let state = Arc::new(Mutex::new(load_governor_state(
+            &transcript_manager,
+            &transcript_target,
+        )));
+        let persistence = Arc::new(DebouncedGovernorPersistence::new(governor_state_path(
+            &transcript_manager
+                .sessions_root()
+                .join(&transcript_target.session_id),
+        )));
         let state_for_idle = state.clone();
+        let persistence_for_idle = persistence.clone();
         let target_for_idle = transcript_target.clone();
         let store_for_idle = transcript_store.clone();
         let manager_for_idle = transcript_manager.clone();
@@ -67,6 +105,7 @@ pub fn spawn_context_governor(
                             &store_for_idle,
                             &target_for_idle,
                             &state_for_idle,
+                            &persistence_for_idle,
                         )
                         .await;
                     }
@@ -84,6 +123,7 @@ pub fn spawn_context_governor(
                         &transcript_store,
                         &transcript_manager,
                         &state,
+                        &persistence,
                         event,
                     )
                     .await;
@@ -103,13 +143,74 @@ pub fn spawn_context_governor(
     });
 }
 
+pub fn reconcile_persisted_governor_states(manager: &Manager) {
+    let root = manager.sessions_root();
+    let entries = match std::fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(e) => {
+            tracing::warn!(path = %root.display(), error = %e, "could not scan session governor states");
+            return;
+        }
+    };
+    for entry in entries.flatten() {
+        let dir = entry.path();
+        if !dir.is_dir() {
+            continue;
+        }
+        let meta_path = dir.join("meta.json");
+        let state_path = governor_state_path(&dir);
+        if !meta_path.exists() || !state_path.exists() {
+            continue;
+        }
+        let meta: SessionMeta = match std::fs::read(&meta_path)
+            .ok()
+            .and_then(|raw| serde_json::from_slice(&raw).ok())
+        {
+            Some(meta) => meta,
+            None => continue,
+        };
+        let mut state = match read_governor_state(&state_path) {
+            Some(state) => state,
+            None => continue,
+        };
+        let mut changed = false;
+        if state.clear_in_progress {
+            tracing::warn!(
+                session_id = %meta.id,
+                "restored context governor state had clear_in_progress; resetting recovery flag"
+            );
+            state.clear_in_progress = false;
+            changed = true;
+        }
+        if meta.status != SessionStatus::Running && (state.clear_pending || state.clear_in_progress)
+        {
+            state.clear_pending = false;
+            state.clear_in_progress = false;
+            changed = true;
+        }
+        if changed {
+            persist_governor_state_path(&state_path, &state);
+        }
+    }
+}
+
+pub fn latest_context_pressure(session_id: &str) -> Option<f64> {
+    live_context_pressure().get(session_id).map(|entry| *entry)
+}
+
 async fn handle_event(
     target: &ContextGovernorTarget,
     store: &Arc<Store>,
     manager: &Arc<Manager>,
     state: &Arc<Mutex<GovernorState>>,
+    persistence: &GovernorPersistence,
     event: TranscriptEvent,
 ) {
+    {
+        let mut s = lock_or_recover(state);
+        s.last_seq_processed = Some(s.last_seq_processed.unwrap_or(0).max(event.seq));
+        persist_governor_state(persistence, &s);
+    }
     if let Some(pressure) = event
         .usage
         .as_ref()
@@ -121,12 +222,14 @@ async fn handle_event(
             let should_request =
                 pressure.pressure >= CHECKPOINT_THRESHOLD && !s.checkpoint_requested;
             let should_mark_clear = pressure.pressure >= CLEAR_THRESHOLD && !s.cleared;
+            live_context_pressure().insert(target.session_id.clone(), pressure.pressure);
             if should_request {
                 s.checkpoint_requested = true;
             }
             if should_mark_clear {
                 s.clear_pending = true;
             }
+            persist_governor_state(persistence, &s);
             (should_request, should_mark_clear, s.checkpoint_saved)
         };
 
@@ -150,28 +253,35 @@ async fn handle_event(
                 "Context pressure crossed 40%; waiting for checkpoint before clearing.",
             );
             if actions.2 {
-                clear_and_resume(manager, store, target, state).await;
+                clear_and_resume(manager, store, target, state, persistence).await;
             }
         }
     }
 
     if is_checkpoint_candidate(&event) {
         let checkpoint = event.content.unwrap_or_default();
+        let structured = parse_checkpoint_sections(&checkpoint);
         let should_clear = {
             let mut s = lock_or_recover(state);
             if s.checkpoint_requested && !s.checkpoint_saved {
                 s.checkpoint_saved = true;
+                s.checkpoint = Some(PersistedCheckpoint {
+                    transcript_seq: event.seq,
+                    checkpoint: checkpoint.clone(),
+                    checkpoint_structured: structured.clone(),
+                });
+                persist_governor_state(persistence, &s);
                 true
             } else {
                 false
             }
         };
         if should_clear {
-            append_checkpoint_saved(store, target, &checkpoint, event.seq);
+            append_checkpoint_saved(store, target, &checkpoint, structured, event.seq);
             if let Some(task_id) = target.task_id.as_deref() {
                 append_checkpoint_handoff(store, target, task_id, &checkpoint);
             }
-            clear_and_resume(manager, store, target, state).await;
+            clear_and_resume(manager, store, target, state, persistence).await;
         }
     }
 }
@@ -275,6 +385,7 @@ async fn clear_and_resume(
     store: &Arc<Store>,
     target: &ContextGovernorTarget,
     state: &Arc<Mutex<GovernorState>>,
+    persistence: &GovernorPersistence,
 ) {
     if !auto_clear_allowed(target) {
         append_context_event(
@@ -292,6 +403,7 @@ async fn clear_and_resume(
         );
         let mut s = lock_or_recover(state);
         s.clear_pending = false;
+        persist_governor_state(persistence, &s);
         return;
     }
     let pressure = {
@@ -302,9 +414,14 @@ async fn clear_and_resume(
         s.clear_in_progress = true;
         s.latest_pressure.clone()
     };
+    {
+        let s = lock_or_recover(state);
+        persist_governor_state(persistence, &s);
+    }
     let Some(session) = manager.get(&target.session_id) else {
         let mut s = lock_or_recover(state);
         s.clear_in_progress = false;
+        persist_governor_state(persistence, &s);
         return;
     };
 
@@ -328,6 +445,7 @@ async fn clear_and_resume(
         );
         let mut s = lock_or_recover(state);
         s.clear_in_progress = false;
+        persist_governor_state(persistence, &s);
         return;
     }
 
@@ -339,6 +457,7 @@ async fn clear_and_resume(
         );
         let mut s = lock_or_recover(state);
         s.clear_in_progress = false;
+        persist_governor_state(persistence, &s);
         return;
     }
     tokio::time::sleep(std::time::Duration::from_millis(700)).await;
@@ -354,12 +473,14 @@ async fn clear_and_resume(
         );
         let mut s = lock_or_recover(state);
         s.clear_in_progress = false;
+        persist_governor_state(persistence, &s);
         return;
     }
     {
         let mut s = lock_or_recover(state);
         s.cleared = true;
         s.clear_in_progress = false;
+        persist_governor_state(persistence, &s);
     }
 
     let mut payload = json!({
@@ -418,9 +539,9 @@ fn append_checkpoint_saved(
     store: &Arc<Store>,
     target: &ContextGovernorTarget,
     checkpoint: &str,
+    structured: Value,
     transcript_seq: u64,
 ) {
-    let structured = parse_checkpoint_sections(checkpoint);
     append_context_event(
         store,
         target,
@@ -436,6 +557,142 @@ fn append_checkpoint_saved(
         }),
         "Saved compact context checkpoint.",
     );
+}
+
+fn load_governor_state(manager: &Manager, target: &ContextGovernorTarget) -> GovernorState {
+    let path = governor_state_path(&manager.sessions_root().join(&target.session_id));
+    let mut state = read_governor_state(&path).unwrap_or_default();
+    if let Some(pressure) = state.latest_pressure.as_ref() {
+        live_context_pressure().insert(target.session_id.clone(), pressure.pressure);
+    }
+    if state.clear_in_progress {
+        tracing::warn!(
+            session_id = %target.session_id,
+            "restored context governor state had clear_in_progress; resetting recovery flag"
+        );
+        state.clear_in_progress = false;
+        persist_governor_state_path(&path, &state);
+    }
+    state
+}
+
+fn read_governor_state(path: &Path) -> Option<GovernorState> {
+    let raw = std::fs::read(path).ok()?;
+    match serde_json::from_slice(&raw) {
+        Ok(state) => Some(state),
+        Err(e) => {
+            tracing::warn!(path = %path.display(), error = %e, "could not parse context governor state");
+            None
+        }
+    }
+}
+
+fn persist_governor_state(persistence: &GovernorPersistence, state: &GovernorState) {
+    persistence.persist(state.clone());
+}
+
+fn governor_state_path(session_dir: &Path) -> PathBuf {
+    session_dir.join(GOVERNOR_STATE_FILE)
+}
+
+fn persist_governor_state_path(path: &Path, state: &GovernorState) {
+    if let Some(parent) = path.parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            tracing::warn!(path = %parent.display(), error = %e, "could not create context governor state dir");
+            return;
+        }
+    }
+    let tmp = path.with_extension("json.tmp");
+    let bytes = match serde_json::to_vec_pretty(state) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            tracing::warn!(path = %path.display(), error = %e, "could not serialize context governor state");
+            return;
+        }
+    };
+    if let Err(e) = std::fs::write(&tmp, bytes) {
+        tracing::warn!(path = %tmp.display(), error = %e, "could not write context governor state temp file");
+        return;
+    }
+    if let Err(e) = std::fs::rename(&tmp, path) {
+        tracing::warn!(path = %path.display(), temp = %tmp.display(), error = %e, "could not atomically replace context governor state");
+    }
+}
+
+fn live_context_pressure() -> &'static DashMap<String, f64> {
+    LIVE_CONTEXT_PRESSURE.get_or_init(DashMap::new)
+}
+
+struct DebouncedGovernorPersistence {
+    path: PathBuf,
+    pending: Mutex<Option<GovernorState>>,
+    scheduled: AtomicBool,
+}
+
+impl DebouncedGovernorPersistence {
+    fn new(path: PathBuf) -> Self {
+        Self {
+            path,
+            pending: Mutex::new(None),
+            scheduled: AtomicBool::new(false),
+        }
+    }
+
+    fn persist(self: &Arc<Self>, state: GovernorState) {
+        *self
+            .pending
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(state);
+        // Runtime governor writes are coalesced to at most one disk replace per
+        // second per session. The latest state wins; startup reconciliation and
+        // tests still use the synchronous path because they are not on hot async
+        // transcript handlers.
+        if !self.scheduled.swap(true, Ordering::AcqRel) {
+            let this = self.clone();
+            tokio::spawn(async move {
+                this.flush_loop().await;
+            });
+        }
+    }
+
+    async fn flush_loop(self: Arc<Self>) {
+        loop {
+            tokio::time::sleep(GOVERNOR_PERSIST_DEBOUNCE).await;
+            let state = self
+                .pending
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .take();
+            if let Some(state) = state {
+                let path = self.path.clone();
+                if let Err(e) =
+                    tokio::task::spawn_blocking(move || persist_governor_state_path(&path, &state))
+                        .await
+                {
+                    tracing::warn!(error = %e, "context governor state persist task failed");
+                }
+            }
+            if self
+                .pending
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .is_none()
+            {
+                self.scheduled.store(false, Ordering::Release);
+                if self
+                    .pending
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .is_none()
+                {
+                    break;
+                }
+                if self.scheduled.swap(true, Ordering::AcqRel) {
+                    break;
+                }
+            }
+        }
+    }
 }
 
 fn parse_checkpoint_sections(checkpoint: &str) -> Value {
@@ -653,5 +910,67 @@ mod tests {
         };
 
         assert!(is_checkpoint_candidate(&event));
+    }
+
+    #[test]
+    fn governor_state_persists_and_restores_roundtrip() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(GOVERNOR_STATE_FILE);
+        let state = GovernorState {
+            checkpoint_requested: true,
+            checkpoint_saved: true,
+            clear_pending: true,
+            clear_in_progress: false,
+            cleared: false,
+            latest_pressure: Some(ContextPressure {
+                model: "gpt-5.5".to_string(),
+                context_tokens: 180_000,
+                max_context_tokens: 400_000,
+                pressure: 0.45,
+                source_seq: 17,
+            }),
+            checkpoint: Some(PersistedCheckpoint {
+                transcript_seq: 18,
+                checkpoint: "CONTEXT CHECKPOINT\nnext_action: continue".to_string(),
+                checkpoint_structured: json!({ "next_action": "continue" }),
+            }),
+            last_seq_processed: Some(18),
+        };
+
+        persist_governor_state_path(&path, &state);
+        let restored = read_governor_state(&path).expect("restore state");
+
+        assert_eq!(restored, state);
+    }
+
+    #[test]
+    fn restore_resets_clear_in_progress() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let sessions_root = dir.path().join("sessions");
+        let session_dir = sessions_root.join("s1");
+        std::fs::create_dir_all(&session_dir).expect("session dir");
+        let path = session_dir.join(GOVERNOR_STATE_FILE);
+        persist_governor_state_path(
+            &path,
+            &GovernorState {
+                clear_in_progress: true,
+                clear_pending: true,
+                ..GovernorState::default()
+            },
+        );
+        let manager = Manager::new(&sessions_root).expect("manager");
+        let target = ContextGovernorTarget {
+            session_id: "s1".to_string(),
+            thread_id: "t1".to_string(),
+            task_id: None,
+            role: None,
+        };
+
+        let restored = load_governor_state(&manager, &target);
+
+        assert!(!restored.clear_in_progress);
+        assert!(restored.clear_pending);
+        let persisted = read_governor_state(&path).expect("persisted state");
+        assert!(!persisted.clear_in_progress);
     }
 }

@@ -12,7 +12,9 @@ use tokio::task::JoinHandle;
 use crate::errors::SessionError;
 use crate::kind::AgentKind;
 use crate::manager::SessionEvent;
-use crate::meta::{LoadedCapabilities, SessionMeta, SessionRepoContext, SessionStatus};
+use crate::meta::{
+    LoadedCapabilities, ProcessIdentity, SessionMeta, SessionRepoContext, SessionStatus,
+};
 use crate::output::OutputWriter;
 
 const PTY_FLUSH_INTERVAL_MS: u64 = 16;
@@ -196,6 +198,7 @@ impl AgentSession {
             .spawn_command(cmd)
             .map_err(|e| SessionError::Pty(e.to_string()))?;
         let child_pid = child.process_id().unwrap_or(0);
+        let process_identity = process_identity(child_pid);
         let killer = child.clone_killer();
 
         let reader = pty_pair
@@ -218,6 +221,7 @@ impl AgentSession {
             thread_id: thread_id.clone(),
             cwd: cwd.to_string_lossy().to_string(),
             pid: child_pid,
+            process_identity,
             status: SessionStatus::Running,
             started_at: Utc::now().timestamp_millis(),
             exit_code: None,
@@ -581,6 +585,62 @@ pub(crate) fn pid_alive(pid: i32) -> bool {
 #[cfg(not(unix))]
 pub(crate) fn pid_alive(pid: i32) -> bool {
     pid > 0
+}
+
+pub(crate) fn process_identity(pid: u32) -> Option<ProcessIdentity> {
+    if pid == 0 {
+        return None;
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok();
+        let cmdline = std::fs::read(format!("/proc/{pid}/cmdline"))
+            .ok()
+            .and_then(|bytes| normalize_cmdline(&bytes));
+        let comm = std::fs::read_to_string(format!("/proc/{pid}/comm"))
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .or_else(|| stat.as_deref().and_then(stat_comm));
+        let linux_start_time_ticks = stat.as_deref().and_then(stat_start_time_ticks);
+        let identity = ProcessIdentity {
+            linux_start_time_ticks,
+            cmdline,
+            comm,
+        };
+        return (!identity.is_empty()).then_some(identity);
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        None
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn normalize_cmdline(bytes: &[u8]) -> Option<String> {
+    let parts: Vec<String> = bytes
+        .split(|b| *b == 0)
+        .filter(|part| !part.is_empty())
+        .map(|part| String::from_utf8_lossy(part).to_string())
+        .collect();
+    (!parts.is_empty()).then(|| parts.join(" "))
+}
+
+#[cfg(target_os = "linux")]
+fn stat_comm(stat: &str) -> Option<String> {
+    let open = stat.find('(')?;
+    let close = stat.rfind(')')?;
+    (close > open + 1).then(|| stat[open + 1..close].to_string())
+}
+
+#[cfg(target_os = "linux")]
+fn stat_start_time_ticks(stat: &str) -> Option<u64> {
+    let close = stat.rfind(") ")?;
+    let rest = &stat[close + 2..];
+    // `rest` starts at field 3 (`state`); starttime is field 22.
+    rest.split_whitespace().nth(19)?.parse().ok()
 }
 
 /// Read up to `max` bytes from the end of the session's active `output.log`.

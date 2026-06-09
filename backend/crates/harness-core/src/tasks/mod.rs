@@ -17,3 +17,6 @@ pub use model::{
 };
 pub use reconcile::reconcile_tasks;
 pub use store::TaskStore;
+
+#[cfg(test)]
+pub(crate) use store::{reset_task_file_read_count, task_file_read_count};

@@ -88,6 +88,7 @@ pub fn build_router(state: Arc<AppState>, cfg: &Config) -> Router {
 
     Router::new()
         .merge(routes::health::router())
+        .merge(crate::metrics::router())
         .merge(protected)
         .layer(DefaultBodyLimit::max(MAX_REQUEST_BODY_BYTES))
         .layer(common_middleware)

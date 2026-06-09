@@ -12,8 +12,8 @@ use crate::budget::{
 };
 use crate::pause::PauseFlag;
 use crate::tasks::{
-    ClaimResult, ListFilters, SchedulerDecisionKind, SchedulerExplanation, Task, TaskEvent,
-    TaskPatch, TaskStatus, TaskStore,
+    ClaimResult, SchedulerDecisionKind, SchedulerExplanation, Task, TaskEvent, TaskPatch,
+    TaskStatus, TaskStore,
 };
 
 use super::spawner::{NoopSpawner, SessionSpawner, SpawnRequest, SpawnResult};
@@ -205,8 +205,8 @@ fn run_ready_pass(
     store: &TaskStore,
     announced: &mut HashSet<(String, String)>,
 ) -> Result<(), crate::Error> {
-    for tid in store.known_threads()? {
-        let tasks = store.list(&tid, ListFilters::default())?;
+    for tid in store.scheduler_threads()? {
+        let tasks = store.scheduler_snapshot(&tid)?;
         // Build a status lookup.
         let status_of: std::collections::HashMap<&str, TaskStatus> =
             tasks.iter().map(|t| (t.id.as_str(), t.status)).collect();
@@ -587,7 +587,7 @@ fn run_assign_pass(
 
     let mut next_snapshot: StatusSnapshot = HashMap::new();
 
-    for tid in store.known_threads()? {
+    for tid in store.scheduler_threads()? {
         if pause.is_thread_paused(&tid) {
             tracing::debug!(
                 target: "scheduling",
@@ -596,7 +596,7 @@ fn run_assign_pass(
             );
             continue;
         }
-        let tasks = store.list(&tid, ListFilters::default())?;
+        let tasks = store.scheduler_snapshot(&tid)?;
         let thread_max_concurrent = budget_store
             .and_then(|store| store.get(&tid).max_concurrent_workers)
             .unwrap_or(max_concurrent)
@@ -980,7 +980,7 @@ fn pause_in_progress_tasks_for_budget(
         budget.limit_usd,
         budget.pct_spent()
     );
-    let tasks = store.list(thread_id, ListFilters::default())?;
+    let tasks = store.scheduler_snapshot(thread_id)?;
     for task in tasks
         .into_iter()
         .filter(|task| task.status == TaskStatus::InProgress)
@@ -1005,8 +1005,8 @@ fn pause_in_progress_tasks_for_budget(
 
 fn run_lease_pass(store: &TaskStore) -> Result<(), crate::Error> {
     let now = Utc::now();
-    for tid in store.known_threads()? {
-        let tasks = store.list(&tid, ListFilters::default())?;
+    for tid in store.scheduler_threads()? {
+        let tasks = store.scheduler_snapshot(&tid)?;
         for t in tasks {
             let expired = t
                 .claim_lease
@@ -1208,6 +1208,67 @@ mod tests {
         let explanation = t.scheduler_explanation.expect("scheduler explanation");
         assert_eq!(explanation.decision, SchedulerDecisionKind::Assigned);
         assert_eq!(explanation.agent_id.as_deref(), Some(gen.id.as_str()));
+    }
+
+    #[test]
+    fn assign_pass_stable_thread_uses_memory_snapshot_without_task_file_reads() {
+        use crate::agents::{AgentDraft, AgentsRegistry};
+        use crate::pause::PauseFlag;
+        use crate::tasks::{
+            reset_task_file_read_count, task_file_read_count, TaskDraft, TaskStore,
+        };
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let store = TaskStore::new(dir.path()).unwrap();
+        let agents = AgentsRegistry::new(dir.path()).unwrap();
+        let pause = PauseFlag::load(dir.path()).unwrap();
+        let gen = agents
+            .create(AgentDraft {
+                kind: AgentKind::Claude,
+                label: "g".into(),
+                role: Some("generator".into()),
+            })
+            .unwrap();
+
+        store
+            .create(
+                "thr-stable",
+                TaskDraft {
+                    title: "already claimed".into(),
+                    parent: None,
+                    depends_on: vec![],
+                    brief: None,
+                    acceptance: vec![],
+                    labels: vec![],
+                    spec_refs: vec![],
+                    write_paths: vec![],
+                    forbidden_paths: vec![],
+                    created_by: "human".into(),
+                },
+            )
+            .unwrap();
+        store
+            .claim("thr-stable", "T-0001", &gen.id, Duration::from_secs(60))
+            .unwrap();
+
+        store.scheduler_threads().unwrap();
+        reset_task_file_read_count();
+        let mut prev = StatusSnapshot::new();
+        let cd = Mutex::new(HashMap::new());
+        run_assign_pass(
+            &store,
+            &agents,
+            &pause,
+            3,
+            None,
+            &mut prev,
+            &cd,
+            &NoopSpawner,
+        )
+        .unwrap();
+
+        assert_eq!(task_file_read_count(), 0);
     }
 
     #[test]

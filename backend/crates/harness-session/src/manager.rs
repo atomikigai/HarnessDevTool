@@ -8,9 +8,11 @@ use tokio::sync::broadcast;
 
 use crate::errors::SessionError;
 use crate::kind::AgentKind;
-use crate::meta::{LoadedCapabilities, SessionMeta, SessionRepoContext, SessionStatus};
-use crate::output::OutputWriter;
-use crate::session::{persist_meta, AgentSession};
+use crate::meta::{
+    LoadedCapabilities, ProcessIdentity, SessionMeta, SessionRepoContext, SessionStatus,
+};
+use crate::output::{OutputReadChunk, OutputWriter};
+use crate::session::{persist_meta, pid_alive, process_identity, AgentSession};
 
 const DEFAULT_CLAUDE_MODEL: &str = "sonnet";
 const DEFAULT_CLAUDE_EFFORT: &str = "medium";
@@ -173,10 +175,12 @@ impl Manager {
                 meta.root_session_id = meta.id.clone();
             }
             if meta.status == SessionStatus::Running {
+                reap_orphan_if_identity_matches_in_background(&meta);
                 // After a backend restart we only have persisted metadata, not
                 // the PTY writer/killer/read tasks needed to control the
-                // process. Even if the pid still exists, this manager cannot
-                // interact with it, so expose it as non-live state.
+                // process, so expose it as non-live state while best-effort
+                // orphan reaping proceeds in the background. Startup must not
+                // block for up to 3s per orphan.
                 meta.status = SessionStatus::Exited;
                 if let Err(e) = persist_meta(&dir, &meta) {
                     tracing::warn!(
@@ -253,6 +257,23 @@ impl Manager {
         // Reuse OutputWriter::open since it tolerates pre-existing files.
         let w = OutputWriter::open(&dir)?;
         w.read_active()
+    }
+
+    /// Read a bounded chunk from the active `output.log` for a session. Offsets
+    /// are active-file offsets; see [`OutputWriter::read_active_chunk`] for
+    /// rotation semantics.
+    pub fn read_output_chunk(
+        &self,
+        sid: &str,
+        offset: u64,
+        max_bytes: usize,
+    ) -> Result<OutputReadChunk, SessionError> {
+        let dir = self.sessions_root.join(sid);
+        if !dir.exists() {
+            return Err(SessionError::NotFound(sid.to_string()));
+        }
+        let w = OutputWriter::open(&dir)?;
+        w.read_active_chunk(offset, max_bytes)
     }
 
     /// Spawn a new session. `binary` must be the absolute path to the agent CLI.
@@ -779,6 +800,93 @@ fn lock_or_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+fn reap_orphan_if_identity_matches_in_background(meta: &SessionMeta) {
+    let meta = meta.clone();
+    std::thread::spawn(move || reap_orphan_if_identity_matches(&meta));
+}
+
+fn reap_orphan_if_identity_matches(meta: &SessionMeta) {
+    let pid = meta.pid as i32;
+    if !pid_alive(pid) {
+        return;
+    }
+    let Some(expected) = meta.process_identity.as_ref() else {
+        tracing::warn!(
+            session_id = %meta.id,
+            pid = meta.pid,
+            "not reaping orphan PTY child because process identity is missing"
+        );
+        return;
+    };
+    let Some(actual) = process_identity(meta.pid) else {
+        tracing::warn!(
+            session_id = %meta.id,
+            pid = meta.pid,
+            "not reaping orphan PTY child because current process identity could not be read"
+        );
+        return;
+    };
+    if !process_identity_matches(expected, &actual) {
+        tracing::warn!(
+            session_id = %meta.id,
+            pid = meta.pid,
+            expected = ?expected,
+            actual = ?actual,
+            "not reaping orphan PTY child because PID identity changed"
+        );
+        return;
+    }
+
+    tracing::warn!(
+        session_id = %meta.id,
+        pid = meta.pid,
+        "reaping orphan PTY child from persisted running session"
+    );
+    terminate_pid(pid);
+}
+
+fn process_identity_matches(expected: &ProcessIdentity, actual: &ProcessIdentity) -> bool {
+    if let Some(expected_start) = expected.linux_start_time_ticks {
+        return actual.linux_start_time_ticks == Some(expected_start);
+    }
+    if let Some(expected_cmdline) = expected.cmdline.as_deref() {
+        return actual.cmdline.as_deref() == Some(expected_cmdline);
+    }
+    if let Some(expected_comm) = expected.comm.as_deref() {
+        return actual.comm.as_deref() == Some(expected_comm);
+    }
+    false
+}
+
+fn terminate_pid(pid: i32) {
+    #[cfg(unix)]
+    {
+        if pid <= 0 {
+            return;
+        }
+        unsafe {
+            libc::kill(pid, libc::SIGTERM);
+        }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        loop {
+            if !pid_alive(pid) {
+                return;
+            }
+            if std::time::Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        unsafe {
+            libc::kill(pid, libc::SIGKILL);
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -799,6 +907,7 @@ mod tests {
             thread_id: thread_id.to_string(),
             cwd: "/tmp".to_string(),
             pid,
+            process_identity: None,
             status,
             started_at: 1_700_000_000_000,
             exit_code: None,
@@ -1472,6 +1581,83 @@ mod tests {
         .expect("parse persisted meta");
         assert_eq!(persisted.status, SessionStatus::Exited);
 
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn spawn_persists_pid_identity_in_meta() {
+        let root = temp_test_dir("spawn-pid-identity");
+        let sessions_root = root.join("sessions");
+        let cwd = root.join("workspace");
+        std::fs::create_dir_all(&cwd).expect("create cwd");
+        let manager = Manager::new(&sessions_root).expect("manager");
+
+        let session = manager
+            .spawn_with_opts(
+                AgentKind::Cursor,
+                PathBuf::from("/bin/sh"),
+                "thread-1".to_string(),
+                cwd,
+                SpawnOpts {
+                    session_id_override: Some("identity-session".to_string()),
+                    ..SpawnOpts::default()
+                },
+            )
+            .expect("spawn session");
+
+        let persisted: SessionMeta = serde_json::from_slice(
+            &std::fs::read(sessions_root.join("identity-session").join("meta.json"))
+                .expect("read persisted meta"),
+        )
+        .expect("parse persisted meta");
+        assert_eq!(persisted.pid, session.pid());
+        let identity = persisted
+            .process_identity
+            .as_ref()
+            .expect("process identity should be persisted");
+        assert!(identity.linux_start_time_ticks.is_some());
+        assert!(!identity.is_empty());
+
+        let _ = session.kill().await;
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn load_existing_does_not_kill_pid_with_mismatched_identity() {
+        let root = temp_test_dir("rehydrate-pid-mismatch");
+        let sessions_root = root.join("sessions");
+        let mut child = std::process::Command::new("/bin/sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn sleep");
+        let mut meta = test_meta(
+            "pid-mismatch",
+            "thread-1",
+            SessionStatus::Running,
+            child.id(),
+        );
+        meta.process_identity = Some(ProcessIdentity {
+            linux_start_time_ticks: Some(u64::MAX),
+            cmdline: Some("definitely-not-this-process".to_string()),
+            comm: Some("not-sleep".to_string()),
+        });
+        write_meta(&sessions_root, &meta);
+
+        let manager = Manager::new(&sessions_root).expect("manager");
+        manager.load_existing().expect("load existing");
+
+        assert!(child.try_wait().expect("poll sleep").is_none());
+        let persisted: SessionMeta = serde_json::from_slice(
+            &std::fs::read(sessions_root.join("pid-mismatch").join("meta.json"))
+                .expect("read persisted meta"),
+        )
+        .expect("parse persisted meta");
+        assert_eq!(persisted.status, SessionStatus::Exited);
+
+        let _ = child.kill();
+        let _ = child.wait();
         let _ = std::fs::remove_dir_all(root);
     }
 

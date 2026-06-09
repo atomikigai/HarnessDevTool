@@ -31,19 +31,14 @@ crash-safety de ids, etc.). Docker compose, perfiles aislados y append-only est�
 
 **Lo que lo separa de un "sí" pleno:**
 
-1. **Lock poisoning sistémico (P1 residual).** ~24 `expect("...poisoned")` sobre mutexes en
-   `context_governor.rs` (11), `tasks/store.rs` (10) y `session/manager.rs` (3). Un panic de
-   una task tokio sosteniendo el lock tumba en cascada el governor o el task store completo.
-   Migrar a `parking_lot` o a `unwrap_or_else(|e| e.into_inner())` (patrón ya usado en
-   `store.rs:66`) es barato y de alto impacto. **Es la mejora #1 que haría.**
-2. **Sandbox solo en macOS.** `harness-sandbox` usa `sandbox-exec`; en Linux (donde corre este
-   repo) no hay enforcement — la policy es la única barrera. Considerar landlock/bubblewrap.
+1. ✅ **Lock poisoning sistémico (P1 residual).** — Resuelto en Wave 2: `unwrap_or_else(|e| e.into_inner())` en governor/store/manager.
+2. ✅ **Sandbox solo en macOS.** — Resuelto en Wave 3: bubblewrap en Linux si bwrap está en PATH; fallback warning si no.
 3. **GETs sin auth.** El token solo protege rutas mutantes; cualquier proceso local lee
    sesiones, transcripts y schema de BD. Aceptable single-user, peligroso en cuanto haya LAN.
-4. **Sin métricas exportables.** Budget/presión de contexto viven in-process; no hay
-   Prometheus/OTel. Para operar esto "en producción" hace falta ver colas, sesiones y memoria.
-5. **Sin CI.** No hay `.github/workflows`; la puerta de calidad es manual (`just test` +
-   reviewer/qa). Un CI mínimo (check + clippy + nextest + pnpm check) cerraría regresiones.
+4. ✅ **Sin métricas exportables.** — Resuelto en Wave 3: GET /metrics Prometheus 0.0.4 con sessions/tasks/context_pressure/sse_lagged/build_info.
+5. ✅ **Sin CI.** — Resuelto en Wave 3: .github/workflows/ci.yml con backend check/fmt/test y frontend check, validado localmente.
+
+Actualización 2026-06-09 (Wave 3): CI, sandbox Linux (bubblewrap), /metrics, crash-safety del governor y Fase C de rendimiento cerrados; quedan Gateway MCP, capabilities dinámicas y modo quick.
 
 ## 2. ¿Listo para sesiones largas de programación?
 
@@ -199,13 +194,11 @@ falso positivo de §8.
 
 1. ✅ **(Wave 2, 2026-06-09) Cerrar data loader** (gen-types + review/QA + board) — completado en Wave 2.
 2. ✅ **(Wave 2, 2026-06-09) Lock poisoning** → `parking_lot` en governor/store/manager. Barato, elimina el peor modo de falla sistémico. — completado.
-3. **Fase C / P1 rendimiento**: scheduler indexado, `read_output` streaming, seq atómico,
-   SSE lagged/resync, y de paso la copia en `session.rs:273`.
-4. **CI mínimo** (check + clippy + nextest + pnpm check + verificación de gen-types limpio).
+3. ✅ **(Wave 3, 2026-06-09) Fase C / P1 rendimiento**: scheduler indexado, `read_output` streaming, seq atómico, SSE lagged/resync, y copia en `session.rs:273`. Tests verdes, 366 tests en just test.
+4. ✅ **(Wave 3, 2026-06-09) CI mínimo** (.github/workflows/ci.yml: backend check/fmt/test, frontend check, validado localmente).
 5. **Gateway MCP (P3)** — prerequisito de todo lo demás de autonomía.
 6. **Capabilities v2**: telemetría de uso → scoring (✅ scoring ponderado role/scopes/cwd/prompts e implementado en Wave 2) → re-resolución en checkpoints → MCP pooled (§8).
-7. **Governor checkpoint a disco + métricas exportadas** — lo que falta para sesiones largas
-   desatendidas y para llamarlo producción sin asterisco.
+7. ✅ **(Wave 3, 2026-06-09) Governor checkpoint a disco + métricas exportadas** (context_governor.json persistent, SessionMeta.process_identity, GET /metrics Prometheus, reaped orphans).
 8. **Frontend**: consolidar polling→SSE, Vitest, y los stubs F3 (TaskGraph DAG, panel de
    agentes).
 

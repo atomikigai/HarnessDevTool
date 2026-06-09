@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -78,6 +79,7 @@ pub struct AppState {
     pub start_time: Instant,
     pub version: &'static str,
     pub tick_tx: broadcast::Sender<String>,
+    pub sse_lagged_total: AtomicU64,
 }
 
 impl AppState {
@@ -89,6 +91,7 @@ impl AppState {
         let sessions_root = cfg.home.join("profiles").join(profile).join("sessions");
         let manager = Arc::new(Manager::new(sessions_root)?);
         manager.load_existing()?;
+        crate::context_governor::reconcile_persisted_governor_states(&manager);
         let task_store =
             TaskStore::with_profile(&cfg.home, profile)?.with_event_store(store.clone());
         let agents = Arc::new(AgentsRegistry::with_profile(&cfg.home, profile)?);
@@ -216,7 +219,16 @@ impl AppState {
             start_time: Instant::now(),
             version: env!("CARGO_PKG_VERSION"),
             tick_tx,
+            sse_lagged_total: AtomicU64::new(0),
         })
+    }
+
+    pub fn record_sse_lagged(&self) {
+        self.sse_lagged_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn sse_lagged_total(&self) -> u64 {
+        self.sse_lagged_total.load(Ordering::Relaxed)
     }
 
     /// Best-effort cleanup of runtime artifacts associated with a session.

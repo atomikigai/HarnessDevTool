@@ -28,6 +28,21 @@ use crate::{validate_profile_id, validate_task_id, validate_thread_id, Error};
 
 const BROADCAST_CAP: usize = 256;
 
+#[cfg(test)]
+thread_local! {
+    static TASK_FILE_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_task_file_read_count() {
+    TASK_FILE_READS.with(|reads| reads.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn task_file_read_count() -> usize {
+    TASK_FILE_READS.with(std::cell::Cell::get)
+}
+
 /// Maximum number of "active" tasks (anything not `done` / `abandoned`) that
 /// can coexist in a single thread. Hitting the cap forces the agent to finish
 /// or abandon work in flight before opening a new front — matches the human
@@ -55,11 +70,13 @@ pub struct TaskStore {
     /// switching profiles isolates tasks per workspace.
     profile: String,
     threads: Arc<Mutex<HashMap<String, ThreadState>>>,
+    scheduler_bootstrapped: Arc<Mutex<bool>>,
     event_store: Option<Arc<Store>>,
 }
 
 struct ThreadState {
     index: Arc<Mutex<Index>>,
+    tasks: Arc<Mutex<HashMap<String, Task>>>,
     bus: broadcast::Sender<TaskEvent>,
 }
 
@@ -80,6 +97,7 @@ impl TaskStore {
             home: home.to_path_buf(),
             profile: profile.to_string(),
             threads: Arc::new(Mutex::new(HashMap::new())),
+            scheduler_bootstrapped: Arc::new(Mutex::new(false)),
             event_store: None,
         })
     }
@@ -138,24 +156,33 @@ impl TaskStore {
     fn ensure_thread(
         &self,
         tid: &str,
-    ) -> Result<(Arc<Mutex<Index>>, broadcast::Sender<TaskEvent>), Error> {
+    ) -> Result<
+        (
+            Arc<Mutex<Index>>,
+            Arc<Mutex<HashMap<String, Task>>>,
+            broadcast::Sender<TaskEvent>,
+        ),
+        Error,
+    > {
         let mut threads = lock_or_recover(&self.threads);
         if let Some(s) = threads.get(tid) {
-            return Ok((s.index.clone(), s.bus.clone()));
+            return Ok((s.index.clone(), s.tasks.clone(), s.bus.clone()));
         }
         let dir = self.thread_dir(tid)?;
         fs::create_dir_all(&dir)?;
         let index = Arc::new(Mutex::new(Index::open(&dir.join("index.db"))?));
-        self.rebuild_index_inner(tid, &dir, &index)?;
+        let tasks = Arc::new(Mutex::new(HashMap::new()));
+        self.rebuild_index_inner(tid, &dir, &index, &tasks)?;
         let (tx, _) = broadcast::channel(BROADCAST_CAP);
         threads.insert(
             tid.to_string(),
             ThreadState {
                 index: index.clone(),
+                tasks: tasks.clone(),
                 bus: tx.clone(),
             },
         );
-        Ok((index, tx))
+        Ok((index, tasks, tx))
     }
 
     fn rebuild_index_inner(
@@ -163,9 +190,12 @@ impl TaskStore {
         _tid: &str,
         dir: &Path,
         index: &Arc<Mutex<Index>>,
+        tasks: &Arc<Mutex<HashMap<String, Task>>>,
     ) -> Result<(), Error> {
         let idx = lock_or_recover(index);
+        let mut task_map = lock_or_recover(tasks);
         idx.clear()?;
+        task_map.clear();
         if !dir.exists() {
             return Ok(());
         }
@@ -180,6 +210,7 @@ impl TaskStore {
                     if let Err(e) = idx.upsert(&t) {
                         tracing::warn!(?path, ?e, "failed to index task");
                     }
+                    task_map.insert(t.id.clone(), t);
                 }
                 Err(e) => {
                     tracing::warn!(?path, ?e, "skipping invalid task TOML");
@@ -191,7 +222,7 @@ impl TaskStore {
 
     /// List tasks in a thread, optionally filtered.
     pub fn list(&self, tid: &str, filters: ListFilters) -> Result<Vec<Task>, Error> {
-        let (index, _) = self.ensure_thread(tid)?;
+        let (index, _, _) = self.ensure_thread(tid)?;
         let ids = {
             let idx = lock_or_recover(&index);
             idx.list_ids(&filters)?
@@ -266,7 +297,7 @@ impl TaskStore {
                  complete or abandon one before creating another"
             )));
         }
-        let (index, _) = self.ensure_thread(tid)?;
+        let (index, tasks, _) = self.ensure_thread(tid)?;
         let dir = self.thread_dir(tid)?;
         let id = next_id(&dir)?;
         let now = Utc::now();
@@ -321,6 +352,10 @@ impl TaskStore {
             let idx = lock_or_recover(&index);
             idx.upsert(&task)?;
         }
+        {
+            let mut task_map = lock_or_recover(&tasks);
+            task_map.insert(task.id.clone(), task.clone());
+        }
         self.emit(
             tid,
             TaskEvent::Created {
@@ -342,7 +377,7 @@ impl TaskStore {
         patch: TaskPatch,
         by: &str,
     ) -> Result<Task, Error> {
-        let (index, _) = self.ensure_thread(tid)?;
+        let (index, tasks, _) = self.ensure_thread(tid)?;
         let path = self.task_path(tid, task_id)?;
         let handoffs = self.read_handoffs(tid, task_id)?;
         let (task, (prev_status, changed_fields)) =
@@ -351,6 +386,10 @@ impl TaskStore {
         {
             let idx = lock_or_recover(&index);
             idx.upsert(&task)?;
+        }
+        {
+            let mut task_map = lock_or_recover(&tasks);
+            task_map.insert(task.id.clone(), task.clone());
         }
         if prev_status != task.status {
             self.emit(
@@ -398,10 +437,10 @@ impl TaskStore {
         agent_id: &str,
         ttl: Duration,
     ) -> Result<ClaimResult, Error> {
-        let (index, _) = self.ensure_thread(tid)?;
+        let (index, tasks, _) = self.ensure_thread(tid)?;
         let path = self.task_path(tid, task_id)?;
         let now = Utc::now();
-        let (_task, outcome) = with_locked_task(&path, |task| {
+        let (task, outcome) = with_locked_task(&path, |task| {
             if task.status != TaskStatus::Queued {
                 return Err(Error::Validation(format!(
                     "only queued tasks can be claimed (current status: {})",
@@ -437,9 +476,11 @@ impl TaskStore {
         })?;
         {
             let idx = lock_or_recover(&index);
-            // Re-read to upsert with the persisted version
-            let t = read_task_file(&path)?;
-            idx.upsert(&t)?;
+            idx.upsert(&task)?;
+        }
+        {
+            let mut task_map = lock_or_recover(&tasks);
+            task_map.insert(task.id.clone(), task);
         }
         Ok(outcome)
     }
@@ -456,10 +497,10 @@ impl TaskStore {
         ttl: Duration,
         note: &str,
     ) -> Result<Lease, Error> {
-        let (index, _) = self.ensure_thread(tid)?;
+        let (index, tasks, _) = self.ensure_thread(tid)?;
         let path = self.task_path(tid, task_id)?;
         let now = Utc::now();
-        let (_t, lease) = with_locked_task(&path, |task| {
+        let (task, lease) = with_locked_task(&path, |task| {
             if let Some(prev) = task.assignee.take() {
                 if prev != new_agent {
                     task.previous_assignees.push(prev);
@@ -494,17 +535,21 @@ impl TaskStore {
         })?;
         {
             let idx = lock_or_recover(&index);
-            let t = read_task_file(&path)?;
-            idx.upsert(&t)?;
+            idx.upsert(&task)?;
+        }
+        {
+            let mut task_map = lock_or_recover(&tasks);
+            task_map.insert(task.id.clone(), task);
         }
         Ok(lease)
     }
 
     /// Refresh the lease TTL. Errors if `agent_id` is not the current holder.
     pub fn renew(&self, tid: &str, task_id: &str, agent_id: &str) -> Result<Lease, Error> {
+        let (index, tasks, _) = self.ensure_thread(tid)?;
         let path = self.task_path(tid, task_id)?;
         let now = Utc::now();
-        let (_, lease) = with_locked_task(&path, |task| {
+        let (task, lease) = with_locked_task(&path, |task| {
             let cur = task
                 .claim_lease
                 .clone()
@@ -522,13 +567,22 @@ impl TaskStore {
             task.updated_by = agent_id.into();
             Ok::<_, Error>(new_lease)
         })?;
+        {
+            let idx = lock_or_recover(&index);
+            idx.upsert(&task)?;
+        }
+        {
+            let mut task_map = lock_or_recover(&tasks);
+            task_map.insert(task.id.clone(), task);
+        }
         Ok(lease)
     }
 
     /// Release the lease (graceful).
     pub fn release(&self, tid: &str, task_id: &str, agent_id: &str) -> Result<(), Error> {
+        let (index, tasks, _) = self.ensure_thread(tid)?;
         let path = self.task_path(tid, task_id)?;
-        with_locked_task(&path, |task| {
+        let (task, ()) = with_locked_task(&path, |task| {
             if let Some(l) = &task.claim_lease {
                 if l.holder != agent_id {
                     return Err(Error::LeaseNotHeld(agent_id.into()));
@@ -539,6 +593,14 @@ impl TaskStore {
             task.updated_by = agent_id.into();
             Ok::<_, Error>(())
         })?;
+        {
+            let idx = lock_or_recover(&index);
+            idx.upsert(&task)?;
+        }
+        {
+            let mut task_map = lock_or_recover(&tasks);
+            task_map.insert(task.id.clone(), task);
+        }
         Ok(())
     }
 
@@ -665,7 +727,7 @@ impl TaskStore {
     /// touched the thread yet (creates the broadcast bus on demand).
     pub fn subscribe(&self, tid: &str) -> broadcast::Receiver<TaskEvent> {
         match self.ensure_thread(tid) {
-            Ok((_, tx)) => tx.subscribe(),
+            Ok((_, _, tx)) => tx.subscribe(),
             Err(e) => {
                 tracing::warn!(error = ?e, thread = %tid, "task subscribe rejected invalid thread");
                 let (_tx, rx) = broadcast::channel(1);
@@ -677,7 +739,7 @@ impl TaskStore {
     /// Emit a task-domain event: persist it through the optional server sink,
     /// then broadcast the original [`TaskEvent`] unchanged for SSE consumers.
     pub fn emit(&self, tid: &str, event: TaskEvent) {
-        let (_, tx) = match self.ensure_thread(tid) {
+        let (_, _, tx) = match self.ensure_thread(tid) {
             Ok(thread) => thread,
             Err(e) => {
                 tracing::warn!(error = %e, tid = %tid, "failed to persist task event");
@@ -717,6 +779,48 @@ impl TaskStore {
         Ok(out)
     }
 
+    /// Thread ids already loaded in memory, falling back to one startup scan
+    /// when the store has not touched any task thread yet.
+    pub fn scheduler_threads(&self) -> Result<Vec<String>, Error> {
+        {
+            let mut bootstrapped = lock_or_recover(&self.scheduler_bootstrapped);
+            if !*bootstrapped {
+                self.reload_scheduler_index()?;
+                *bootstrapped = true;
+            }
+        }
+        let loaded = {
+            let threads = lock_or_recover(&self.threads);
+            let mut loaded = threads.keys().cloned().collect::<Vec<_>>();
+            loaded.sort();
+            loaded
+        };
+        Ok(loaded)
+    }
+
+    /// Explicit full reload hook for tests/admin paths. Normal operation uses
+    /// write-through updates and should not need this after scheduler startup.
+    pub fn reload_scheduler_index(&self) -> Result<(), Error> {
+        for tid in self.known_threads()? {
+            let (index, tasks, _) = self.ensure_thread(&tid)?;
+            let dir = self.thread_dir(&tid)?;
+            self.rebuild_index_inner(&tid, &dir, &index, &tasks)?;
+        }
+        Ok(())
+    }
+
+    /// Scheduler-facing task snapshot. This is populated from disk once per
+    /// thread at startup and then maintained write-through by the store.
+    pub fn scheduler_snapshot(&self, tid: &str) -> Result<Vec<Task>, Error> {
+        let (_, tasks, _) = self.ensure_thread(tid)?;
+        let mut out = {
+            let task_map = lock_or_recover(&tasks);
+            task_map.values().cloned().collect::<Vec<_>>()
+        };
+        out.sort_by(|a, b| a.id.cmp(&b.id));
+        Ok(out)
+    }
+
     /// Build a read-only consistency report for one thread. The caller passes
     /// session metadata because session ownership lives in `harness-session`,
     /// not in the core task store.
@@ -738,10 +842,12 @@ impl TaskStore {
     ) -> Result<R, Error> {
         let path = self.task_path(tid, task_id)?;
         let (_, out) = with_locked_task(&path, |t| f(t))?;
-        let (index, _) = self.ensure_thread(tid)?;
+        let (index, tasks, _) = self.ensure_thread(tid)?;
         let t = read_task_file(&path)?;
         let idx = lock_or_recover(&index);
         idx.upsert(&t)?;
+        let mut task_map = lock_or_recover(&tasks);
+        task_map.insert(t.id.clone(), t);
         Ok(out)
     }
 }
@@ -1130,6 +1236,8 @@ fn with_locked_task<R>(
 }
 
 fn read_task_file(path: &Path) -> Result<Task, Error> {
+    #[cfg(test)]
+    TASK_FILE_READS.with(|reads| reads.set(reads.get() + 1));
     let text = fs::read_to_string(path)?;
     let task: Task = toml_edit::de::from_str(&text).map_err(|e| Error::Toml(e.to_string()))?;
     Ok(task)
@@ -1676,5 +1784,24 @@ mod tests {
         let all = s2.list("thr-1", ListFilters::default()).unwrap();
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].id, "T-0001");
+
+        let snapshot = s2.scheduler_snapshot("thr-1").unwrap();
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(snapshot[0].id, "T-0001");
+        assert_eq!(snapshot[0].status, TaskStatus::Queued);
+    }
+
+    #[test]
+    fn scheduler_threads_bootstrap_discovers_threads_after_partial_load() {
+        let (dir, s) = store();
+        s.create("thr-1", mk_draft("one")).unwrap();
+        s.create("thr-2", mk_draft("two")).unwrap();
+
+        let s2 = TaskStore::new(dir.path()).unwrap();
+        assert_eq!(s2.scheduler_snapshot("thr-1").unwrap().len(), 1);
+
+        let threads = s2.scheduler_threads().unwrap();
+        assert_eq!(threads, vec!["thr-1".to_string(), "thr-2".to_string()]);
+        assert_eq!(s2.scheduler_snapshot("thr-2").unwrap().len(), 1);
     }
 }

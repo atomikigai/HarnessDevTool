@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -36,6 +37,7 @@ pub enum StoreError {
 pub struct Store {
     threads_dir: PathBuf,
     write_lock: Mutex<()>,
+    next_event_seq: Mutex<HashMap<String, u64>>,
 }
 
 impl Store {
@@ -50,6 +52,7 @@ impl Store {
         Ok(Self {
             threads_dir,
             write_lock: Mutex::new(()),
+            next_event_seq: Mutex::new(HashMap::new()),
         })
     }
 
@@ -244,7 +247,22 @@ impl Store {
             return Err(StoreError::NotFound(thread_id.to_string()));
         }
         let path = dir.join("events.jsonl");
-        let seq = count_jsonl_records(&path)?;
+        let seq = {
+            let mut seqs = self
+                .next_event_seq
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let next = match seqs.get_mut(thread_id) {
+                Some(next) => next,
+                None => {
+                    let initialized = max_jsonl_seq(&path)?.map_or(0, |seq| seq + 1);
+                    seqs.entry(thread_id.to_string()).or_insert(initialized)
+                }
+            };
+            let seq = *next;
+            *next += 1;
+            seq
+        };
         let mut event = event.clone();
         event.seq = seq;
         let mut f = OpenOptions::new().create(true).append(true).open(&path)?;
@@ -278,18 +296,31 @@ impl Store {
     }
 }
 
-fn count_jsonl_records(path: &Path) -> Result<u64, StoreError> {
+fn max_jsonl_seq(path: &Path) -> Result<Option<u64>, StoreError> {
     if !path.exists() {
-        return Ok(0);
+        return Ok(None);
     }
     let f = File::open(path)?;
-    let mut count = 0;
+    let mut max_seq = None;
     for line in BufReader::new(f).lines() {
-        if !line?.trim().is_empty() {
-            count += 1;
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<Event>(&line) {
+            Ok(event) => {
+                max_seq = Some(max_seq.map_or(event.seq, |seq: u64| seq.max(event.seq)));
+            }
+            Err(error) => {
+                tracing::warn!(
+                    path = %path.display(),
+                    error = %error,
+                    "skipping corrupt jsonl record while initializing append seq"
+                );
+            }
         }
     }
-    Ok(count)
+    Ok(max_seq)
 }
 
 fn read_jsonl_lossy<T: DeserializeOwned>(
@@ -391,6 +422,45 @@ mod tests {
         assert_eq!(
             read.iter().map(|ev| ev.seq).collect::<Vec<_>>(),
             (0..16).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn append_event_initializes_seq_from_existing_max_seq() {
+        let home = tmp_home();
+        let store = Store::new(home.path()).unwrap();
+        let t = store.create_thread(None).unwrap();
+        let existing = Event {
+            seq: 41,
+            at: 123,
+            event_type: "existing".into(),
+            items: vec![],
+            thread_id: Some(t.id.clone()),
+            actor: None,
+            payload: None,
+        };
+        let path = store.threads_dir().join(&t.id).join("events.jsonl");
+        {
+            let mut f = OpenOptions::new().append(true).open(&path).unwrap();
+            writeln!(f, "{}", serde_json::to_string(&existing).unwrap()).unwrap();
+        }
+
+        let store = Store::new(home.path()).unwrap();
+        let ev = Event {
+            seq: 0,
+            at: 124,
+            event_type: "next".into(),
+            items: vec![],
+            thread_id: Some(t.id.clone()),
+            actor: None,
+            payload: None,
+        };
+        let seq = store.append_event(&t.id, &ev).unwrap();
+        assert_eq!(seq, 42);
+        let read = store.read_events(&t.id).unwrap();
+        assert_eq!(
+            read.iter().map(|event| event.seq).collect::<Vec<_>>(),
+            vec![41, 42]
         );
     }
 

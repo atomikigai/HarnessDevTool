@@ -1,0 +1,84 @@
+# CI mínimo — Production grade Wave 3 (board: docs/teamwork/BOARD.md)
+#
+# Cada step fue validado localmente sobre el estado actual del repo (2026-06-09):
+#   backend/:  cargo fmt --check  → OK (exit 0)
+#              cargo check --workspace → OK (solo nota future-incompat de sqlx-postgres, no falla)
+#              cargo test --workspace  → OK (exit 0, 0 failed)
+#   frontend/: pnpm install --frozen-lockfile → OK
+#              pnpm check → OK (svelte-check: 0 errors, 0 warnings)
+#
+# Notas de diseño:
+# - El workspace cargo vive en backend/ (backend/Cargo.toml), no en la raíz.
+# - No se corre clippy: no es parte de la puerta mínima y no fue validado sin warnings.
+# - module-db: sus tests de integración usan SQLite (tests/sqlite_integration.rs);
+#   no requieren postgres/mysql levantados, así que no se excluye ningún crate.
+# - No hay suite de tests frontend (solo `check` = svelte-kit sync + svelte-check),
+#   por eso el job frontend no corre tests.
+# - rust-toolchain.toml pina channel=stable con rustfmt+clippy; rustup lo respeta en CI.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend (Rust)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      # Instala la toolchain declarada en backend/rust-toolchain.toml (stable + rustfmt)
+      - name: Install Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: backend
+
+      - name: cargo fmt --check
+        run: cargo fmt --check
+
+      - name: cargo check --workspace
+        run: cargo check --workspace
+
+      - name: cargo test --workspace
+        run: cargo test --workspace
+
+  frontend:
+    name: Frontend (SvelteKit)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      # Lee la versión de pnpm del campo packageManager de frontend/package.json (pnpm@11.3.0)
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          package_json_file: frontend/package.json
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: pnpm check
+        run: pnpm check

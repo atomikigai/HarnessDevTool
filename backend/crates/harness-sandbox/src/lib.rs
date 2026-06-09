@@ -6,6 +6,8 @@
 //! module helpers and future evaluator shell checks.
 
 use std::collections::BTreeMap;
+#[cfg(target_os = "linux")]
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
@@ -114,6 +116,9 @@ pub struct SandboxPlan {
 
 pub fn plan(profile: &SandboxProfile) -> SandboxResult<SandboxPlan> {
     profile.validate()?;
+    #[cfg(target_os = "linux")]
+    let warning = linux_platform_warning(profile.level, || find_program_in_path("bwrap"));
+    #[cfg(not(target_os = "linux"))]
     let warning = match profile.level {
         SandboxLevel::None => None,
         SandboxLevel::Workspace | SandboxLevel::WorkspaceNet => platform_workspace_warning(),
@@ -185,6 +190,16 @@ fn sandboxed_command_for_program(
     program: &Path,
     profile: &SandboxProfile,
 ) -> SandboxResult<Command> {
+    #[cfg(target_os = "linux")]
+    {
+        if profile.level != SandboxLevel::None {
+            if let Some(bwrap) = find_program_in_path("bwrap") {
+                let mut command = Command::new(bwrap);
+                command.args(bubblewrap_args(profile, program)?);
+                return Ok(command);
+            }
+        }
+    }
     #[cfg(target_os = "macos")]
     {
         if profile.level != SandboxLevel::None {
@@ -197,6 +212,38 @@ fn sandboxed_command_for_program(
     }
     let _ = profile;
     Ok(Command::new(program))
+}
+
+#[cfg(target_os = "linux")]
+fn bubblewrap_args(profile: &SandboxProfile, program: &Path) -> SandboxResult<Vec<String>> {
+    profile.validate()?;
+    let program = path_arg(program)?;
+    let mut args = vec![
+        "--ro-bind".into(),
+        "/".into(),
+        "/".into(),
+        "--tmpfs".into(),
+        "/tmp".into(),
+        "--dev".into(),
+        "/dev".into(),
+        "--proc".into(),
+        "/proc".into(),
+        "--unshare-pid".into(),
+    ];
+
+    if profile.level != SandboxLevel::WorkspaceNet {
+        args.push("--unshare-net".into());
+    }
+
+    for path in &profile.writable_roots {
+        let path = path_arg(path)?;
+        args.push("--bind".into());
+        args.push(path.clone());
+        args.push(path);
+    }
+
+    args.push(program);
+    Ok(args)
 }
 
 pub fn sandbox_exec_profile(profile: &SandboxProfile) -> SandboxResult<String> {
@@ -267,6 +314,12 @@ fn sandbox_profile_quote_path(path: &Path) -> SandboxResult<String> {
     ))
 }
 
+fn path_arg(path: &Path) -> SandboxResult<String> {
+    path.to_str()
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| SandboxError::NonUtf8Path(path.display().to_string()))
+}
+
 pub fn sandbox_level_str(level: SandboxLevel) -> &'static str {
     match level {
         SandboxLevel::None => "none",
@@ -286,15 +339,51 @@ fn ensure_absolute(path: &Path) -> SandboxResult<()> {
 
 #[cfg(target_os = "linux")]
 fn platform_workspace_warning() -> Option<String> {
-    Some("linux seccomp/bind-mount enforcement is not wired yet; command runs with workspace cwd only".into())
+    Some(
+        "linux bubblewrap (bwrap) was not found in PATH; command runs with workspace cwd only"
+            .into(),
+    )
 }
 
 #[cfg(target_os = "linux")]
 fn platform_strict_warning() -> Option<String> {
     Some(
-        "linux strict sandbox requires seccompiler/bind mounts; command runs with warning only"
+        "linux strict sandbox requires bubblewrap (bwrap) in PATH; command runs with warning only"
             .into(),
     )
+}
+
+#[cfg(target_os = "linux")]
+fn linux_platform_warning(
+    level: SandboxLevel,
+    bwrap_lookup: impl FnOnce() -> Option<PathBuf>,
+) -> Option<String> {
+    match level {
+        SandboxLevel::None => None,
+        SandboxLevel::Workspace | SandboxLevel::WorkspaceNet | SandboxLevel::Strict => {
+            if bwrap_lookup().is_some() {
+                None
+            } else if level == SandboxLevel::Strict {
+                platform_strict_warning()
+            } else {
+                platform_workspace_warning()
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn find_program_in_path(program: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .map(|dir| dir.join(program))
+        .find(|candidate| {
+            candidate.is_file()
+                && candidate
+                    .metadata()
+                    .map(|meta| meta.permissions().mode() & 0o111 != 0)
+                    .unwrap_or(false)
+        })
 }
 
 #[cfg(target_os = "macos")]
@@ -369,9 +458,16 @@ mod tests {
             .unwrap();
 
         assert_eq!(plan.level, SandboxLevel::WorkspaceNet);
-        if cfg!(target_os = "macos") {
-            assert_eq!(command.as_std().get_program(), "sandbox-exec");
+        #[cfg(target_os = "macos")]
+        assert_eq!(command.as_std().get_program(), "sandbox-exec");
+        #[cfg(target_os = "linux")]
+        if let Some(bwrap) = find_program_in_path("bwrap") {
+            assert_eq!(command.as_std().get_program(), bwrap.as_os_str());
         } else {
+            assert_eq!(command.as_std().get_program(), "echo");
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+        {
             assert_eq!(command.as_std().get_program(), "echo");
         }
         assert_eq!(command.as_std().get_current_dir(), Some(root.as_path()));
@@ -400,5 +496,148 @@ mod tests {
         assert!(profile_text.contains("(deny default)"));
         assert!(!profile_text.contains("(allow network*)"));
         assert!(!profile_text.contains("(allow file-write*"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_plan_falls_back_when_bwrap_is_missing() {
+        let profile = SandboxProfile::workspace("/workspace");
+        let warning = linux_platform_warning(profile.level, || None);
+
+        assert_eq!(
+            warning,
+            Some(
+                "linux bubblewrap (bwrap) was not found in PATH; command runs with workspace cwd only"
+                    .into()
+            )
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_plan_is_available_when_bwrap_exists() {
+        let profile = SandboxProfile::strict("/workspace");
+        let warning =
+            linux_platform_warning(profile.level, || Some(PathBuf::from("/usr/bin/bwrap")));
+
+        assert_eq!(warning, None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn bubblewrap_workspace_args_are_exact() {
+        let profile = SandboxProfile::workspace("/workspace");
+
+        assert_eq!(
+            bubblewrap_args(&profile, Path::new("/bin/echo")).unwrap(),
+            strings([
+                "--ro-bind",
+                "/",
+                "/",
+                "--tmpfs",
+                "/tmp",
+                "--dev",
+                "/dev",
+                "--proc",
+                "/proc",
+                "--unshare-pid",
+                "--unshare-net",
+                "--bind",
+                "/workspace",
+                "/workspace",
+                "/bin/echo",
+            ])
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn bubblewrap_workspace_net_args_are_exact() {
+        let profile = SandboxProfile::workspace_net("/workspace");
+
+        assert_eq!(
+            bubblewrap_args(&profile, Path::new("/bin/echo")).unwrap(),
+            strings([
+                "--ro-bind",
+                "/",
+                "/",
+                "--tmpfs",
+                "/tmp",
+                "--dev",
+                "/dev",
+                "--proc",
+                "/proc",
+                "--unshare-pid",
+                "--bind",
+                "/workspace",
+                "/workspace",
+                "/bin/echo",
+            ])
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn bubblewrap_strict_args_are_exact() {
+        let profile = SandboxProfile::strict("/workspace");
+
+        assert_eq!(
+            bubblewrap_args(&profile, Path::new("/bin/echo")).unwrap(),
+            strings([
+                "--ro-bind",
+                "/",
+                "/",
+                "--tmpfs",
+                "/tmp",
+                "--dev",
+                "/dev",
+                "--proc",
+                "/proc",
+                "--unshare-pid",
+                "--unshare-net",
+                "/bin/echo",
+            ])
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    fn strings<const N: usize>(items: [&str; N]) -> Vec<String> {
+        items.into_iter().map(ToOwned::to_owned).collect()
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    #[ignore = "requires bubblewrap and user namespaces on the host"]
+    async fn bubblewrap_prevents_writes_outside_workspace() {
+        if find_program_in_path("bwrap").is_none() {
+            return;
+        }
+
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(2)
+            .unwrap()
+            .join("target")
+            .join("harness-sandbox-bwrap-test")
+            .join(format!("{}", std::process::id()));
+        let workspace = root.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let outside = root.join("outside");
+        let _ = std::fs::remove_file(&outside);
+
+        let (mut command, plan) =
+            SandboxCommand::new("/bin/sh", SandboxProfile::workspace(&workspace))
+                .args(["-c", "printf ok > inside && ! printf no > ../outside"])
+                .into_tokio_command()
+                .unwrap();
+        let output = command.output().await.unwrap();
+
+        assert!(plan.available);
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(
+            std::fs::read_to_string(workspace.join("inside")).unwrap(),
+            "ok"
+        );
+        assert!(!outside.exists());
     }
 }

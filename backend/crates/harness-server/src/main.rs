@@ -7,6 +7,7 @@ mod context_governor;
 mod context_index;
 mod data;
 mod error;
+mod metrics;
 mod routes;
 mod sse;
 mod state;

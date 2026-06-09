@@ -8,6 +8,16 @@ use crate::errors::SessionError;
 const MAX_LOG_BYTES: u64 = 50 * 1024 * 1024;
 const MAX_ROTATED: usize = 5;
 const ZSTD_LEVEL: i32 = 3;
+pub const OUTPUT_READ_CHUNK_BYTES: usize = 256 * 1024;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutputReadChunk {
+    pub bytes: Vec<u8>,
+    pub start_offset: u64,
+    pub next_offset: u64,
+    pub active_len: u64,
+    pub gap: bool,
+}
 
 /// Append-only writer for the raw PTY byte stream of a session.
 ///
@@ -67,6 +77,45 @@ impl OutputWriter {
         let mut buf = Vec::with_capacity(inner.written as usize);
         f.read_to_end(&mut buf)?;
         Ok(buf)
+    }
+
+    /// Read at most `max_bytes` from the active `output.log` starting at `offset`.
+    ///
+    /// Offsets are relative to the active file only. Rotated `.zst` files are
+    /// archival and are not replayed; if a requested offset is beyond the
+    /// active file while a rotated file exists, the caller has fallen behind a
+    /// rotation. In that case this returns `gap = true` and resumes at offset 0
+    /// of the active file so higher layers can emit their normal resync signal.
+    pub fn read_active_chunk(
+        &self,
+        offset: u64,
+        max_bytes: usize,
+    ) -> Result<OutputReadChunk, SessionError> {
+        let path = self.dir.join("output.log");
+        let mut f = File::open(&path)?;
+        // This read is intentionally lock-free for temporary readers opened by
+        // Manager::read_output_chunk: they do not share the live PTY writer's
+        // mutex. Capture active_len once and read only within that snapshot.
+        let active_len = f.metadata()?.len();
+        let rotated_exists = self.dir.join("output.log.1.zst").exists();
+        let gap = offset > active_len && rotated_exists;
+        let start_offset = if gap { 0 } else { offset.min(active_len) };
+        let to_read = max_bytes.min((active_len - start_offset) as usize);
+
+        let mut bytes = vec![0; to_read];
+        if to_read > 0 {
+            f.seek(SeekFrom::Start(start_offset))?;
+            f.read_exact(&mut bytes)?;
+        }
+        let next_offset = start_offset + bytes.len() as u64;
+
+        Ok(OutputReadChunk {
+            bytes,
+            start_offset,
+            next_offset,
+            active_len,
+            gap,
+        })
     }
 
     /// Force-flush to disk.
@@ -184,6 +233,72 @@ mod tests {
         w.flush().unwrap();
         let bytes = w.read_active().unwrap();
         assert_eq!(bytes, b"hello world");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn read_active_chunk_reads_large_file_in_order() {
+        let dir = tmp("chunked");
+        let w = OutputWriter::open(&dir).unwrap();
+        let data = vec![b'x'; OUTPUT_READ_CHUNK_BYTES + 17];
+        w.append(&data).unwrap();
+        w.flush().unwrap();
+
+        let first = w.read_active_chunk(0, OUTPUT_READ_CHUNK_BYTES).unwrap();
+        assert_eq!(first.bytes.len(), OUTPUT_READ_CHUNK_BYTES);
+        assert_eq!(first.start_offset, 0);
+        assert_eq!(first.next_offset, OUTPUT_READ_CHUNK_BYTES as u64);
+        assert!(!first.gap);
+
+        let second = w
+            .read_active_chunk(first.next_offset, OUTPUT_READ_CHUNK_BYTES)
+            .unwrap();
+        assert_eq!(second.bytes.len(), 17);
+        assert_eq!(second.start_offset, OUTPUT_READ_CHUNK_BYTES as u64);
+        assert_eq!(second.next_offset, data.len() as u64);
+        assert!(!second.gap);
+
+        let mut combined = first.bytes;
+        combined.extend(second.bytes);
+        assert_eq!(combined, data);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn read_active_chunk_handles_eof_boundary_and_beyond() {
+        let dir = tmp("eof");
+        let w = OutputWriter::open(&dir).unwrap();
+        w.append(b"hello").unwrap();
+        w.flush().unwrap();
+
+        let at_eof = w.read_active_chunk(5, OUTPUT_READ_CHUNK_BYTES).unwrap();
+        assert!(at_eof.bytes.is_empty());
+        assert_eq!(at_eof.start_offset, 5);
+        assert_eq!(at_eof.next_offset, 5);
+        assert!(!at_eof.gap);
+
+        let beyond_eof = w.read_active_chunk(99, OUTPUT_READ_CHUNK_BYTES).unwrap();
+        assert!(beyond_eof.bytes.is_empty());
+        assert_eq!(beyond_eof.start_offset, 5);
+        assert_eq!(beyond_eof.next_offset, 5);
+        assert!(!beyond_eof.gap);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn read_active_chunk_reports_gap_after_rotation() {
+        let dir = tmp("rotation-gap");
+        let w = OutputWriter::open(&dir).unwrap();
+        w.append(b"active").unwrap();
+        w.flush().unwrap();
+        std::fs::write(dir.join("output.log.1.zst"), b"rotated").unwrap();
+
+        assert!(dir.join("output.log.1.zst").exists());
+        let chunk = w.read_active_chunk(99, OUTPUT_READ_CHUNK_BYTES).unwrap();
+        assert!(chunk.gap);
+        assert_eq!(chunk.start_offset, 0);
+        assert_eq!(chunk.next_offset, 6);
+        assert_eq!(chunk.bytes, b"active");
         std::fs::remove_dir_all(&dir).ok();
     }
 

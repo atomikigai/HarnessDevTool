@@ -17,7 +17,52 @@ Modelo operativo: ver [`docs/teamwork/OPERATING_MODEL.md`](./OPERATING_MODEL.md)
 
 _Sin tarea activa._
 
-## Última cerrada — Harness improvement Wave 2
+## Última cerrada — Production grade Wave 3
+
+| Campo | Valor |
+|---|---|
+| **Tarea** | Production grade Wave 3 — CI, rendimiento Fase C, crash-safety de sesiones largas, sandbox Linux, observabilidad |
+| **Estado** | ✅ DONE — cerrada 2026-06-09. QA PASS en los 7 criterios; just test verde (366 tests, 0 fallos; svelte-check 0 errores). |
+| **Objetivo** | Cerrar los 5 puntos que separan al harness de production-grade v1: (1) CI mínimo; (2) Fase C P1 — scheduler indexado sin rescan de disco, `seq` atómico en append_event, `read_output` streaming sin bufferizar 50 MiB; (3) governor checkpoint a disco + manejo de PTY huérfanos al rearranque; (4) sandbox Linux best-effort (bubblewrap); (5) endpoint `/metrics` Prometheus. |
+| **Alcance / archivos** | CI (subagente): `.github/workflows/**` solamente. C1 (Codex): `backend/crates/harness-core/**` (scheduler + events seq). C4 (Codex): `backend/crates/harness-sandbox/**`. C2 (Codex): `backend/crates/harness-session/src/output.rs` + route de events en `harness-server`. C3 (Codex): `harness-server/src/context_governor.rs` + `harness-session/src/manager.rs`. C5 (Codex): `harness-server` (metrics). Docs al cierre. |
+| **Responsables** | Planner: Claude. CI: subagente nativo. Backend: Codex en slices C1→C2→C3→C5 (C4 en paralelo con C1, crates disjuntos). Revisor/QA al final. |
+| **Criterio de aceptación** | (1) workflow CI que pasa sobre el repo actual (backend fmt/check/tests + frontend check); (2) scheduler sin rescan O(n) de disco por tick, con invalidación correcta ante escrituras, y `seq` asignado atómicamente (sin carrera bajo appends concurrentes, con test); (3) catch-up de output por chunks (sin cargar el log completo en memoria), SSE sigue funcionando con resync; (4) estado del governor persistido y restaurado tras restart (test), huérfanos detectados/terminados al load_existing; (5) sandbox Linux activa bubblewrap si existe el binario, fallback warning si no, con tests de construcción del comando; (6) `GET /metrics` expone sesiones vivas, tasks por estado, presión de contexto y lag SSE en formato Prometheus text; (7) `just test` completo verde al cierre. |
+| **Checks obligatorios** | `cargo test` por crate tocado en cada slice, `pnpm --dir frontend check` si CI lo toca, `just test` al cierre, smoke de `/metrics` y de restart con sesión. |
+
+### Contrato breve — Wave 3
+
+1. **Append-only intacto**: el cambio de `seq` y el índice del scheduler NO reescriben `events.jsonl` ni `tasks/*.toml`; solo cambian cómo se asigna/lee.
+2. Sin cambios de protocolo HTTP existente; `/metrics` es ruta nueva GET, sin `X-Protocol-Version` requerido (scrape externo), documentar la excepción.
+3. Write-scopes disjuntos por slice; los slices de Codex van serializados salvo C1∥C4.
+4. Tipos `#[derive(TS)]`: si algún slice los toca, corre `just gen-types`.
+5. Reviewer/QA oficiales antes del cierre; QA incluye smoke de restart (governor) y scrape de `/metrics`.
+
+### Handoff CI — subagente 2026-06-09
+- .github/workflows/ci.yml: jobs backend (rustup + rust-cache, cargo fmt --check / check / test desde backend/) y frontend (pnpm 11.3.0, node 22, install --frozen-lockfile, pnpm check). Cada step validado localmente en verde. Sin clippy (no validado limpio); module-db incluido (sus tests de integración son SQLite, sin servicios).
+
+### Handoff C1 — Codex 2026-06-09 (harness-core)
+- append_event: seq atómico por thread (contador inicializado del mayor seq en disco, dentro del mismo write_lock del append). events.jsonl append-only intacto.
+- TaskStore: snapshot en memoria por thread, write-through en create/patch/claim/reassign/renew/release/with_locked; scheduler consume scheduler_threads()/scheduler_snapshot() — sin lecturas TOML en ticks estables; reload_scheduler_index() para reconstrucción explícita.
+- Tests: seq concurrente único/monótono, bootstrap del índice, tick estable sin lecturas de task files. 107 tests verdes.
+
+### Handoff C2 — Codex 2026-06-09 (harness-session/server, alto riesgo, revisado por Planner)
+- OutputWriter::read_active_chunk(offset, max_bytes): lectura incremental 256 KiB, OutputReadChunk{bytes,start_offset,next_offset,active_len,gap}; rotación → gap=true + resync lagged existente; catch-up SSE y /api/events/pty paginados vía spawn_blocking (sin bufferizar 50 MiB). Protocolo SSE sin cambios visibles.
+
+### Handoff C3 — Codex 2026-06-09 (governor crash-safe + huérfanos)
+- context_governor.json por sesión (atomic tmp+rename), restaurado al arranque; clear_in_progress restaurado → warn + reset. Persistencia con debounce 1s/sesión vía spawn_blocking (fix round P1-A).
+- SessionMeta.process_identity{linux_start_time_ticks,cmdline,comm}; load_existing reapea huérfanos solo con PID vivo + identidad coincidente (SIGTERM→3s→SIGKILL), en background para no bloquear startup (fix round P2-B). gen-types corrido (ProcessIdentity.ts).
+
+### Handoff C4 — Codex 2026-06-09 (harness-sandbox)
+- Linux: bubblewrap si bwrap está en PATH y es ejecutable (fix round P2-D). Workspace: ro-bind / + tmpfs /tmp + unshare-pid + unshare-net + bind workspace; WorkspaceNet con red; Strict sin bind. Fallback warning intacto. Test de integración real: escritura fuera del workspace bloqueada (bwrap 0.11.2).
+
+### Handoff C5 — Codex 2026-06-09 (/metrics)
+- GET /metrics Prometheus text 0.0.4, sin token ni X-Protocol-Version en request (excepción del contrato). Métricas: sessions live/by_status, tasks_by_state (del snapshot C1), context_pressure con label session_hash opaco (sha256 8 hex; fix round P1-B) cap 100 series → avg/max, sse_lagged_total, build_info. Presión leída de RAM, no de disco (fix round P1-A).
+
+### Review y QA — 2026-06-09
+- Revisor: 0 P0; 2 P1 (I/O síncrono en async: persist del governor y fs::read en metrics; disclosure de session_id en /metrics) + 4 P2 — todos corregidos en fix round.
+- QA: PASS en los 7 criterios con evidencia real: 366 tests (0 fallos, 1 ignored por diseño), smoke de /metrics en backend vivo (200, content-type correcto, sin session_id), test de integración bwrap real, just test + pnpm check verdes.
+
+## Cerrada — Harness improvement Wave 2
 
 | Campo | Valor |
 |---|---|

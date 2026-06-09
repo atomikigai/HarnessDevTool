@@ -11,7 +11,8 @@ use axum::routing::get;
 use axum::Router;
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
-use futures::stream::{self, Stream, StreamExt};
+use futures::stream::{Stream, StreamExt};
+use harness_session::output::OUTPUT_READ_CHUNK_BYTES;
 use harness_session::SessionEvent;
 use serde::Deserialize;
 use serde_json::json;
@@ -50,11 +51,15 @@ async fn events(
             (None, None) => {
                 // Legacy F0 behavior: forward the 5s tick channel as-is.
                 let rx = state.tick_tx.subscribe();
-                let s = BroadcastStream::new(rx).filter_map(|res| async move {
-                    match res {
-                        Ok(payload) => Some(Ok(SseEvent::default().data(payload))),
-                        Err(BroadcastStreamRecvError::Lagged(skipped)) => {
-                            Some(Ok(lagged_event("tick", None, None, skipped)))
+                let s = BroadcastStream::new(rx).filter_map(move |res| {
+                    let state = state.clone();
+                    async move {
+                        match res {
+                            Ok(payload) => Some(Ok(SseEvent::default().data(payload))),
+                            Err(BroadcastStreamRecvError::Lagged(skipped)) => {
+                                state.record_sse_lagged();
+                                Some(Ok(lagged_event("tick", None, None, skipped)))
+                            }
                         }
                     }
                 });
@@ -96,10 +101,12 @@ fn thread_stream(
     let rx = state.tasks.subscribe(&tid);
     BroadcastStream::new(rx).filter_map(move |res| {
         let tid = tid.clone();
+        let state = state.clone();
         async move {
             let ev = match res {
                 Ok(ev) => ev,
                 Err(BroadcastStreamRecvError::Lagged(skipped)) => {
+                    state.record_sse_lagged();
                     return Some(Ok(lagged_event("thread", Some(&tid), None, skipped)));
                 }
             };
@@ -142,50 +149,65 @@ fn session_stream(
     let manager_for_history = manager.clone();
     let sid_for_history = sid.clone();
     let next_seq_for_history = next_seq.clone();
-    let catchup_stream = stream::once(async move {
-        let sid_for_read = sid_for_history.clone();
-        let history = match tokio::task::spawn_blocking(move || {
-            manager_for_history.read_output(&sid_for_read)
-        })
-        .await
-        {
-            Ok(Ok(bytes)) => bytes,
-            Ok(Err(e)) => {
-                tracing::warn!(error = %e, session = %sid_for_history, "no output.log for catch-up");
-                Vec::new()
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, session = %sid_for_history, "output catch-up task failed");
-                Vec::new()
-            }
-        };
+    let state_for_history = state.clone();
+    let catchup_stream = async_stream::stream! {
+        let mut offset = 0;
+        loop {
+            let sid_for_read = sid_for_history.clone();
+            let manager_for_read = manager_for_history.clone();
+            let read = match tokio::task::spawn_blocking(move || {
+                manager_for_read.read_output_chunk(&sid_for_read, offset, OUTPUT_READ_CHUNK_BYTES)
+            })
+            .await
+            {
+                Ok(Ok(chunk)) => chunk,
+                Ok(Err(e)) => {
+                    tracing::warn!(error = %e, session = %sid_for_history, "no output.log for catch-up");
+                    break;
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, session = %sid_for_history, "output catch-up task failed");
+                    break;
+                }
+            };
 
-        let mut catchup_events: Vec<Result<SseEvent, Infallible>> = Vec::new();
-        for chunk in history.chunks(PTY_CATCHUP_CHUNK) {
-            let seq = next_seq_for_history.fetch_add(1, Ordering::SeqCst);
-            let payload = json!({
-                "type": "session.output",
-                "session_id": sid_for_history,
-                "seq": seq,
-                "b64": B64.encode(chunk),
-            });
-            catchup_events.push(Ok(SseEvent::default()
-                .event("session.output")
-                .data(payload.to_string())));
+            if read.gap {
+                state_for_history.record_sse_lagged();
+                yield Ok(lagged_event("session", None, Some(&sid_for_history), 1));
+            }
+
+            for chunk in read.bytes.chunks(PTY_CATCHUP_CHUNK) {
+                let seq = next_seq_for_history.fetch_add(1, Ordering::SeqCst);
+                let payload = json!({
+                    "type": "session.output",
+                    "session_id": sid_for_history,
+                    "seq": seq,
+                    "b64": B64.encode(chunk),
+                });
+                yield Ok(SseEvent::default()
+                    .event("session.output")
+                    .data(payload.to_string()));
+            }
+
+            offset = read.next_offset;
+            if read.bytes.is_empty() || offset >= read.active_len {
+                break;
+            }
         }
-        catchup_events
-    })
-    .flat_map(stream::iter);
+    };
 
     // 2) Live tail. Wrap `seq` in an atomic so the per-item closure can mutate it.
     let sid_filter = sid.clone();
+    let state_for_live = state.clone();
     let live = BroadcastStream::new(rx).filter_map(move |res| {
         let sid_filter = sid_filter.clone();
         let next_seq = next_seq.clone();
+        let state = state_for_live.clone();
         async move {
             let ev = match res {
                 Ok(ev) => ev,
                 Err(BroadcastStreamRecvError::Lagged(skipped)) => {
+                    state.record_sse_lagged();
                     return Some(Ok(lagged_event(
                         "session",
                         None,
@@ -229,38 +251,61 @@ fn pty_binary_stream(
 
     let manager_for_history = manager.clone();
     let sid_for_history = sid.clone();
-    let catchup_stream = stream::once(async move {
-        let sid_for_read = sid_for_history.clone();
-        let history = match tokio::task::spawn_blocking(move || {
-            manager_for_history.read_output(&sid_for_read)
-        })
-        .await
-        {
-            Ok(Ok(bytes)) => bytes,
-            Ok(Err(e)) => {
-                tracing::warn!(error = %e, session = %sid_for_history, "no output.log for binary catch-up");
-                Vec::new()
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, session = %sid_for_history, "binary output catch-up task failed");
-                Vec::new()
-            }
-        };
+    let state_for_history = state.clone();
+    let catchup_stream = async_stream::stream! {
+        let mut offset = 0;
+        loop {
+            let sid_for_read = sid_for_history.clone();
+            let manager_for_read = manager_for_history.clone();
+            let read = match tokio::task::spawn_blocking(move || {
+                manager_for_read.read_output_chunk(&sid_for_read, offset, OUTPUT_READ_CHUNK_BYTES)
+            })
+            .await
+            {
+                Ok(Ok(chunk)) => chunk,
+                Ok(Err(e)) => {
+                    tracing::warn!(error = %e, session = %sid_for_history, "no output.log for binary catch-up");
+                    break;
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, session = %sid_for_history, "binary output catch-up task failed");
+                    break;
+                }
+            };
 
-        history
-            .chunks(PTY_CATCHUP_CHUNK)
-            .map(|chunk| Ok(pty_frame(PTY_FRAME_OUTPUT, chunk)))
-            .collect::<Vec<_>>()
-    })
-    .flat_map(stream::iter);
+            if read.gap {
+                state_for_history.record_sse_lagged();
+                let payload = json!({
+                    "type": "lagged",
+                    "stream": "session",
+                    "session_id": sid_for_history,
+                    "skipped": 1,
+                    "resync": "reconnect",
+                });
+                yield Ok(pty_json_frame(PTY_FRAME_LAGGED, payload));
+            }
+
+            for chunk in read.bytes.chunks(PTY_CATCHUP_CHUNK) {
+                yield Ok(pty_frame(PTY_FRAME_OUTPUT, chunk));
+            }
+
+            offset = read.next_offset;
+            if read.bytes.is_empty() || offset >= read.active_len {
+                break;
+            }
+        }
+    };
 
     let sid_filter = sid.clone();
+    let state_for_live = state.clone();
     let live = BroadcastStream::new(rx).filter_map(move |res| {
         let sid_filter = sid_filter.clone();
+        let state = state_for_live.clone();
         async move {
             let ev = match res {
                 Ok(ev) => ev,
                 Err(BroadcastStreamRecvError::Lagged(skipped)) => {
+                    state.record_sse_lagged();
                     let payload = json!({
                         "type": "lagged",
                         "stream": "session",

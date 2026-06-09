@@ -608,13 +608,25 @@ impl SessionSpawner for ManagerSpawner {
             ..SpawnOpts::default()
         };
 
-        let load_crawl4ai = self
-            .tasks
-            .latest_active(&req.thread_id)
-            .ok()
-            .flatten()
-            .map(|task| crate::routes::sessions::task_mentions_documentation_url(&task))
+        let active_task = self.tasks.latest_active(&req.thread_id).ok().flatten();
+        let load_crawl4ai = active_task
+            .as_ref()
+            .map(crate::routes::sessions::task_mentions_documentation_url)
             .unwrap_or(false);
+        let task_skill_text = active_task
+            .as_ref()
+            .map(crate::routes::sessions::task_capability_text);
+        let smart_skills = crate::routes::sessions::resolve_smart_skills(
+            load_crawl4ai,
+            Some(&req.role),
+            Some(&cwd),
+            [
+                Some(role.prompt_template.as_str()),
+                task_skill_text.as_deref(),
+            ],
+            &opts.scopes,
+            crate::routes::sessions::CapabilityProfile::Auto,
+        );
 
         // Per-session MCP config (mirrors the REST `create_session` path so
         // sub-agents see the same `task_*` tool surface as user-spawned
@@ -674,7 +686,14 @@ impl SessionSpawner for ManagerSpawner {
                     );
                 }
                 let loaded_capabilities =
-                    crate::routes::sessions::loaded_mcp_capabilities(load_crawl4ai);
+                    crate::routes::sessions::loaded_mcp_capabilities_with_skills(
+                        load_crawl4ai,
+                        smart_skills,
+                    );
+                let capability_intro = crate::routes::sessions::spawn_capability_intro(
+                    load_crawl4ai,
+                    &loaded_capabilities.skills,
+                );
                 let config = json!({ "mcpServers": serde_json::Value::Object(mcp_servers) });
                 if let Err(e) = crate::routes::sessions::write_private_json(&path, &config) {
                     return SpawnResult::Failed(format!("write mcp config: {e}"));
@@ -683,15 +702,7 @@ impl SessionSpawner for ManagerSpawner {
                 opts.mcp_server_command = Some(mcp_bin.display().to_string());
                 opts.mcp_server_args = mcp_args;
                 opts.loaded_capabilities = loaded_capabilities;
-                opts.auto_intro = Some(if load_crawl4ai {
-                    format!(
-                        "{}\n\n{}",
-                        crate::routes::sessions::harness_mcp_intro(),
-                        crate::routes::sessions::crawl4ai_context_intro()
-                    )
-                } else {
-                    crate::routes::sessions::harness_mcp_intro().to_string()
-                });
+                opts.auto_intro = Some(capability_intro);
                 if load_crawl4ai {
                     opts.extra_mcp_servers
                         .push(crate::routes::sessions::crawl4ai_mcp_server());

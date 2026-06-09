@@ -11,9 +11,15 @@
     • Info           — session metadata (id, kind, pid, cwd, …).
 -->
 <script lang="ts">
-  import { api, type ChildSessionSummary, type SessionMeta, type SessionMetrics } from '$lib/api/client';
+  import {
+    api,
+    type ChildSessionSummary,
+    type ContextGovernorStatus,
+    type SessionMeta,
+    type SessionMetrics
+  } from '$lib/api/client';
   import { tasksState } from '$lib/stores/tasks.svelte';
-  import { Bot } from '$lib/icons';
+  import { Bot, RefreshCw, RotateCcw, Save } from '$lib/icons';
   import { taskProgress } from '$lib/sessionDisplay';
   import { onDestroy } from 'svelte';
   import { toast } from 'svelte-sonner';
@@ -31,10 +37,14 @@
   let tab = $state<Tab>('tasks');
   let children = $state<ChildSessionSummary[]>([]);
   let metrics = $state<SessionMetrics | null>(null);
+  let contextStatus = $state<ContextGovernorStatus | null>(null);
   let metricsError = $state<string | null>(null);
+  let contextError = $state<string | null>(null);
+  let contextBusy = $state(false);
   let childrenError = $state<string | null>(null);
   let pollTimer: ReturnType<typeof setInterval> | null = null;
   let metricsTimer: ReturnType<typeof setInterval> | null = null;
+  let contextTimer: ReturnType<typeof setInterval> | null = null;
   // Track ids and statuses across polls so we can fire toasts when something
   // actually changes — a hard refresh of the list always renders, but the
   // visual blip belongs on transitions.
@@ -64,13 +74,13 @@
     const schedulerDecision = task.scheduler_explanation?.decision;
     return Boolean(
       notes.needs_human ||
-        notes.last_failure?.trim() ||
-        notes.rejected_reason?.trim() ||
-        notes.blocked_reason?.trim() ||
-        (schedulerDecision &&
-          ['assignment_skipped', 'cooldown_skipped', 'evaluator_skipped', 'claim_busy'].includes(
-            schedulerDecision
-          ))
+      notes.last_failure?.trim() ||
+      notes.rejected_reason?.trim() ||
+      notes.blocked_reason?.trim() ||
+      (schedulerDecision &&
+        ['assignment_skipped', 'cooldown_skipped', 'evaluator_skipped', 'claim_busy'].includes(
+          schedulerDecision
+        ))
     );
   }
 
@@ -121,6 +131,59 @@
       metricsError = null;
     } catch (err) {
       metricsError = err instanceof Error ? err.message : String(err);
+    }
+  }
+
+  async function loadContextStatus(sessionId: string) {
+    if (!session || session.id !== sessionId) {
+      contextStatus = null;
+      return;
+    }
+    try {
+      const res = await api.sessions.context(sessionId);
+      if (!session || session.id !== sessionId) return;
+      contextStatus = res.data;
+      contextError = null;
+    } catch (err) {
+      contextError = err instanceof Error ? err.message : String(err);
+    }
+  }
+
+  async function requestCheckpoint() {
+    if (!session || contextBusy) return;
+    contextBusy = true;
+    try {
+      await api.sessions.requestContextCheckpoint(session.id);
+      toast.success('Context checkpoint requested');
+      await loadContextStatus(session.id);
+    } catch (err) {
+      toast.error('Could not request checkpoint', {
+        description: err instanceof Error ? err.message : String(err)
+      });
+    } finally {
+      contextBusy = false;
+    }
+  }
+
+  async function clearContext() {
+    if (!session || contextBusy) return;
+    contextBusy = true;
+    try {
+      const res = await api.sessions.clearContext(session.id);
+      if (res.data.status === 'deferred') {
+        toast.info('Context clear deferred', {
+          description: res.data.reason ?? 'session not idle'
+        });
+      } else {
+        toast.success('Context cleared');
+      }
+      await loadContextStatus(session.id);
+    } catch (err) {
+      toast.error('Could not clear context', {
+        description: err instanceof Error ? err.message : String(err)
+      });
+    } finally {
+      contextBusy = false;
     }
   }
 
@@ -200,9 +263,24 @@
     }
   });
 
+  $effect(() => {
+    if (contextTimer) {
+      clearInterval(contextTimer);
+      contextTimer = null;
+    }
+    contextStatus = null;
+    contextError = null;
+    if (session) {
+      const sessionId = session.id;
+      void loadContextStatus(sessionId);
+      contextTimer = setInterval(() => void loadContextStatus(sessionId), 3000);
+    }
+  });
+
   onDestroy(() => {
     if (pollTimer) clearInterval(pollTimer);
     if (metricsTimer) clearInterval(metricsTimer);
+    if (contextTimer) clearInterval(contextTimer);
   });
 
   function statusColor(s: string): string {
@@ -226,6 +304,29 @@
     return `$${(value ?? 0).toFixed(4)}`;
   }
 
+  function fmtPct(value: number | null | undefined): string {
+    if (value == null) return 'n/a';
+    return `${Math.round(value * 100)}%`;
+  }
+
+  function fmtTime(ms: number | null | undefined): string {
+    return ms ? new Date(ms).toLocaleTimeString() : 'none';
+  }
+
+  function contextLabel(status: ContextGovernorStatus | null): string {
+    const type = status?.latest_event_type;
+    if (!type) return 'watching';
+    return type.replace('session.context.', '').replaceAll('_', ' ');
+  }
+
+  function contextAccent(status: ContextGovernorStatus | null): string {
+    if (status?.clear_recommended_at || status?.clear_deferred_at) return 'var(--dot-warn)';
+    if (status?.cleared_at) return 'var(--dot-success)';
+    if ((status?.pressure ?? 0) >= 0.4) return 'var(--dot-danger)';
+    if ((status?.pressure ?? 0) >= 0.35) return 'var(--dot-warn)';
+    return 'var(--accent)';
+  }
+
   function capabilityLabel(m: SessionMetrics | null): string {
     const caps = m?.loaded_capabilities ?? session?.loaded_capabilities;
     const parts = [
@@ -242,18 +343,6 @@
       .slice(0, 4)
   );
 </script>
-
-<style>
-  /* Pulse animation for running children — subtle, single-color so it works
-     against any theme. */
-  @keyframes harness-dot-pulse {
-    0%, 100% { transform: scale(1); opacity: 1; }
-    50%      { transform: scale(1.45); opacity: 0.55; }
-  }
-  .dot-pulse {
-    animation: harness-dot-pulse 1.8s ease-in-out infinite;
-  }
-</style>
 
 <aside
   class="flex h-full w-[280px] shrink-0 flex-col overflow-hidden border-l"
@@ -384,8 +473,8 @@
           <div class="flex flex-col items-center gap-2 px-2 py-8 text-center">
             <Bot class="h-5 w-5 opacity-30" />
             <p class="text-xs leading-relaxed" style="color: var(--fg-muted);">
-              No sub-agents spawned by this session. Zeus and other orchestrators can spawn
-              workers via the harness MCP <code class="font-mono">session_spawn_child</code> tool.
+              No sub-agents spawned by this session. Zeus and other orchestrators can spawn workers
+              via the harness MCP <code class="font-mono">session_spawn_child</code> tool.
             </p>
           </div>
         {:else}
@@ -410,7 +499,9 @@
                 </span>
                 <span
                   class="rounded border px-1.5 py-0.5 text-[9.5px] font-bold uppercase"
-                  style="color: {statusColor(ag.status)}; border-color: var(--accent-soft-border); background: var(--accent-soft);"
+                  style="color: {statusColor(
+                    ag.status
+                  )}; border-color: var(--accent-soft-border); background: var(--accent-soft);"
                 >
                   {ag.status}
                 </span>
@@ -421,7 +512,9 @@
               {#if ag.task_id || (ag.scopes?.length ?? 0) > 0}
                 <p class="mt-1 truncate font-mono text-[10px]" style="color: var(--fg-muted);">
                   {#if ag.task_id}task {ag.task_id}{/if}
-                  {#if ag.task_id && (ag.scopes?.length ?? 0) > 0} · {/if}
+                  {#if ag.task_id && (ag.scopes?.length ?? 0) > 0}
+                    ·
+                  {/if}
                   {#if (ag.scopes?.length ?? 0) > 0}{ag.scopes?.join(', ')}{/if}
                 </p>
               {/if}
@@ -449,7 +542,112 @@
       <div class="flex flex-col gap-3 p-3">
         <section class="rounded-md border p-2.5" style="border-color: var(--border-subtle);">
           <div class="mb-2 flex items-center justify-between gap-2">
-            <span class="text-[10px] font-bold uppercase tracking-wider" style="color: var(--fg-label);">
+            <span
+              class="text-[10px] font-bold uppercase tracking-wider"
+              style="color: var(--fg-label);"
+            >
+              Context
+            </span>
+            <button
+              type="button"
+              class="inline-flex h-6 w-6 items-center justify-center rounded border transition-colors hover:bg-[var(--accent-soft)]"
+              style="border-color: var(--border-subtle); color: var(--fg-muted);"
+              title="Refresh context status"
+              onclick={() => session && loadContextStatus(session.id)}
+            >
+              <RefreshCw class="h-3.5 w-3.5" />
+            </button>
+          </div>
+
+          {#if contextError}
+            <p class="text-[11px]" style="color: var(--dot-danger);">{contextError}</p>
+          {:else}
+            <div
+              class="mb-2 h-1.5 overflow-hidden rounded-full"
+              style="background: var(--surface-titlebar);"
+            >
+              <div
+                class="h-full rounded-full transition-all"
+                style="
+                  width: {Math.min(100, Math.max(0, (contextStatus?.pressure ?? 0) * 100))}%;
+                  background: {contextAccent(contextStatus)};
+                "
+              ></div>
+            </div>
+            <div class="grid grid-cols-2 gap-2">
+              <div>
+                <p class="font-mono text-[10px]" style="color: var(--fg-muted);">Pressure</p>
+                <p class="font-mono text-[13px]" style="color: {contextAccent(contextStatus)};">
+                  {fmtPct(contextStatus?.pressure)}
+                </p>
+              </div>
+              <div>
+                <p class="font-mono text-[10px]" style="color: var(--fg-muted);">Last</p>
+                <p
+                  class="truncate font-mono text-[13px]"
+                  style="color: var(--fg-default);"
+                  title={contextStatus?.latest_event_type ?? ''}
+                >
+                  {contextLabel(contextStatus)}
+                </p>
+              </div>
+              <div>
+                <p class="font-mono text-[10px]" style="color: var(--fg-muted);">Checkpoint</p>
+                <p class="font-mono text-[13px]" style="color: var(--fg-default);">
+                  {fmtTime(contextStatus?.checkpoint_saved_at)}
+                </p>
+              </div>
+              <div>
+                <p class="font-mono text-[10px]" style="color: var(--fg-muted);">Index</p>
+                <p class="font-mono text-[13px]" style="color: var(--fg-default);">
+                  {contextStatus?.indexed_events ?? 0}
+                </p>
+              </div>
+            </div>
+
+            {#if contextStatus?.checkpoint_preview}
+              <p
+                class="mt-2 line-clamp-3 text-[11px] leading-relaxed"
+                style="color: var(--fg-muted);"
+                title={contextStatus.checkpoint_preview}
+              >
+                {contextStatus.checkpoint_preview}
+              </p>
+            {/if}
+
+            <div class="mt-2 flex gap-1.5">
+              <button
+                type="button"
+                class="inline-flex flex-1 items-center justify-center gap-1.5 rounded border px-2 py-1.5 text-[11px] font-medium transition-colors hover:bg-[var(--accent-soft)] disabled:opacity-50"
+                style="border-color: var(--border-subtle); color: var(--fg-default);"
+                title="Ask the agent to write a compact context checkpoint"
+                disabled={contextBusy || session.status !== 'running'}
+                onclick={requestCheckpoint}
+              >
+                <Save class="h-3.5 w-3.5" />
+                Checkpoint
+              </button>
+              <button
+                type="button"
+                class="inline-flex flex-1 items-center justify-center gap-1.5 rounded border px-2 py-1.5 text-[11px] font-medium transition-colors hover:bg-[var(--accent-soft)] disabled:opacity-50"
+                style="border-color: var(--border-subtle); color: var(--fg-default);"
+                title="Send /clear only when the agent is idle"
+                disabled={contextBusy || session.status !== 'running'}
+                onclick={clearContext}
+              >
+                <RotateCcw class="h-3.5 w-3.5" />
+                Clear
+              </button>
+            </div>
+          {/if}
+        </section>
+
+        <section class="rounded-md border p-2.5" style="border-color: var(--border-subtle);">
+          <div class="mb-2 flex items-center justify-between gap-2">
+            <span
+              class="text-[10px] font-bold uppercase tracking-wider"
+              style="color: var(--fg-label);"
+            >
               Metrics
             </span>
             <span class="font-mono text-[10px]" style="color: var(--fg-muted);">
@@ -499,7 +697,11 @@
                 {/each}
               </div>
             {/if}
-            <p class="mt-2 truncate font-mono text-[10px]" style="color: var(--fg-muted);" title={capabilityLabel(metrics)}>
+            <p
+              class="mt-2 truncate font-mono text-[10px]"
+              style="color: var(--fg-muted);"
+              title={capabilityLabel(metrics)}
+            >
               caps: {capabilityLabel(metrics)}
             </p>
           {/if}
@@ -523,3 +725,22 @@
     {/if}
   </div>
 </aside>
+
+<style>
+  /* Pulse animation for running children — subtle, single-color so it works
+     against any theme. */
+  @keyframes harness-dot-pulse {
+    0%,
+    100% {
+      transform: scale(1);
+      opacity: 1;
+    }
+    50% {
+      transform: scale(1.45);
+      opacity: 0.55;
+    }
+  }
+  .dot-pulse {
+    animation: harness-dot-pulse 1.8s ease-in-out infinite;
+  }
+</style>

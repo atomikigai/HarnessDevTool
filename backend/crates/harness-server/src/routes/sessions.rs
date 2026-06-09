@@ -157,11 +157,53 @@ pub struct SessionMetrics {
     pub observed_at: String,
 }
 
+#[derive(Debug, Serialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export, export_to = "../../../bindings/"))]
+pub struct ContextGovernorStatus {
+    pub session_id: String,
+    pub thread_id: String,
+    pub task_id: Option<String>,
+    pub role: Option<String>,
+    pub latest_event_type: Option<String>,
+    pub latest_event_at: Option<i64>,
+    pub checkpoint_requested_at: Option<i64>,
+    pub checkpoint_saved_at: Option<i64>,
+    pub clear_pending_at: Option<i64>,
+    pub clear_deferred_at: Option<i64>,
+    pub clear_recommended_at: Option<i64>,
+    pub cleared_at: Option<i64>,
+    pub pressure: Option<f64>,
+    pub context_tokens: Option<u64>,
+    pub max_context_tokens: Option<u64>,
+    pub model: Option<String>,
+    pub checkpoint_preview: Option<String>,
+    pub checkpoint_structured: Option<Value>,
+    pub indexed_events: usize,
+}
+
+#[derive(Debug, Serialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export, export_to = "../../../bindings/"))]
+pub struct ContextActionResponse {
+    pub status: String,
+    pub reason: Option<String>,
+}
+
 pub fn router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/api/threads/:tid/sessions", post(create_session))
         .route("/api/sessions/:sid", get(get_session))
         .route("/api/sessions/:sid/metrics", get(get_session_metrics))
+        .route("/api/sessions/:sid/context", get(get_context_status))
+        .route(
+            "/api/sessions/:sid/context/checkpoint",
+            post(request_context_checkpoint),
+        )
+        .route(
+            "/api/sessions/:sid/context/clear",
+            post(clear_context_manual),
+        )
         .route("/api/sessions/:sid/input", post(post_input))
         .route("/api/sessions/:sid/resize", post(post_resize))
         .route("/api/sessions/:sid", delete(kill_session))
@@ -491,6 +533,18 @@ pub async fn spawn_session_internal(
             });
         }
     }
+    if args.include_project_context
+        && !args
+            .initial_prompt
+            .as_deref()
+            .is_some_and(has_harness_team_brief)
+    {
+        let team_brief = harness_team_brief();
+        opts.auto_intro = Some(match opts.auto_intro.take() {
+            Some(existing) if !existing.is_empty() => format!("{existing}\n\n{team_brief}"),
+            _ => team_brief.to_string(),
+        });
+    }
     if let Some(auto_intro) = args.auto_intro.as_deref() {
         opts.auto_intro = Some(match opts.auto_intro.take() {
             Some(existing) if !existing.is_empty() => format!("{existing}\n\n{auto_intro}"),
@@ -504,6 +558,13 @@ pub async fn spawn_session_internal(
     if matches!(args.kind, AgentKind::Zeus) {
         opts.auto_intro = Some(zeus_orchestrator_briefing(&args.zeus_roles));
         opts.role = Some("zeus-orchestrator".into());
+    }
+    if matches!(underlying, AgentKind::Codex) {
+        let marker = codex_harness_session_marker(&session_id);
+        opts.auto_intro = Some(match opts.auto_intro.take() {
+            Some(existing) if !existing.is_empty() => format!("{existing}\n\n{marker}"),
+            _ => marker,
+        });
     }
 
     // Role resolution differs by spawn type:
@@ -646,12 +707,26 @@ pub async fn spawn_session_internal(
     }
 
     // Start the transcript watcher for CLIs that emit a JSONL transcript.
-    // Today: Claude only. Zeus is backed by Codex, whose transcript parser is
-    // not wired yet.
-    // The file may not exist for a few seconds while Claude boots — the
-    // watcher loop tolerates that.
+    // The file may not exist for a few seconds while the CLI boots; watcher
+    // setup is best-effort and terminal streaming still works without it.
     if matches!(underlying, AgentKind::Claude) {
         if let Err(e) = start_claude_transcript_watcher(state, &meta.id, &cwd_for_transcript) {
+            tracing::warn!(
+                session = %meta.id,
+                error = %e,
+                "could not start transcript watcher; Chat view disabled for this session"
+            );
+        }
+    } else if matches!(underlying, AgentKind::Codex) {
+        if let Err(e) = start_codex_transcript_watcher(
+            state,
+            &meta.id,
+            &cwd_for_transcript,
+            meta.started_at,
+            &meta.id,
+        )
+        .await
+        {
             tracing::warn!(
                 session = %meta.id,
                 error = %e,
@@ -757,10 +832,107 @@ fn start_claude_transcript_watcher(
     let store = crate::transcript::TranscriptStore::open(&transcript_dir)
         .map_err(|e| format!("open transcript store: {e}"))?;
     let (bus, _) = tokio::sync::broadcast::channel(256);
+    if let Some(session) = state.manager.get(session_id) {
+        crate::context_governor::spawn_context_governor(
+            crate::context_governor::ContextGovernorTarget {
+                session_id: session_id.to_string(),
+                thread_id: session.thread_id().to_string(),
+                task_id: session.task_id_static().map(str::to_string),
+                role: session.role(),
+            },
+            state.store.clone(),
+            state.manager.clone(),
+            bus.subscribe(),
+        );
+    }
 
     let handle = crate::transcript::spawn_transcript_watcher(
         session_id.to_string(),
         source_path,
+        crate::transcript::TranscriptParser::Claude,
+        store.clone(),
+        bus.clone(),
+    );
+
+    state.transcripts.insert(
+        session_id.to_string(),
+        crate::state::TranscriptSlot { store, bus, handle },
+    );
+    Ok(())
+}
+
+async fn start_codex_transcript_watcher(
+    state: &Arc<AppState>,
+    session_id: &str,
+    cwd: &std::path::Path,
+    started_at_ms: i64,
+    marker_session_id: &str,
+) -> Result<(), String> {
+    let codex_home = std::env::var("CODEX_HOME")
+        .map(std::path::PathBuf::from)
+        .ok()
+        .or_else(|| dirs::home_dir().map(|h| h.join(".codex")))
+        .ok_or_else(|| "could not resolve $HOME for codex".to_string())?;
+    let mut source_path = None;
+    for attempt in 0..10 {
+        source_path = crate::transcript::codex::find_latest_transcript_path(
+            &codex_home,
+            cwd,
+            started_at_ms,
+            Some(&codex_harness_session_marker(marker_session_id)),
+        )
+        .map_err(|e| format!("find codex transcript: {e}"))?;
+        if source_path.is_some() {
+            break;
+        }
+        if attempt < 9 {
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        }
+    }
+    if source_path.is_none() {
+        source_path = crate::transcript::codex::find_latest_transcript_path(
+            &codex_home,
+            cwd,
+            started_at_ms,
+            None,
+        )
+        .map_err(|e| format!("find codex transcript fallback: {e}"))?;
+    }
+    let source_path = source_path.ok_or_else(|| {
+        format!(
+            "codex transcript not found for cwd {} after {}",
+            cwd.display(),
+            started_at_ms
+        )
+    })?;
+
+    let transcript_dir = state
+        .harness_home
+        .join("profiles")
+        .join(&state.profile)
+        .join("sessions")
+        .join(session_id);
+    let store = crate::transcript::TranscriptStore::open(&transcript_dir)
+        .map_err(|e| format!("open transcript store: {e}"))?;
+    let (bus, _) = tokio::sync::broadcast::channel(256);
+    if let Some(session) = state.manager.get(session_id) {
+        crate::context_governor::spawn_context_governor(
+            crate::context_governor::ContextGovernorTarget {
+                session_id: session_id.to_string(),
+                thread_id: session.thread_id().to_string(),
+                task_id: session.task_id_static().map(str::to_string),
+                role: session.role(),
+            },
+            state.store.clone(),
+            state.manager.clone(),
+            bus.subscribe(),
+        );
+    }
+
+    let handle = crate::transcript::spawn_transcript_watcher(
+        session_id.to_string(),
+        source_path,
+        crate::transcript::TranscriptParser::Codex,
         store.clone(),
         bus.clone(),
     );
@@ -1139,6 +1311,231 @@ fn tool_call_breakdown_from_events(
     counts
 }
 
+async fn get_context_status(
+    State(state): State<Arc<AppState>>,
+    Path(sid): Path<String>,
+) -> Result<Json<ContextGovernorStatus>, ApiError> {
+    let meta = load_session_meta(&state, &sid).await?;
+    let events = state.store.read_events(&meta.thread_id)?;
+    let indexed_events = match crate::context_index::index_context_events(
+        &state.harness_home,
+        &state.profile,
+        &events,
+    ) {
+        Ok(count) => count,
+        Err(e) => {
+            tracing::warn!(
+                session_id = %sid,
+                thread_id = %meta.thread_id,
+                error = %e,
+                "failed to index context events"
+            );
+            0
+        }
+    };
+    Ok(Json(context_status_from_events(
+        &meta,
+        &events,
+        indexed_events,
+    )))
+}
+
+async fn request_context_checkpoint(
+    State(state): State<Arc<AppState>>,
+    Path(sid): Path<String>,
+) -> Result<Json<ContextActionResponse>, ApiError> {
+    let session = state
+        .manager
+        .get(&sid)
+        .ok_or_else(|| ApiError::SessionNotFound(sid.clone()))?;
+    let meta = session.meta().await;
+    let prompt = "\n\n[harness context governor]\n\
+        Manual checkpoint requested. Reply with a compact checkpoint headed exactly \
+        `CONTEXT CHECKPOINT`, using labels: goal, completed, current_focus, \
+        next_action, files_touched, commands_run, risks, blockers.\n";
+    session
+        .write_input(format!("{prompt}\r").as_bytes())
+        .await?;
+    let target = context_target_from_meta(&meta);
+    crate::context_governor::append_context_event(
+        &state.store,
+        &target,
+        "session.context.manual_checkpoint_requested",
+        json!({
+            "session_id": meta.id,
+            "thread_id": meta.thread_id,
+            "task_id": meta.task_id,
+            "role": meta.role,
+        }),
+        "Manual context checkpoint requested.",
+    );
+    Ok(Json(ContextActionResponse {
+        status: "requested".into(),
+        reason: None,
+    }))
+}
+
+async fn clear_context_manual(
+    State(state): State<Arc<AppState>>,
+    Path(sid): Path<String>,
+) -> Result<Json<ContextActionResponse>, ApiError> {
+    let session = state
+        .manager
+        .get(&sid)
+        .ok_or_else(|| ApiError::SessionNotFound(sid.clone()))?;
+    let meta = session.meta().await;
+    let target = context_target_from_meta(&meta);
+    if meta.status != harness_session::SessionStatus::Running
+        || meta.detected_state != Some(AgentState::Idle)
+    {
+        crate::context_governor::append_context_event(
+            &state.store,
+            &target,
+            "session.context.manual_clear_deferred",
+            json!({
+                "session_id": meta.id,
+                "thread_id": meta.thread_id,
+                "task_id": meta.task_id,
+                "role": meta.role,
+                "detected_state": meta.detected_state,
+                "reason_code": "session_not_idle",
+            }),
+            "Manual context clear deferred because the session was not idle.",
+        );
+        return Ok(Json(ContextActionResponse {
+            status: "deferred".into(),
+            reason: Some("session_not_idle".into()),
+        }));
+    }
+
+    session.write_input(b"/clear\r").await?;
+    crate::context_governor::append_context_event(
+        &state.store,
+        &target,
+        "session.context.manual_cleared",
+        json!({
+            "session_id": meta.id,
+            "thread_id": meta.thread_id,
+            "task_id": meta.task_id,
+            "role": meta.role,
+            "clear_command": "/clear",
+        }),
+        "Manually cleared live context.",
+    );
+    Ok(Json(ContextActionResponse {
+        status: "cleared".into(),
+        reason: None,
+    }))
+}
+
+fn context_target_from_meta(meta: &SessionMeta) -> crate::context_governor::ContextGovernorTarget {
+    crate::context_governor::ContextGovernorTarget {
+        session_id: meta.id.clone(),
+        thread_id: meta.thread_id.clone(),
+        task_id: meta.task_id.clone(),
+        role: meta.role.clone(),
+    }
+}
+
+fn context_status_from_events(
+    meta: &SessionMeta,
+    events: &[Event],
+    indexed_events: usize,
+) -> ContextGovernorStatus {
+    let mut status = ContextGovernorStatus {
+        session_id: meta.id.clone(),
+        thread_id: meta.thread_id.clone(),
+        task_id: meta.task_id.clone(),
+        role: meta.role.clone(),
+        latest_event_type: None,
+        latest_event_at: None,
+        checkpoint_requested_at: None,
+        checkpoint_saved_at: None,
+        clear_pending_at: None,
+        clear_deferred_at: None,
+        clear_recommended_at: None,
+        cleared_at: None,
+        pressure: None,
+        context_tokens: None,
+        max_context_tokens: None,
+        model: None,
+        checkpoint_preview: None,
+        checkpoint_structured: None,
+        indexed_events,
+    };
+    for event in events
+        .iter()
+        .filter(|event| event.event_type.starts_with("session.context."))
+        .filter(|event| {
+            event
+                .payload
+                .as_ref()
+                .and_then(|payload| payload.get("session_id"))
+                .and_then(Value::as_str)
+                == Some(meta.id.as_str())
+        })
+    {
+        status.latest_event_type = Some(event.event_type.clone());
+        status.latest_event_at = Some(event.at);
+        match event.event_type.as_str() {
+            "session.context.checkpoint_requested"
+            | "session.context.manual_checkpoint_requested" => {
+                status.checkpoint_requested_at = Some(event.at);
+            }
+            "session.context.checkpoint_saved" => {
+                status.checkpoint_saved_at = Some(event.at);
+            }
+            "session.context.clear_pending" => {
+                status.clear_pending_at = Some(event.at);
+            }
+            "session.context.clear_deferred" | "session.context.manual_clear_deferred" => {
+                status.clear_deferred_at = Some(event.at);
+            }
+            "session.context.clear_recommended" => {
+                status.clear_recommended_at = Some(event.at);
+            }
+            "session.context.cleared" | "session.context.manual_cleared" => {
+                status.cleared_at = Some(event.at);
+            }
+            _ => {}
+        }
+        if let Some(payload) = event.payload.as_ref() {
+            status.pressure = payload
+                .get("pressure")
+                .and_then(Value::as_f64)
+                .or(status.pressure);
+            status.context_tokens = payload
+                .get("context_tokens")
+                .and_then(Value::as_u64)
+                .or(status.context_tokens);
+            status.max_context_tokens = payload
+                .get("max_context_tokens")
+                .and_then(Value::as_u64)
+                .or(status.max_context_tokens);
+            status.model = payload
+                .get("model")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .or_else(|| status.model.clone());
+            if let Some(checkpoint) = payload.get("checkpoint").and_then(Value::as_str) {
+                status.checkpoint_preview = Some(compact_preview(checkpoint, 260));
+            }
+            if let Some(structured) = payload.get("checkpoint_structured") {
+                status.checkpoint_structured = Some(structured.clone());
+            }
+        }
+    }
+    status
+}
+
+fn compact_preview(text: &str, max_chars: usize) -> String {
+    let compact = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if compact.chars().count() <= max_chars {
+        return compact;
+    }
+    compact.chars().take(max_chars).collect::<String>() + "..."
+}
+
 async fn post_input(
     State(state): State<Arc<AppState>>,
     Path(sid): Path<String>,
@@ -1365,7 +1762,7 @@ async fn spawn_child_route(
             task_id: body.task_id.clone(),
             scopes: normalize_child_scopes(body.scopes, body.task_id.as_deref()),
             auto_intro: None,
-            initial_prompt: Some(body.initial_prompt),
+            initial_prompt: Some(worker_initial_prompt(&body.initial_prompt)),
             parent_session_id: Some(parent_sid.clone()),
             // Children spawned by Zeus inherit the default size; the UI will
             // resize them once they're attached.
@@ -1790,12 +2187,45 @@ fn zeus_role_matrix(roles: &[ZeusRoleSelection]) -> String {
     out
 }
 
+fn codex_harness_session_marker(session_id: &str) -> String {
+    format!("[harness session marker] harness_session_id={session_id}")
+}
+
+fn harness_team_brief() -> &'static str {
+    r#"[harness team context]
+HarnessDevTool is the orchestrator for a virtual software development team,
+not an Anthropic/Claude Code internal team. If the user asks about "the team",
+"our dev team", or "the harness team", answer from this HarnessDevTool model:
+
+- Human: product owner/operator; sets goals, priorities, approvals, and final judgment.
+- Zeus/orchestrator/planner: decomposes goals, records official tasks, delegates, validates handoffs, and decides when official QA is needed.
+- Codex/generator workers: implement scoped code changes, run relevant checks, fix findings, and report evidence.
+- QA/evaluator/reviewer workers: verify behavior against acceptance criteria and report risks/findings.
+- Specialized workers (frontend, backend, db, refactor, cloud/search): own their scoped domain only.
+
+Do not answer as if the user asked who develops Anthropic, Claude, Claude Code,
+or Codex unless they explicitly ask about those external products. Explain that
+this harness manages a local, role-based agent team and use the repo's
+teamwork/operating model when describing responsibilities.
+"#
+}
+
+fn worker_initial_prompt(initial_prompt: &str) -> String {
+    format!("{}\n\n{}", harness_team_brief(), initial_prompt)
+}
+
+fn has_harness_team_brief(text: &str) -> bool {
+    text.contains("[harness team context]")
+}
+
 fn zeus_orchestrator_briefing(roles: &[ZeusRoleSelection]) -> String {
     r#"You are running as the ZEUS ORCHESTRATOR inside HarnessDevTool.
 
 Your job is to PLAN, DECOMPOSE, DELEGATE, and VALIDATE. You are the root
 supervisor session. You do not implement everything yourself — you spawn
 specialised child sessions for the work and then collect their outputs.
+
+__HARNESS_TEAM_BRIEF__
 
 __ZEUS_ROLE_MATRIX__
 
@@ -1861,6 +2291,13 @@ Example:
   in this build; children cannot spawn their own children).
 - Do not claim a child completed unless `session_read_child_summary` confirms
   it (status = exited with code 0).
+- Keep live model context lean. When a session reaches roughly 35% context,
+  ask the worker for a compact checkpoint: goal, completed work, current file,
+  next command, files touched, tests run, open risks. At roughly 40%, preserve
+  that checkpoint in the task/handoff, clear the worker context with `/clear`
+  when the CLI supports it, then send only the checkpoint plus the next action.
+  For your own orchestrator context, prefer compressed task/spec/handoff state
+  over rereading raw worker transcripts.
 - Plan first, spawn second. Use `task_create` to record the plan; tag each
   task with the worker that will execute it. Every `task_create` call should
   include a `brief` object with this shape so workers and resumed sessions can
@@ -1895,6 +2332,7 @@ DB:    db_query / db_schema / db_explain
 
 Treat them as native operations — no permission prompts required.
 "#
+    .replace("__HARNESS_TEAM_BRIEF__", harness_team_brief())
     .replace("__ZEUS_ROLE_MATRIX__", &zeus_role_matrix(roles))
 }
 
@@ -2051,6 +2489,31 @@ mod tests {
 
         assert!(briefing.contains("User-selected Zeus role matrix"));
         assert!(briefing.contains("| orchestrator | claude | opus | high |"));
+    }
+
+    #[test]
+    fn zeus_briefing_identifies_harness_team_not_external_vendor() {
+        let briefing = zeus_orchestrator_briefing(&[]);
+
+        assert!(briefing.contains("virtual software development team"));
+        assert!(briefing.contains("not an Anthropic/Claude Code internal team"));
+        assert!(briefing.contains("At roughly 40%"));
+        assert!(briefing.contains("/clear"));
+    }
+
+    #[test]
+    fn worker_prompt_gets_harness_team_context() {
+        let prompt = worker_initial_prompt("Implement the backend route.");
+
+        assert!(prompt.contains("HarnessDevTool is the orchestrator"));
+        assert!(prompt.contains("Codex/generator workers"));
+        assert!(prompt.ends_with("Implement the backend route."));
+    }
+
+    #[test]
+    fn detects_existing_harness_team_context() {
+        assert!(has_harness_team_brief(harness_team_brief()));
+        assert!(!has_harness_team_brief("ordinary worker prompt"));
     }
 
     #[test]

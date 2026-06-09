@@ -11,13 +11,14 @@
 //! is a matter of implementing `TranscriptParser` for that source.
 
 pub mod claude;
+pub mod codex;
 pub mod event;
 pub mod store;
 pub mod watcher;
 
 pub use event::TranscriptEvent;
 pub use store::TranscriptStore;
-pub use watcher::{spawn_transcript_watcher, WatcherHandle};
+pub use watcher::{spawn_transcript_watcher, TranscriptParser, WatcherHandle};
 
 /// Re-export of `store::read_events_since` under a more-specific name so the
 /// route layer doesn't pull in the whole store module.

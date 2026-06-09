@@ -60,6 +60,23 @@ dev-backend-watch:
     export_harness_dev_env; \
     cd backend && exec cargo watch -x 'build -p harness-mcp-server' -x 'run -p harness-server'
 
+# Compila harness-server + harness-mcp-server y copia el binario al sidecar de Tauri.
+# Correr una vez antes de dev-tauri; volver a correr si cambia código Rust del backend.
+build-sidecar:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    TARGET=$(rustc -vV | awk '/host:/{print $2}')
+    echo "Building harness-server for $TARGET..." >&2
+    (cd backend && cargo build --release -p harness-mcp-server -p harness-server)
+    mkdir -p src-tauri/binaries
+    cp backend/target/release/harness-server "src-tauri/binaries/harness-server-${TARGET}"
+    echo "Sidecar ready: src-tauri/binaries/harness-server-${TARGET}" >&2
+
+# Inicia la app Tauri en modo dev — el sidecar lanza el backend automáticamente.
+# Prerequisito: correr `just build-sidecar` al menos una vez (y cada vez que cambie Rust del backend).
+dev-tauri:
+    cargo tauri dev
+
 # Run only frontend (local)
 dev-frontend:
     source ./scripts/dev-env.sh; \

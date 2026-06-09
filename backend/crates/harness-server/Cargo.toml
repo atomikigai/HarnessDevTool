@@ -43,4 +43,6 @@ bytes = "1"
 sha2 = "0.10"
 zstd = { workspace = true }
 tempfile = "3"
+rayon = { workspace = true }
 ts-rs = { workspace = true, optional = true }
+rusqlite = { workspace = true }

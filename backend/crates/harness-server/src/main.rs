@@ -3,6 +3,8 @@ mod approvals;
 mod audit;
 mod auth;
 mod config;
+mod context_governor;
+mod context_index;
 mod error;
 mod routes;
 mod sse;

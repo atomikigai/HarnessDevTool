@@ -19,9 +19,10 @@
 -->
 <script lang="ts">
   import { api, ApiError, type SessionMeta } from '$lib/api/client';
-  import { Bot, Paperclip, RotateCcw, Send, Terminal } from '$lib/icons';
+  import { Bot, MessageSquare, Paperclip, RotateCcw, Send, Terminal } from '$lib/icons';
   import { toast } from 'svelte-sonner';
   import TerminalView from './TerminalView.svelte';
+  import ChatView from './ChatView.svelte';
   import HarnessIcons from './HarnessIcons.svelte';
   import {
     kindChip,
@@ -51,6 +52,7 @@
     onSessionKilled
   }: Props = $props();
 
+  let mainTab = $state<'terminal' | 'chat'>('terminal');
   let input = $state('');
   let sending = $state(false);
   let stopping = $state(false);
@@ -354,15 +356,42 @@
           </span>
         </div>
 
-        <!-- Body. `{#key session.id}` forces remount when the selected session
-             changes, so its terminal + SSE are torn down and rebuilt. -->
-        <div class="min-h-0 flex-1">
-          {#key session.id}
-            <TerminalView threadId={session.thread_id} sessionId={session.id} embedded />
-          {/key}
+        <!-- Tab bar: Terminal | Chat -->
+        <div
+          class="flex shrink-0 border-b"
+          style="border-color: rgba(255, 255, 255, 0.06); background: rgba(0, 0, 0, 0.2);"
+        >
+          {#each [{ id: 'terminal' as const, icon: Terminal, label: 'Terminal' }, { id: 'chat' as const, icon: MessageSquare, label: 'Chat' }] as t (t.id)}
+            <button
+              type="button"
+              onclick={() => (mainTab = t.id)}
+              class="flex items-center gap-1.5 px-4 py-2 text-xs font-medium border-b-2 transition-colors"
+              style={mainTab === t.id
+                ? 'border-color: var(--accent); color: var(--accent);'
+                : 'border-color: transparent; color: #94a3b8;'}
+            >
+              <t.icon size={12} />
+              {t.label}
+            </button>
+          {/each}
         </div>
 
-        <!-- Footer prompt -->
+        <!-- Body. `{#key session.id}` forces remount when the selected session
+             changes, so its terminal + SSE are torn down and rebuilt. -->
+        <div class="min-h-0 flex-1 overflow-hidden">
+          {#if mainTab === 'terminal'}
+            {#key session.id}
+              <TerminalView threadId={session.thread_id} sessionId={session.id} embedded />
+            {/key}
+          {:else}
+            {#key session.id}
+              <ChatView {session} />
+            {/key}
+          {/if}
+        </div>
+
+        <!-- Footer prompt (terminal tab only) -->
+        {#if mainTab === 'terminal'}
         <div
           class="flex shrink-0 items-center gap-2 border-t px-3 py-2"
           style="
@@ -422,6 +451,7 @@
             {/if}
           </div>
         </div>
+        {/if}
       </div>
     </div>
   {/if}

@@ -12,14 +12,20 @@ use tokio::io::{AsyncBufReadExt, AsyncSeekExt, BufReader, SeekFrom};
 use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 
-use super::claude;
 use super::event::TranscriptEvent;
 use super::store::TranscriptStore;
+use super::{claude, codex};
 
 /// Channel name the watcher broadcasts events on. We piggyback on a
 /// `broadcast::Sender<TranscriptEvent>` per session rather than overloading
 /// `SessionEvent`, so the existing PTY catch-up + tail logic stays clean.
 pub type TranscriptBus = broadcast::Sender<TranscriptEvent>;
+
+#[derive(Debug, Clone, Copy)]
+pub enum TranscriptParser {
+    Claude,
+    Codex,
+}
 
 /// Cancellation handle for an in-flight watcher task.
 pub struct WatcherHandle {
@@ -44,11 +50,12 @@ impl Drop for WatcherHandle {
 pub fn spawn_transcript_watcher(
     session_id: String,
     source_path: PathBuf,
+    parser: TranscriptParser,
     store: Arc<TranscriptStore>,
     bus: TranscriptBus,
 ) -> WatcherHandle {
     let join = tokio::spawn(async move {
-        if let Err(e) = watch_loop(&session_id, &source_path, store, bus).await {
+        if let Err(e) = watch_loop(&session_id, &source_path, parser, store, bus).await {
             tracing::warn!(
                 session = %session_id,
                 source = %source_path.display(),
@@ -67,6 +74,7 @@ pub fn spawn_transcript_watcher(
 async fn watch_loop(
     session_id: &str,
     source_path: &Path,
+    parser: TranscriptParser,
     store: Arc<TranscriptStore>,
     bus: TranscriptBus,
 ) -> std::io::Result<()> {
@@ -111,7 +119,10 @@ async fn watch_loop(
                 Ok((new_offset, lines)) => {
                     offset = new_offset;
                     for line in lines {
-                        let parsed = claude::parse_line(&line, session_id);
+                        let parsed = match parser {
+                            TranscriptParser::Claude => claude::parse_line(&line, session_id),
+                            TranscriptParser::Codex => codex::parse_line(&line, session_id),
+                        };
                         for ev in parsed {
                             match store.ingest(ev).await {
                                 Ok(persisted) => {

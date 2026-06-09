@@ -6,6 +6,18 @@ metadata:
   upstream: https://github.com/excalidraw/excalidraw-mcp
   mcp-server: excalidraw
   mcp-url: http://localhost:3001/mcp
+capabilities:
+  kind: skill
+  requires:
+    - mcp:excalidraw
+  trigger:
+    keywords:
+      - diagram
+      - architecture sketch
+      - board
+      - wireframe
+      - flow map
+      - editable diagram
 ---
 
 # Excalidraw Board
@@ -44,4 +56,3 @@ The local MCP service is provided by `docker-compose.mcp.yml`.
 - Avoid tiny text and overlapping arrows.
 - Prefer stable element names/ids when updating a board.
 - For large diagrams, group sections by domain and keep a readable overview.
-

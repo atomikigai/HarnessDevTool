@@ -1005,6 +1005,7 @@ pub(crate) fn loaded_mcp_capabilities(load_crawl4ai: bool) -> LoadedCapabilities
     };
     if load_crawl4ai {
         loaded.mcp_servers.push("crawl4ai".to_string());
+        loaded.skills.push("crawl4ai-context".to_string());
     }
     loaded
 }
@@ -2196,6 +2197,8 @@ mod tests {
             docs.mcp_servers,
             vec!["harness".to_string(), "crawl4ai".to_string()]
         );
+        assert_eq!(docs.skills, vec!["crawl4ai-context".to_string()]);
+        assert!(docs.tool_groups.is_empty());
     }
 
     #[test]

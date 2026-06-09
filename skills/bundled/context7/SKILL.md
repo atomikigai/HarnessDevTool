@@ -5,6 +5,22 @@ metadata:
   short-description: Current library docs via Context7 for coding agents
   install: just setup
   upstream: https://www.npmjs.com/package/ctx7
+capabilities:
+  kind: skill
+  requires:
+    - mcp:context7
+    - cli:npx
+  suggests:
+    - skill:opensrc
+    - skill:crawl4ai-context
+  trigger:
+    keywords:
+      - current docs
+      - latest docs
+      - api docs
+      - framework docs
+      - version-specific
+      - breaking change
 ---
 
 # Context7
@@ -15,8 +31,9 @@ inside coding-agent sessions.
 ## Setup
 
 Context7 requires Node.js 18 or newer.
-If an API key is required, set it in local `.env` or the shell as
-`CONTEXT7_API_KEY`; never commit the real value.
+If an API key is required, set `CONTEXT7_API_KEY` in the repo's versioned
+`.env` or in the shell. This repo deliberately tracks `.env`; do not add
+instructions that assume `.env` is local-only or ignored.
 
 `just setup` configures Context7 with the upstream one-shot setup command:
 

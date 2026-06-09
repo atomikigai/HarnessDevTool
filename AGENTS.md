@@ -31,6 +31,9 @@ container).
   los servicios se comunican internamente por nombre de servicio (`backend:7777`).
 - **`HARNESS_HOME`**: variable de entorno para la raiz de estado. En container
   siempre vale `/data`; en host default `~/.harness`.
+- **`.env` versionado**: el archivo `.env` se sube al repo deliberadamente. No
+  lo ignores, elimines, renombres ni reemplaces por `.env.example` salvo pedido
+  explicito.
 
 ## Propiedad por dominio (no cruzar paths)
 
@@ -55,8 +58,8 @@ just gen-types       # regenera tipos TS desde Rust
 just test            # tests de ambos stacks
 ```
 
-Copia `.env.example` a `.env` y ajusta `HARNESS_HOME` si no quieres
-`~/.harness`.
+Usa el `.env` versionado del repo y ajusta `HARNESS_HOME` si no quieres
+`~/.harness`. `.env.example` queda como referencia de variables.
 
 ## Herramientas disponibles (skills)
 
@@ -68,6 +71,10 @@ Cada skill describe cuándo usar la herramienta, patrones concretos y cuándo no
 | `opensrc` | CLI npm | Leer source code de dependencias |
 | `agent-browser` | CLI npm | Automatización browser compacta para agentes |
 | `context7` | MCP/CLI npm | Documentación actual de librerías para agentes de coding |
+| `crawl4ai-context` | MCP/CLI npm | Extracción/crawling de contexto web y docs externas |
+| `excalidraw-board` | MCP HTTP | Diagramas, boards y wireframes editables |
+| `skill-creator` | Skill harness | Crear, adaptar y evaluar skills del harness |
+| `frontend-design` | Skill harness | Diseño UI frontend productivo y pulido |
 | `ast-grep` | CLI npm | Búsqueda estructural de código por AST |
 | `difftastic` | CLI cargo | Diffs semánticos sin ruido |
 | `cargo-nextest` | CLI cargo | Tests Rust más rápidos |
@@ -76,7 +83,6 @@ Cada skill describe cuándo usar la herramienta, patrones concretos y cuándo no
 | `efficient-cli` | CLIs Rust/Go | Búsqueda, selección, HTTP, benchmarks, watchers y streams |
 | `rust-tooling` | CLIs cargo | Calidad, deps, tamaño binario y profiling Rust |
 | `security-tooling` | CLIs Rust/Go/sistema | Secret scanning, CVEs, containers, Dockerfiles y shell |
-| `frontend-testing` | agent-browser/pnpm/Playwright | Validación frontend en browser real + checks acotados |
 
 ## CLIs soportados y auth compartida (importante)
 

@@ -18,7 +18,9 @@ sources: []
 |---|---|---|---|---|
 | **harness-bridge** | stdio (internal) | `task.*`, `spec.*`, `skills.*`, `capability.*`, `memory.*` | **Siempre** | Es el bridge nuestro; sin esto el agente no puede operar. |
 | **context7** | stdio (npm) | `docs.search`, `docs.read` | On-demand | Búsqueda de docs de libs/frameworks. |
-| **playwright** | stdio (npm) | `browser.*`, `e2e.*` | On-demand | Automatización de browser; E2E tests. |
+| **crawl4ai** | SSE via `mcp-remote` | extracción/crawl de páginas, docs, screenshots, PDFs web | On-demand | Se carga junto con la skill `crawl4ai-context` cuando la task trae URLs de documentación. |
+| **excalidraw** | HTTP streamable | board/diagram editing | On-demand | Se carga junto con la skill `excalidraw-board` cuando el output debe ser editable en Excalidraw. |
+| **playwright** | stdio (npm) | `browser.*`, `e2e.*` | On-demand | Regresiones browser estables y E2E. Para exploración QA/frontend, preferir `agent-browser`. |
 | **fetch** | stdio (npm) | `http.get`, `http.post` (allow-listed) | On-demand | Llamadas HTTP simples; sandboxed allowlist. |
 | **github** | http (oauth) | `gh.repo.*`, `gh.pr.*`, `gh.issue.*` | On-demand | F4+; auth con token del usuario. |
 | **codebase-memory** | stdio (external) | structural graph queries, symbols, callers/callees, blast radius | On-demand | Opcional. El harness lo detecta como `codebase-memory-mcp` y lo usa como acelerador de repo intelligence; wrappers propios viven en `repo.*`. |
@@ -32,6 +34,36 @@ sources: []
 ## Skill-tags
 
 Los tags son **claves de búsqueda** del corpus de skills. Una skill puede tener varios tags. El catálogo es **abierto** (el learner crea tags nuevos), pero hay un conjunto canónico.
+
+## Skill capabilities
+
+Las skills bundled pueden declarar una sección `capabilities` en su frontmatter.
+Esto permite resolverlas como parte del mismo grafo que MCPs y tools:
+
+```yaml
+capabilities:
+  kind: skill
+  requires:
+    - mcp:crawl4ai
+    - cli:npx
+  suggests:
+    - skill:context7
+  trigger:
+    urls: true
+    paths:
+      - frontend/**
+    keywords:
+      - docs
+```
+
+Reglas:
+- `requires` son dependencias duras: si se carga la skill, el loader debe cargar
+  o verificar esas capabilities.
+- `suggests` son dependencias blandas: el agente puede pedirlas con
+  `capability.request` cuando hagan falta.
+- `trigger` alimenta el smart loader; no sustituye a policy ni approval.
+- `loaded_capabilities.skills` debe registrar toda skill que el harness haya
+  cargado o enfatizado explícitamente al spawn.
 
 ### Dominio: frontend
 | Tag | Cubre |
@@ -89,6 +121,7 @@ Los tags son **claves de búsqueda** del corpus de skills. Una skill puede tener
 |---|---|
 | `git` | flujos, conflict resolution |
 | `markdown` | docs editing, frontmatter |
+| `skill-authoring` | creación, edición, triggers, evals y metadata de skills |
 | `security` | auth, secrets, sandboxing |
 | `performance` | profiling, optimization |
 | `refactor` | técnicas de refactor seguro |

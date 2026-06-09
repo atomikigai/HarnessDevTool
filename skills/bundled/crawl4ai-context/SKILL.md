@@ -6,6 +6,22 @@ metadata:
   upstream: https://github.com/unclecode/crawl4ai
   mcp-server: crawl4ai
   mcp-url: http://localhost:11235/mcp/sse
+capabilities:
+  kind: skill
+  requires:
+    - mcp:crawl4ai
+    - cli:npx
+  suggests:
+    - skill:context7
+  trigger:
+    urls: true
+    keywords:
+      - docs
+      - documentation
+      - documentacion
+      - reference
+      - api reference
+      - url
 ---
 
 # Crawl4AI Context
@@ -58,4 +74,3 @@ Implementation Notes:
 Open Questions:
 - ...
 ```
-

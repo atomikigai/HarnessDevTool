@@ -447,6 +447,21 @@ impl AgentSession {
         runtime.prompt_injector = Some(handle);
     }
 
+    #[cfg(test)]
+    pub(crate) fn interruptible_abort_handles_for_test(&self) -> InterruptibleAbortHandles {
+        let runtime = self.runtime.lock().expect("session runtime lock poisoned");
+        InterruptibleAbortHandles {
+            state_detector: runtime
+                .state_detector
+                .as_ref()
+                .map(|handle| handle.abort_handle()),
+            prompt_injector: runtime
+                .prompt_injector
+                .as_ref()
+                .map(|handle| handle.abort_handle()),
+        }
+    }
+
     fn abort_interruptible_tasks(&self) {
         let mut runtime = self.runtime.lock().expect("session runtime lock poisoned");
         runtime.abort_interruptible();
@@ -536,6 +551,12 @@ impl AgentSession {
         let _ = killer.kill();
         Ok(())
     }
+}
+
+#[cfg(test)]
+pub(crate) struct InterruptibleAbortHandles {
+    pub state_detector: Option<tokio::task::AbortHandle>,
+    pub prompt_injector: Option<tokio::task::AbortHandle>,
 }
 
 #[cfg(unix)]

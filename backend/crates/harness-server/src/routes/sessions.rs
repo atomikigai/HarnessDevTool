@@ -9,7 +9,7 @@ use axum::http::StatusCode;
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use chrono::Utc;
-use harness_core::{ClaudeTranscriptReporter, CostReporter, RepoContext, SessionCost};
+use harness_core::{ClaudeTranscriptReporter, CostReporter, Event, Item, RepoContext, SessionCost};
 use harness_session::{
     AgentKind, AgentState, LoadedCapabilities, MailboxMessage, MailboxStore, McpServerConfig,
     SessionError, SessionMeta, SessionRepoContext, SpawnOpts,
@@ -224,6 +224,8 @@ async fn create_session(
             zeus_roles: req.zeus_roles,
             model: None,
             effort: None,
+            routing_source: None,
+            matrix_matched: false,
         },
     )
     .await?;
@@ -262,6 +264,23 @@ pub struct SpawnArgs {
     pub zeus_roles: Vec<ZeusRoleSelection>,
     pub model: Option<String>,
     pub effort: Option<String>,
+    pub routing_source: Option<&'static str>,
+    pub matrix_matched: bool,
+}
+
+#[derive(Debug, Clone)]
+struct ZeusChildRouting {
+    child_kind: AgentKind,
+    source: &'static str,
+    matrix_matched: bool,
+    model: Option<String>,
+    effort: Option<String>,
+}
+
+#[derive(Debug)]
+struct ZeusChildRoutingError {
+    reason_code: &'static str,
+    message: String,
 }
 
 /// Resolve `cwd` from a user-supplied string, falling back to `$HOME`. Used
@@ -303,18 +322,88 @@ pub async fn spawn_session_internal(
         .as_ref()
         .map(|role| role.provider)
         .unwrap_or_else(|| args.kind.underlying_cli());
+    let session_id = uuid::Uuid::new_v4().to_string();
     if matches!(args.kind, AgentKind::Zeus)
         && !matches!(underlying, AgentKind::Claude | AgentKind::Codex)
     {
+        append_session_spawn_event(
+            state,
+            &args.thread_id,
+            "session.spawn.failed",
+            json!({
+                "session_id": session_id,
+                "role": args.role,
+                "requested_kind": args.kind,
+                "resolved_provider": underlying,
+                "model": zeus_orchestrator.as_ref().and_then(|role| clean_optional(role.model.as_deref())),
+                "effort": zeus_orchestrator.as_ref().and_then(|role| clean_optional(role.effort.as_deref())),
+                "reason_code": "invalid_provider",
+            }),
+        );
         return Err(ApiError::BadRequest(
             "Zeus orchestrator provider must be claude or codex".into(),
         ));
     }
-    let binary = state
-        .binaries
-        .get(&underlying)
-        .cloned()
-        .ok_or(ApiError::from(SessionError::BinaryNotFound(underlying)))?;
+    let source = args
+        .routing_source
+        .unwrap_or(if zeus_orchestrator.is_some() {
+            "zeus_matrix"
+        } else if args.parent_session_id.is_some() {
+            "request_kind"
+        } else if matches!(args.kind, AgentKind::Zeus) {
+            "default_underlying"
+        } else {
+            "request_kind"
+        });
+    append_session_spawn_event(
+        state,
+        &args.thread_id,
+        "session.spawn.routing.resolved",
+        json!({
+            "session_id": session_id,
+            "parent_session_id": args.parent_session_id,
+            "role": args.role,
+            "requested_kind": args.kind,
+            "resolved_provider": underlying,
+            "underlying_cli": underlying,
+            "model": zeus_orchestrator.as_ref().and_then(|role| clean_optional(role.model.as_deref())).or_else(|| clean_optional(args.model.as_deref())),
+            "effort": zeus_orchestrator.as_ref().and_then(|role| clean_optional(role.effort.as_deref())).or_else(|| clean_optional(args.effort.as_deref())),
+            "source": source,
+            "matrix_matched": args.matrix_matched || zeus_orchestrator.is_some(),
+        }),
+    );
+    let binary = match state.binaries.get(&underlying).cloned() {
+        Some(binary) => binary,
+        None => {
+            append_session_spawn_event(
+                state,
+                &args.thread_id,
+                "session.spawn.failed",
+                json!({
+                    "session_id": session_id,
+                    "parent_session_id": args.parent_session_id,
+                    "role": args.role,
+                    "requested_kind": args.kind,
+                    "resolved_provider": underlying,
+                    "underlying_cli": underlying,
+                    "model": zeus_orchestrator.as_ref().and_then(|role| clean_optional(role.model.as_deref())).or_else(|| clean_optional(args.model.as_deref())),
+                    "effort": zeus_orchestrator.as_ref().and_then(|role| clean_optional(role.effort.as_deref())).or_else(|| clean_optional(args.effort.as_deref())),
+                    "reason_code": "binary_not_found",
+                    "install_hint": underlying.install_hint(),
+                }),
+            );
+            let msg = if args.parent_session_id.is_some() || matches!(args.kind, AgentKind::Zeus) {
+                format!(
+                    "selected provider `{}` is not available on this harness host. {}",
+                    underlying.as_str(),
+                    underlying.install_hint()
+                )
+            } else {
+                return Err(ApiError::from(SessionError::BinaryNotFound(underlying)));
+            };
+            return Err(ApiError::BadRequest(msg));
+        }
+    };
 
     // Codex prompts the user the first time it runs in a new directory ("Do
     // you trust the contents of this directory?"). For autonomous workers
@@ -345,7 +434,6 @@ pub async fn spawn_session_internal(
     // Pre-mint the session id so we can embed it in the MCP config (so the
     // MCP child knows its own sid via `--session-id`, which lets the
     // `session.spawn_child` tool attribute spawns to the right parent).
-    let session_id = uuid::Uuid::new_v4().to_string();
     let repo_context = detect_and_touch_repo(state, &args.cwd, &args.thread_id, &session_id);
 
     let mut load_crawl4ai_heuristic = args
@@ -495,6 +583,9 @@ pub async fn spawn_session_internal(
     // Keep a copy of the cwd before moving `args.cwd` into the manager — we
     // need it after spawn to compute transcript paths for CLIs that have them.
     let cwd_for_transcript = args.cwd.clone();
+    let thread_id_for_events = args.thread_id.clone();
+    let routed_model = opts.model.clone();
+    let routed_effort = opts.effort.clone();
     let session =
         match state
             .manager
@@ -511,10 +602,42 @@ pub async fn spawn_session_internal(
                         );
                     }
                 }
+                append_session_spawn_event(
+                    state,
+                    &thread_id_for_events,
+                    "session.spawn.failed",
+                    json!({
+                        "session_id": session_id,
+                        "parent_session_id": args.parent_session_id,
+                        "role": args.role,
+                        "requested_kind": args.kind,
+                        "resolved_provider": underlying,
+                        "underlying_cli": underlying,
+                        "model": routed_model,
+                        "effort": routed_effort,
+                        "reason_code": "spawn_error",
+                    }),
+                );
                 return Err(ApiError::from(e));
             }
         };
     let meta = session.meta().await;
+    append_session_spawn_event(
+        state,
+        &meta.thread_id,
+        "session.spawn.started",
+        json!({
+            "session_id": meta.id,
+            "parent_session_id": meta.parent_session_id,
+            "root_session_id": meta.root_session_id,
+            "role": meta.role,
+            "kind": meta.kind,
+            "underlying_cli": underlying,
+            "model": routed_model,
+            "effort": routed_effort,
+            "pid": meta.pid,
+        }),
+    );
     if let Some(path) = config_path {
         state.mcp_configs.insert(meta.id.clone(), path);
     }
@@ -811,7 +934,10 @@ pub(crate) fn harness_mcp_intro() -> &'static str {
      budget caps. In unfamiliar repositories, call `repo_analyze` first, then \
      use `repo_find`, `repo_scan`, `repo_read_file`, `repo_git_status`, \
      `repo_git_log`, and `repo_git_diff` instead of guessing the project \
-     structure or running ad-hoc shell search. Available DB tools include `db_query`, `db_schema`, \
+     structure or running ad-hoc shell search. Use `repo_git_create_branch`, \
+     `repo_git_commit`, `repo_git_push`, and `repo_github_pr_create` for git \
+     write workflows; push and PR creation are policy-approved operations. \
+     Available DB tools include `db_query`, `db_schema`, \
      `db_explain`, `db_performance_audit`, `db_backup`, `db_memory_read`, \
      and `db_memory_write` when a DB connection exists."
 }
@@ -1182,16 +1308,38 @@ async fn spawn_child_route(
         None => parent.cwd().to_path_buf(),
     };
     let zeus_roles = load_zeus_roles(&state, &parent_sid)?;
-    let zeus_role = selected_zeus_role(&zeus_roles, &body.role);
-    let child_kind = zeus_role
-        .map(|role| role.provider)
-        .or(body.kind)
-        .ok_or_else(|| {
-            ApiError::BadRequest(
-                "child kind is required when no Zeus role matrix entry matches".into(),
-            )
-        })?;
-    if zeus_role.is_some() && !matches!(child_kind, AgentKind::Claude | AgentKind::Codex) {
+    let routing = resolve_zeus_child_routing(&body, &zeus_roles).map_err(|err| {
+        append_session_spawn_event(
+            &state,
+            &thread_id,
+            "session.spawn.failed",
+            json!({
+                "parent_session_id": parent_sid,
+                "root_session_id": parent.root_session_id_static(),
+                "role": body.role,
+                "requested_kind": body.kind,
+                "reason_code": err.reason_code,
+            }),
+        );
+        ApiError::BadRequest(err.message)
+    })?;
+    let child_kind = routing.child_kind;
+    if routing.matrix_matched && !matches!(child_kind, AgentKind::Claude | AgentKind::Codex) {
+        append_session_spawn_event(
+            &state,
+            &thread_id,
+            "session.spawn.failed",
+            json!({
+                "parent_session_id": parent_sid,
+                "root_session_id": parent.root_session_id_static(),
+                "role": body.role,
+                "requested_kind": body.kind,
+                "resolved_provider": child_kind,
+                "model": routing.model,
+                "effort": routing.effort,
+                "reason_code": "invalid_provider",
+            }),
+        );
         return Err(ApiError::BadRequest(
             "Zeus child provider must be claude or codex".into(),
         ));
@@ -1225,8 +1373,10 @@ async fn spawn_child_route(
             include_project_context: true,
             capability_profile: CapabilityProfile::Auto,
             zeus_roles: Vec::new(),
-            model: zeus_role.and_then(|role| clean_optional(role.model.as_deref())),
-            effort: zeus_role.and_then(|role| clean_optional(role.effort.as_deref())),
+            model: routing.model,
+            effort: routing.effort,
+            routing_source: Some(routing.source),
+            matrix_matched: routing.matrix_matched,
         },
     )
     .await?;
@@ -1551,6 +1701,56 @@ fn clean_optional(value: Option<&str>) -> Option<String> {
         .map(str::to_string)
 }
 
+fn resolve_zeus_child_routing(
+    body: &SpawnChildBody,
+    roles: &[ZeusRoleSelection],
+) -> Result<ZeusChildRouting, ZeusChildRoutingError> {
+    if let Some(role) = selected_zeus_role(roles, &body.role) {
+        return Ok(ZeusChildRouting {
+            child_kind: role.provider,
+            source: "zeus_matrix",
+            matrix_matched: true,
+            model: clean_optional(role.model.as_deref()),
+            effort: clean_optional(role.effort.as_deref()),
+        });
+    }
+    let Some(kind) = body.kind else {
+        return Err(ZeusChildRoutingError {
+            reason_code: "unknown_role",
+            message: "child kind is required when no Zeus role matrix entry matches".into(),
+        });
+    };
+    Ok(ZeusChildRouting {
+        child_kind: kind,
+        source: "request_kind",
+        matrix_matched: false,
+        model: None,
+        effort: None,
+    })
+}
+
+fn append_session_spawn_event(state: &AppState, thread_id: &str, event_type: &str, payload: Value) {
+    let event = Event {
+        seq: 0,
+        at: Utc::now().timestamp_millis(),
+        event_type: event_type.to_string(),
+        items: vec![Item::Text {
+            text: serde_json::to_string(&payload).unwrap_or_else(|_| "{}".to_string()),
+        }],
+        thread_id: Some(thread_id.to_string()),
+        actor: Some("harness-server".to_string()),
+        payload: Some(payload),
+    };
+    if let Err(e) = state.store.append_event(thread_id, &event) {
+        tracing::warn!(
+            thread_id = %thread_id,
+            event_type = %event_type,
+            error = %e,
+            "failed to append session spawn event"
+        );
+    }
+}
+
 fn selected_zeus_role<'a>(
     roles: &'a [ZeusRoleSelection],
     role_name: &str,
@@ -1866,6 +2066,69 @@ mod tests {
 
         assert_eq!(selected.provider, AgentKind::Codex);
         assert_eq!(selected.model.as_deref(), Some("gpt-5.5"));
+    }
+
+    #[test]
+    fn zeus_child_routing_uses_matrix_without_kind() {
+        let body = SpawnChildBody {
+            kind: None,
+            role: "generator".into(),
+            initial_prompt: "build".into(),
+            task_id: None,
+            scopes: Vec::new(),
+            cwd: None,
+        };
+        let roles = vec![ZeusRoleSelection {
+            role: "Generator".into(),
+            provider: AgentKind::Codex,
+            model: Some("gpt-5.5".into()),
+            effort: Some("high".into()),
+        }];
+
+        let routing = resolve_zeus_child_routing(&body, &roles).expect("routing");
+
+        assert_eq!(routing.child_kind, AgentKind::Codex);
+        assert_eq!(routing.source, "zeus_matrix");
+        assert!(routing.matrix_matched);
+        assert_eq!(routing.model.as_deref(), Some("gpt-5.5"));
+        assert_eq!(routing.effort.as_deref(), Some("high"));
+    }
+
+    #[test]
+    fn zeus_child_routing_errors_without_matrix_or_kind() {
+        let body = SpawnChildBody {
+            kind: None,
+            role: "reviewer".into(),
+            initial_prompt: "review".into(),
+            task_id: None,
+            scopes: Vec::new(),
+            cwd: None,
+        };
+
+        let err = resolve_zeus_child_routing(&body, &[]).expect_err("routing error");
+
+        assert_eq!(err.reason_code, "unknown_role");
+        assert!(err.message.contains("child kind is required"));
+    }
+
+    #[test]
+    fn zeus_child_routing_allows_explicit_kind_without_matrix() {
+        let body = SpawnChildBody {
+            kind: Some(AgentKind::Claude),
+            role: "reviewer".into(),
+            initial_prompt: "review".into(),
+            task_id: None,
+            scopes: Vec::new(),
+            cwd: None,
+        };
+
+        let routing = resolve_zeus_child_routing(&body, &[]).expect("routing");
+
+        assert_eq!(routing.child_kind, AgentKind::Claude);
+        assert_eq!(routing.source, "request_kind");
+        assert!(!routing.matrix_matched);
+        assert!(routing.model.is_none());
+        assert!(routing.effort.is_none());
     }
 
     #[test]

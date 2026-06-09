@@ -204,6 +204,10 @@ pub fn is_sensitive_tool(tool: &str) -> bool {
             | "spec_write"
             | "spec_set_section"
             | "repo_write_file"
+            | "repo_git_create_branch"
+            | "repo_git_commit"
+            | "repo_git_push"
+            | "repo_github_pr_create"
             | "knowledge_pdf_ingest"
             | "docs_build"
             | "db_query"
@@ -272,6 +276,10 @@ mod tests {
             "db_query",
             "db_backup",
             "db_memory_write",
+            "repo_git_create_branch",
+            "repo_git_commit",
+            "repo_git_push",
+            "repo_github_pr_create",
             "session_spawn_child",
             "session_send_input",
             "session_cancel_child",

@@ -104,6 +104,8 @@ async fn start_db_agent(
             zeus_roles: Vec::new(),
             model: None,
             effort: None,
+            routing_source: None,
+            matrix_matched: false,
         },
     )
     .await?;

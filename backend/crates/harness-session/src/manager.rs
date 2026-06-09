@@ -1126,6 +1126,53 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn kill_aborts_state_detector_and_prompt_injector() {
+        let root = temp_test_dir("kill-aborts-runtime");
+        let sessions_root = root.join("sessions");
+        let cwd = root.join("workspace");
+        std::fs::create_dir_all(&cwd).expect("create cwd");
+        let manager = Manager::new(&sessions_root).expect("manager");
+
+        let session = manager
+            .spawn_with_opts(
+                AgentKind::Cursor,
+                PathBuf::from("/bin/sh"),
+                "thread-1".to_string(),
+                cwd,
+                SpawnOpts {
+                    session_id_override: Some("interruptible".to_string()),
+                    role_prompt: Some("stay alive until killed".to_string()),
+                    ..SpawnOpts::default()
+                },
+            )
+            .expect("spawn session");
+
+        let handles = session.interruptible_abort_handles_for_test();
+        let state_detector = handles
+            .state_detector
+            .expect("state detector should be registered");
+        let prompt_injector = handles
+            .prompt_injector
+            .expect("prompt injector should be registered");
+
+        session.kill().await.expect("kill session");
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if state_detector.is_finished() && prompt_injector.is_finished() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("interruptible tasks should abort after kill");
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     #[tokio::test]
     async fn load_existing_rehydrates_exited_session_from_disk() {
         let root = temp_test_dir("rehydrate-exited");

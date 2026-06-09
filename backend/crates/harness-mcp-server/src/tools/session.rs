@@ -284,3 +284,97 @@ pub fn mailbox_ack(
         .into_json::<Value>()
         .map_err(|e| e.to_string())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::mpsc;
+
+    #[test]
+    fn spawn_child_without_kind_posts_protocol_header_and_null_kind() {
+        let (server_url, rx) = spawn_http_capture_server();
+
+        let result = spawn_child(
+            Some("parent-1"),
+            Some(&server_url),
+            None,
+            &json!({
+                "role": "generator",
+                "initial_prompt": "build the backend",
+                "working_dir": "/tmp/work",
+                "scopes": ["task:T-0001"]
+            }),
+        )
+        .expect("spawn child response");
+
+        assert_eq!(result["session_id"], "child-1");
+        let captured = rx.recv().expect("captured request");
+        assert!(captured.starts_with("POST /api/sessions/parent-1/children HTTP/1.1"));
+        assert!(captured
+            .to_ascii_lowercase()
+            .contains("x-protocol-version: 1.0"));
+        let body = captured.split("\r\n\r\n").nth(1).expect("body");
+        let body: Value = serde_json::from_str(body).expect("json body");
+        assert_eq!(body["kind"], Value::Null);
+        assert_eq!(body["role"], "generator");
+        assert_eq!(body["initial_prompt"], "build the backend");
+        assert_eq!(body["cwd"], "/tmp/work");
+        assert_eq!(body["scopes"], json!(["task:T-0001"]));
+    }
+
+    fn spawn_http_capture_server() -> (String, mpsc::Receiver<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
+        let addr = listener.local_addr().expect("local addr");
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept request");
+            let mut buf = Vec::new();
+            let mut tmp = [0u8; 1024];
+            loop {
+                let n = stream.read(&mut tmp).expect("read request");
+                if n == 0 {
+                    break;
+                }
+                buf.extend_from_slice(&tmp[..n]);
+                if let Some(header_end) = find_header_end(&buf) {
+                    let headers = String::from_utf8_lossy(&buf[..header_end]).to_lowercase();
+                    let content_len = headers
+                        .lines()
+                        .find_map(|line| {
+                            line.strip_prefix("content-length:")
+                                .and_then(|value| value.trim().parse::<usize>().ok())
+                        })
+                        .unwrap_or(0);
+                    let total = header_end + 4 + content_len;
+                    while buf.len() < total {
+                        let n = stream.read(&mut tmp).expect("read body");
+                        if n == 0 {
+                            break;
+                        }
+                        buf.extend_from_slice(&tmp[..n]);
+                    }
+                    break;
+                }
+            }
+            tx.send(String::from_utf8_lossy(&buf).to_string())
+                .expect("send captured request");
+            let response = concat!(
+                "HTTP/1.1 201 Created\r\n",
+                "Content-Type: application/json\r\n",
+                "Content-Length: 24\r\n",
+                "\r\n",
+                "{\"session_id\":\"child-1\"}"
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("write response");
+        });
+        (format!("http://{addr}"), rx)
+    }
+
+    fn find_header_end(buf: &[u8]) -> Option<usize> {
+        buf.windows(4).position(|window| window == b"\r\n\r\n")
+    }
+}

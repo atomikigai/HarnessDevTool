@@ -163,6 +163,18 @@ fn event_summary(event: &Event, entity: Option<&TimelineEntity>) -> String {
         "thread.autonomy.changed" => "Autonomy profile changed".to_string(),
         "handoff.created" => format!("Created handoff for {subject}"),
         "capability.decided" => "Capability decision recorded".to_string(),
+        "session.spawn.routing.resolved" => {
+            let role = payload_str(&event.payload, "role").unwrap_or("session");
+            let provider = payload_str(&event.payload, "resolved_provider")
+                .or_else(|| payload_str(&event.payload, "underlying_cli"))
+                .unwrap_or("unknown");
+            format!("Resolved {role} routing to {provider}")
+        }
+        "session.spawn.failed" => {
+            let reason = payload_str(&event.payload, "reason_code").unwrap_or("unknown");
+            format!("Session spawn failed: {reason}")
+        }
+        "session.spawn.started" => format!("Started {subject}"),
         other => format!("Recorded {other}"),
     }
 }
@@ -221,5 +233,30 @@ mod tests {
         });
         assert_eq!(item.summary, "Recorded legacy.event");
         assert!(item.entity.is_none());
+    }
+
+    #[test]
+    fn timeline_item_summarizes_session_spawn_routing() {
+        let item = TimelineItem::from_event(Event {
+            seq: 0,
+            at: 123,
+            event_type: "session.spawn.routing.resolved".into(),
+            items: vec![],
+            thread_id: Some("thr-1".into()),
+            actor: Some("harness-server".into()),
+            payload: Some(serde_json::json!({
+                "session_id": "sid-1",
+                "role": "generator",
+                "resolved_provider": "codex",
+                "model": "gpt-5.5",
+                "effort": "high"
+            })),
+        });
+
+        assert_eq!(item.summary, "Resolved generator routing to codex");
+        assert_eq!(
+            item.entity.unwrap(),
+            TimelineEntity::new("session", "sid-1")
+        );
     }
 }

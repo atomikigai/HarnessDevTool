@@ -224,6 +224,15 @@ impl Dispatcher {
             "repo_git_status" => repo::git_status(&self.cwd, &args),
             "repo_git_log" => repo::git_log(&self.cwd, &args),
             "repo_git_diff" => repo::git_diff(&self.cwd, &args),
+            "repo_git_create_branch" => repo::git_branch_create(&self.cwd, &args),
+            "repo_git_commit" => match self.repo_write_scope() {
+                Ok((write_paths, forbidden_paths)) => {
+                    repo::git_commit(&self.cwd, &args, &write_paths, &forbidden_paths)
+                }
+                Err(e) => Err(e.replace("repo_write_file", "repo_git_commit")),
+            },
+            "repo_git_push" => repo::git_push(&self.cwd, &args),
+            "repo_github_pr_create" => repo::git_pr_create(&self.cwd, &args),
             "repo_codebase_memory_status" => repo::codebase_memory_status(&self.cwd, &args),
             "docs_build" => docs_tools::build(&self.cwd, &args),
             "db_query" => db_tools::query(&self.db, &args),

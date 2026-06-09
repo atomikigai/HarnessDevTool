@@ -951,6 +951,67 @@ pub fn list_descriptors() -> Vec<ToolDescriptor> {
             }),
         },
         ToolDescriptor {
+            name: "repo_git_create_branch".into(),
+            description: "Create a git branch in the workspace and optionally check it out. Sensitive: requires policy approval."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["branch"],
+                "properties": {
+                    "branch": { "type": "string" },
+                    "checkout": { "type": "boolean", "description": "Defaults to true." },
+                    "start_point": { "type": "string", "description": "Optional git ref to branch from." }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "repo_git_commit".into(),
+            description: "Stage task-scoped paths and create a git commit. Requires a task-scoped MCP session; only paths allowed by the task can be staged."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["message", "paths"],
+                "properties": {
+                    "message": { "type": "string" },
+                    "paths": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "minItems": 1
+                    },
+                    "allow_empty": { "type": "boolean" }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "repo_git_push".into(),
+            description: "Push the current or selected branch to a remote. Sensitive: requires policy approval."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "remote": { "type": "string", "description": "Defaults to origin." },
+                    "branch": { "type": "string", "description": "Defaults to the current branch." },
+                    "set_upstream": { "type": "boolean", "description": "Defaults to true." }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "repo_github_pr_create".into(),
+            description: "Create a GitHub pull request using the local `gh` CLI. Sensitive: requires policy approval and an authenticated gh installation."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["title"],
+                "properties": {
+                    "title": { "type": "string" },
+                    "body": { "type": "string" },
+                    "base": { "type": "string" },
+                    "head": { "type": "string" },
+                    "draft": { "type": "boolean" }
+                }
+            }),
+        },
+        ToolDescriptor {
             name: "repo_codebase_memory_status".into(),
             description: "Report whether codebase-memory-mcp is installed and whether a local index marker exists for this workspace. The harness treats it as an optional code-intelligence accelerator."
                 .into(),

@@ -4,7 +4,7 @@
 //! agents do not have to rediscover structure by reading files blindly.
 
 use std::collections::BTreeMap;
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
@@ -19,6 +19,7 @@ const DEFAULT_MAX_BYTES: usize = 64 * 1024;
 const DEFAULT_FIND_LIMIT: usize = 80;
 const DEFAULT_FIND_MAX_BYTES: usize = 256 * 1024;
 const MAX_GIT_BYTES: usize = 128 * 1024;
+const MAX_GIT_MUTATION_BYTES: usize = 64 * 1024;
 
 pub fn analyze(root: &Path, args: &Value) -> Result<Value, String> {
     let dir = resolve_under_root(root, opt_str(args, "path").unwrap_or("."))?;
@@ -370,6 +371,150 @@ pub fn git_diff(root: &Path, args: &Value) -> Result<Value, String> {
     Ok(json!({ "diff": run_git(&root, &git_args, max_bytes)? }))
 }
 
+pub fn git_branch_create(root: &Path, args: &Value) -> Result<Value, String> {
+    let root = git_worktree_root(root)?;
+    let branch = str_arg(args, "branch")?;
+    validate_branch_name(branch)?;
+    let checkout = args
+        .get("checkout")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    let start_point = opt_str(args, "start_point");
+
+    let mut git_args = vec![OsString::from("branch"), OsString::from(branch)];
+    if let Some(start_point) = start_point {
+        validate_refish(start_point, "start_point")?;
+        git_args.push(OsString::from(start_point));
+    }
+    let output = run_git_os(&root, &git_args, MAX_GIT_MUTATION_BYTES)?;
+
+    let checkout_output = if checkout {
+        Some(run_git_os(
+            &root,
+            &[OsString::from("checkout"), OsString::from(branch)],
+            MAX_GIT_MUTATION_BYTES,
+        )?)
+    } else {
+        None
+    };
+
+    Ok(json!({
+        "ok": true,
+        "branch": branch,
+        "checked_out": checkout,
+        "output": output,
+        "checkout_output": checkout_output,
+        "status": run_git(&root, &["status", "--short", "--branch"], MAX_GIT_BYTES)?,
+    }))
+}
+
+pub fn git_commit(
+    root: &Path,
+    args: &Value,
+    write_paths: &[String],
+    forbidden_paths: &[String],
+) -> Result<Value, String> {
+    let root = git_worktree_root(root)?;
+    let message = str_arg(args, "message")?.trim();
+    if message.is_empty() {
+        return Err("commit message cannot be empty".into());
+    }
+    let paths = string_array_arg(args, "paths")?;
+    if paths.is_empty() {
+        return Err("repo_git_commit requires a non-empty paths array".into());
+    }
+
+    let resolved = resolve_git_paths(&root, &paths, write_paths, forbidden_paths)?;
+    let mut add_args = vec![OsString::from("add"), OsString::from("--")];
+    add_args.extend(resolved);
+    let add_output = run_git_os(&root, &add_args, MAX_GIT_MUTATION_BYTES)?;
+
+    let mut commit_args = vec![
+        OsString::from("commit"),
+        OsString::from("-m"),
+        OsString::from(message),
+    ];
+    if args
+        .get("allow_empty")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        commit_args.push(OsString::from("--allow-empty"));
+    }
+    let commit_output = run_git_os(&root, &commit_args, MAX_GIT_MUTATION_BYTES)?;
+    let head = run_git(&root, &["rev-parse", "--short", "HEAD"], 1024)?
+        .trim()
+        .to_string();
+
+    Ok(json!({
+        "ok": true,
+        "head": head,
+        "add_output": add_output,
+        "commit_output": commit_output,
+        "status": run_git(&root, &["status", "--short", "--branch"], MAX_GIT_BYTES)?,
+    }))
+}
+
+pub fn git_push(root: &Path, args: &Value) -> Result<Value, String> {
+    let root = git_worktree_root(root)?;
+    let remote = opt_str(args, "remote").unwrap_or("origin");
+    validate_refish(remote, "remote")?;
+    let branch = match opt_str(args, "branch") {
+        Some(branch) => {
+            validate_branch_name(branch)?;
+            branch.to_string()
+        }
+        None => current_branch(&root)?,
+    };
+    let set_upstream = args
+        .get("set_upstream")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+
+    let mut git_args = vec![OsString::from("push")];
+    if set_upstream {
+        git_args.push(OsString::from("--set-upstream"));
+    }
+    git_args.push(OsString::from(remote));
+    git_args.push(OsString::from(&branch));
+
+    Ok(json!({
+        "ok": true,
+        "remote": remote,
+        "branch": branch,
+        "output": run_git_os(&root, &git_args, MAX_GIT_MUTATION_BYTES)?,
+    }))
+}
+
+pub fn git_pr_create(root: &Path, args: &Value) -> Result<Value, String> {
+    let root = git_worktree_root(root)?;
+    which::which("gh").map_err(|_| {
+        "repo_github_pr_create requires GitHub CLI `gh` installed and authenticated".to_string()
+    })?;
+    let title = str_arg(args, "title")?.trim();
+    if title.is_empty() {
+        return Err("PR title cannot be empty".into());
+    }
+    let body = opt_str(args, "body").unwrap_or("");
+    let base = opt_str(args, "base");
+    let head = opt_str(args, "head");
+    if let Some(base) = base {
+        validate_branch_name(base)?;
+    }
+    if let Some(head) = head {
+        validate_branch_name(head)?;
+    }
+    let draft = args.get("draft").and_then(Value::as_bool).unwrap_or(false);
+
+    let gh_args = build_gh_pr_create_args(title, body, base, head, draft)?;
+    let output = run_command_os(&root, "gh", &gh_args, MAX_GIT_MUTATION_BYTES)?;
+    Ok(json!({
+        "ok": true,
+        "url": first_url(&output),
+        "output": output,
+    }))
+}
+
 pub fn codebase_memory_status(root: &Path, _args: &Value) -> Result<Value, String> {
     let root = canonical_root(root)?;
     let binary = which::which("codebase-memory-mcp").ok();
@@ -403,6 +548,22 @@ fn opt_str<'a>(args: &'a Value, key: &str) -> Option<&'a str> {
 
 fn canonical_root(root: &Path) -> Result<PathBuf, String> {
     std::fs::canonicalize(root).map_err(|e| format!("canonicalize {}: {e}", root.display()))
+}
+
+fn git_worktree_root(root: &Path) -> Result<PathBuf, String> {
+    let root = canonical_root(root)?;
+    let top = run_git(&root, &["rev-parse", "--show-toplevel"], 4096)?;
+    let top = top.trim();
+    if top.is_empty() {
+        return Err("workspace is not inside a git worktree".into());
+    }
+    let top = PathBuf::from(top);
+    let canonical_top =
+        std::fs::canonicalize(&top).map_err(|e| format!("canonicalize git root {top:?}: {e}"))?;
+    if !root.starts_with(&canonical_top) && !canonical_top.starts_with(&root) {
+        return Err("resolved git worktree is outside the workspace".into());
+    }
+    Ok(canonical_top)
 }
 
 fn resolve_under_root(root: &Path, raw: &str) -> Result<PathBuf, String> {
@@ -653,11 +814,25 @@ fn code_stats(root: &Path) -> Value {
 }
 
 fn run_git(root: &Path, args: &[&str], max_bytes: usize) -> Result<String, String> {
-    let output = Command::new("git")
+    let args = args.iter().map(OsString::from).collect::<Vec<_>>();
+    run_git_os(root, &args, max_bytes)
+}
+
+fn run_git_os(root: &Path, args: &[OsString], max_bytes: usize) -> Result<String, String> {
+    run_command_os(root, "git", args, max_bytes)
+}
+
+fn run_command_os(
+    root: &Path,
+    program: &str,
+    args: &[OsString],
+    max_bytes: usize,
+) -> Result<String, String> {
+    let output = Command::new(program)
         .args(args)
         .current_dir(root)
         .output()
-        .map_err(|e| format!("git {:?}: {e}", args))?;
+        .map_err(|e| format!("{program} {:?}: {e}", display_args(args)))?;
     let bytes = if output.stdout.is_empty() {
         &output.stderr
     } else {
@@ -668,5 +843,201 @@ fn run_git(root: &Path, args: &[&str], max_bytes: usize) -> Result<String, Strin
         text.truncate(max_bytes);
         text.push_str("\n[truncated]");
     }
-    Ok(text)
+    if output.status.success() {
+        Ok(text)
+    } else {
+        Err(format!(
+            "{program} {:?} failed with status {}: {}",
+            display_args(args),
+            output.status,
+            text.trim()
+        ))
+    }
+}
+
+fn display_args(args: &[OsString]) -> Vec<String> {
+    args.iter()
+        .map(|arg| arg.to_string_lossy().into())
+        .collect()
+}
+
+fn validate_branch_name(branch: &str) -> Result<(), String> {
+    let trimmed = branch.trim();
+    if trimmed.is_empty() || trimmed != branch {
+        return Err("branch name cannot be empty or padded".into());
+    }
+    if branch.starts_with('-')
+        || branch.starts_with('/')
+        || branch.ends_with('/')
+        || branch.contains("..")
+        || branch.contains("@{")
+        || branch.contains('\\')
+        || branch.ends_with(".lock")
+        || branch.split('/').any(|part| part == "." || part == "..")
+        || branch.chars().any(|c| {
+            c.is_control() || c.is_whitespace() || matches!(c, '~' | '^' | ':' | '?' | '*' | '[')
+        })
+    {
+        return Err(format!("invalid branch name: {branch}"));
+    }
+    Ok(())
+}
+
+fn validate_refish(value: &str, label: &str) -> Result<(), String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() || trimmed != value || value.starts_with('-') {
+        return Err(format!("{label} cannot be empty, padded, or option-like"));
+    }
+    if value
+        .chars()
+        .any(|c| c.is_control() || c.is_whitespace() || c == '\0')
+    {
+        return Err(format!(
+            "{label} cannot contain whitespace/control characters"
+        ));
+    }
+    Ok(())
+}
+
+fn string_array_arg(args: &Value, key: &str) -> Result<Vec<String>, String> {
+    let Some(value) = args.get(key) else {
+        return Ok(Vec::new());
+    };
+    let items = value
+        .as_array()
+        .ok_or_else(|| format!("{key} must be an array of strings"))?;
+    items
+        .iter()
+        .map(|item| {
+            item.as_str()
+                .map(str::to_string)
+                .ok_or_else(|| format!("{key} must be an array of strings"))
+        })
+        .collect()
+}
+
+fn resolve_git_paths(
+    root: &Path,
+    raw_paths: &[String],
+    write_paths: &[String],
+    forbidden_paths: &[String],
+) -> Result<Vec<OsString>, String> {
+    raw_paths
+        .iter()
+        .map(|path| {
+            let resolved = resolve_under_root(root, path)?;
+            ensure_write_allowed(root, &resolved, write_paths, forbidden_paths)?;
+            relative_to(root, &resolved)
+                .map(OsString::from)
+                .ok_or_else(|| format!("path resolves outside git root: {path}"))
+        })
+        .collect()
+}
+
+fn current_branch(root: &Path) -> Result<String, String> {
+    let branch = run_git(root, &["branch", "--show-current"], 1024)?
+        .trim()
+        .to_string();
+    if branch.is_empty() {
+        Err("cannot infer current branch while HEAD is detached; pass branch explicitly".into())
+    } else {
+        Ok(branch)
+    }
+}
+
+fn build_gh_pr_create_args(
+    title: &str,
+    body: &str,
+    base: Option<&str>,
+    head: Option<&str>,
+    draft: bool,
+) -> Result<Vec<OsString>, String> {
+    let mut args = vec![
+        OsString::from("pr"),
+        OsString::from("create"),
+        OsString::from("--title"),
+        OsString::from(title),
+        OsString::from("--body"),
+        OsString::from(body),
+    ];
+    if let Some(base) = base {
+        args.push(OsString::from("--base"));
+        args.push(OsString::from(base));
+    }
+    if let Some(head) = head {
+        args.push(OsString::from("--head"));
+        args.push(OsString::from(head));
+    }
+    if draft {
+        args.push(OsString::from("--draft"));
+    }
+    Ok(args)
+}
+
+fn first_url(output: &str) -> Option<String> {
+    output
+        .split_whitespace()
+        .find(|word| word.starts_with("https://") || word.starts_with("http://"))
+        .map(|word| {
+            word.trim_matches(|c: char| c == '"' || c == '\'' || c == ',')
+                .to_string()
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn branch_validation_blocks_option_like_and_path_escape_refs() {
+        assert!(validate_branch_name("feature/git-tools").is_ok());
+        assert!(validate_branch_name("-bad").is_err());
+        assert!(validate_branch_name("bad branch").is_err());
+        assert!(validate_branch_name("bad..branch").is_err());
+        assert!(validate_branch_name("bad@{branch").is_err());
+    }
+
+    #[test]
+    fn gh_pr_create_args_are_vectorized() {
+        let args = build_gh_pr_create_args(
+            "Add git tools",
+            "body text",
+            Some("main"),
+            Some("feature/git-tools"),
+            true,
+        )
+        .unwrap();
+        let display = display_args(&args);
+        assert_eq!(
+            display,
+            vec![
+                "pr",
+                "create",
+                "--title",
+                "Add git tools",
+                "--body",
+                "body text",
+                "--base",
+                "main",
+                "--head",
+                "feature/git-tools",
+                "--draft"
+            ]
+        );
+    }
+
+    #[test]
+    fn git_commit_requires_explicit_staging_scope() {
+        let root = tempfile::tempdir().unwrap();
+        run_git(root.path(), &["init"], 4096).unwrap();
+        let err = git_commit(
+            root.path(),
+            &json!({ "message": "test" }),
+            &[".".into()],
+            &[],
+        )
+        .unwrap_err();
+        assert!(err.contains("non-empty paths array"));
+    }
 }

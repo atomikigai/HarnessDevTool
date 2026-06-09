@@ -70,6 +70,7 @@ build-sidecar:
     (cd backend && cargo build --release -p harness-mcp-server -p harness-server)
     mkdir -p src-tauri/binaries
     cp backend/target/release/harness-server "src-tauri/binaries/harness-server-${TARGET}"
+    chmod +x "src-tauri/binaries/harness-server-${TARGET}"
     echo "Sidecar ready: src-tauri/binaries/harness-server-${TARGET}" >&2
 
 # Inicia la app Tauri en modo dev — recompila el sidecar y lanza el backend automáticamente.
@@ -78,7 +79,31 @@ dev-tauri: build-sidecar
 
 # Build release de la app Tauri con sidecar actualizado.
 tauri-build: build-sidecar
-    cargo tauri build
+    #!/usr/bin/env bash
+    set -euo pipefail
+    bundles="${HARNESS_TAURI_BUNDLES:-}"
+    if [[ -z "$bundles" ]]; then
+      case "$(uname -s)" in
+        Linux) bundles="deb,rpm" ;;
+        Darwin) bundles="app,dmg" ;;
+        MINGW*|MSYS*|CYGWIN*|Windows_NT) bundles="nsis,msi" ;;
+        *) bundles="" ;;
+      esac
+    fi
+    if [[ -n "$bundles" ]]; then
+      cargo tauri build --bundles "$bundles"
+    else
+      cargo tauri build
+    fi
+    ./scripts/check-tauri-bundle.sh
+
+# Verifica que los bundles Tauri existentes contienen el sidecar harness-server.
+tauri-bundle-check:
+    ./scripts/check-tauri-bundle.sh
+
+# Corre un benchmark reproducible de ChatView/TerminalView/Context con mocks grandes.
+perf-tauri-ui:
+    pnpm --dir frontend perf:tauri-ui
 
 # Run only frontend (local)
 dev-frontend:

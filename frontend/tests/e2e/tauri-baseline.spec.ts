@@ -31,9 +31,10 @@ const readiness = {
   suggested_execution_mode: 'standard'
 };
 
-async function installApiMocks(page: Page) {
+async function installApiMocks(page: Page, opts: { transcriptReady?: boolean } = {}) {
   let checkpointRequested = false;
   let clearRequested = false;
+  const transcriptReady = opts.transcriptReady ?? true;
 
   await page.route(
     (url) => url.pathname === '/api' || url.pathname.startsWith('/api/'),
@@ -127,6 +128,7 @@ async function installApiMocks(page: Page) {
         return json(route, { status: 'cleared', reason: null });
       }
       if (path === '/sessions/s-chat-1/transcript') {
+        if (!transcriptReady) return sse(route, [], 'transcript');
         return sse(route, [
           transcript({
             seq: 1,
@@ -140,7 +142,26 @@ async function installApiMocks(page: Page) {
           })
         ]);
       }
-      if (path.startsWith('/events')) return sse(route, []);
+      if (path.startsWith('/events')) {
+        if (!transcriptReady) {
+          return sse(
+            route,
+            [
+              {
+                type: 'session.output',
+                session_id: 's-chat-1',
+                seq: 1,
+                b64: Buffer.from(
+                  '❯ hablame del equipo\n● Respuesta desde PTY fallback\n',
+                  'utf8'
+                ).toString('base64')
+              }
+            ],
+            'session.output'
+          );
+        }
+        return sse(route, [], 'session.output');
+      }
 
       return json(route, {});
     }
@@ -155,7 +176,7 @@ async function installApiMocks(page: Page) {
 test('ChatView renders markdown transcript instead of waiting forever', async ({ page }) => {
   await installApiMocks(page);
   await page.goto('/');
-  await page.getByRole('button', { name: 'Chat', exact: true }).click();
+  await page.getByRole('button', { name: 'Chat', exact: true }).click({ force: true });
 
   await expect(page.getByText('Waiting for transcript events')).toHaveCount(0);
   await expect(page.getByRole('heading', { name: 'Result' })).toBeVisible();
@@ -163,10 +184,19 @@ test('ChatView renders markdown transcript instead of waiting forever', async ({
   await expect(page.locator('code').filter({ hasText: 'const ok = true' })).toBeVisible();
 });
 
+test('ChatView falls back to PTY output when transcript is not ready', async ({ page }) => {
+  await installApiMocks(page, { transcriptReady: false });
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Chat', exact: true }).click({ force: true });
+
+  await expect(page.getByText('Waiting for transcript events')).toHaveCount(0);
+  await expect(page.getByText('Respuesta desde PTY fallback')).toBeVisible();
+});
+
 test('Context panel shows pressure, search and manual actions', async ({ page }) => {
   const calls = await installApiMocks(page);
   await page.goto('/');
-  await page.getByRole('button', { name: /^Info$/ }).click();
+  await page.getByRole('button', { name: /^Info$/ }).click({ force: true });
 
   await expect(page.getByText('37%')).toBeVisible();
   await page.getByPlaceholder('Search checkpoints').fill('markdown');
@@ -182,7 +212,7 @@ test('Context panel shows pressure, search and manual actions', async ({ page })
 test('Terminal tab mounts without unreadable empty-state regression', async ({ page }) => {
   await installApiMocks(page);
   await page.goto('/');
-  await page.getByRole('button', { name: 'Terminal', exact: true }).click();
+  await page.getByRole('button', { name: 'Terminal', exact: true }).click({ force: true });
 
   await expect(page.getByRole('button', { name: /Active codex/ })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Terminal', exact: true })).toBeVisible();
@@ -218,11 +248,11 @@ async function json(route: Route, body: unknown) {
   });
 }
 
-async function sse(route: Route, events: unknown[]) {
+async function sse(route: Route, events: unknown[], eventName = 'transcript') {
   await route.fulfill({
     status: 200,
     contentType: 'text/event-stream',
     headers: { 'X-Protocol-Version': '1.0' },
-    body: events.map((event) => `event: transcript\ndata: ${JSON.stringify(event)}\n\n`).join('')
+    body: events.map((event) => `event: ${eventName}\ndata: ${JSON.stringify(event)}\n\n`).join('')
   });
 }

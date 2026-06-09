@@ -12,6 +12,7 @@
     "test": "pnpm check",
     "test:e2e": "playwright test --project=chromium --reporter=line",
     "test:e2e:headed": "playwright test --project=chromium --headed --reporter=line",
+    "perf:tauri-ui": "playwright test --config=playwright.perf.config.ts --project=chromium --reporter=line",
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
     "lint": "prettier --check . && eslint .",

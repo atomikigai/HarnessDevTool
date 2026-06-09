@@ -230,6 +230,16 @@ fn url_encode_component(input: &str) -> String {
 /// Dropping this kills the backend — Tauri drops managed state on app exit.
 struct SidecarProcess(Mutex<Option<CommandChild>>);
 
+impl Drop for SidecarProcess {
+    fn drop(&mut self) {
+        if let Ok(mut child) = self.0.lock() {
+            if let Some(child) = child.take() {
+                let _ = child.kill();
+            }
+        }
+    }
+}
+
 fn spawn_backend(app: &tauri::App) {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
     let harness_home = format!("{home}/.harness");

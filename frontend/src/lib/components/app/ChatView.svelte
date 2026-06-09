@@ -17,7 +17,17 @@
     type TranscriptUsage
   } from '$lib/api/client';
   import { subscribeSSE, type SSEHandle } from '$lib/api/sse';
-  import { Bot, Send, ChevronDown, ChevronUp, Wrench, Paperclip } from '$lib/icons';
+  import {
+    Bot,
+    Send,
+    ChevronDown,
+    ChevronUp,
+    Paperclip,
+    User,
+    CircleCheck,
+    CircleAlert,
+    Loader2
+  } from '$lib/icons';
   import { toast } from 'svelte-sonner';
 
   interface Props {
@@ -50,6 +60,13 @@
     usage?: TranscriptUsage;
   };
 
+  type PtyOutputEvent = {
+    type: 'session.output';
+    session_id: string;
+    seq: number;
+    b64: string;
+  };
+
   // ---- State ----------------------------------------------------------------
 
   let turns = $state<ChatTurn[]>([]);
@@ -57,6 +74,8 @@
   let sending = $state(false);
   let textareaEl: HTMLTextAreaElement | null = $state(null);
   let scrollEl: HTMLDivElement | null = $state(null);
+  let fallbackArmed = $state(false);
+  let transcriptSeen = $state(false);
 
   // Scroll batching (Fix 2)
   let scrollPending = false;
@@ -68,6 +87,8 @@
   // Last received seq for reconnect tracking (Fix 4)
   let lastSeq = 0;
   let renderingTurnIds = new Set<string>();
+  let fallbackOutputBytes = $state(0);
+  let fallbackTimer: ReturnType<typeof setTimeout> | null = null;
 
   const encoder = new TextEncoder();
 
@@ -93,6 +114,29 @@
       if (turns[i].role === 'assistant') return turns[i];
     }
     return null;
+  }
+
+  function lastTurn(): ChatTurn | null {
+    return turns.length > 0 ? turns[turns.length - 1] : null;
+  }
+
+  function currentAssistantTurn(ev: TranscriptEvent): ChatTurn {
+    const current = lastTurn();
+    if (current?.role === 'assistant') return current;
+
+    const next: ChatTurn = {
+      id: String(ev.seq),
+      role: 'assistant',
+      content: '',
+      toolBlocks: [],
+      isStreaming: true,
+      renderedHtml: '',
+      model: ev.model ?? undefined,
+      source: ev.source,
+      usage: ev.usage ?? undefined
+    };
+    turns.push(next);
+    return next;
   }
 
   function processEvent(ev: TranscriptEvent) {
@@ -121,21 +165,7 @@
           renderedHtml: ''
         });
       } else if (ev.role === 'assistant') {
-        let last = lastAssistantTurn();
-        if (!last) {
-          last = {
-            id: String(ev.seq),
-            role: 'assistant',
-            content: '',
-            toolBlocks: [],
-            isStreaming: true,
-            renderedHtml: '',
-            model: ev.model ?? undefined,
-            source: ev.source,
-            usage: ev.usage ?? undefined
-          };
-          turns.push(last);
-        }
+        const last = currentAssistantTurn(ev);
         last.content += ev.content ?? '';
         if (ev.model) last.model = ev.model;
         if (ev.usage) last.usage = ev.usage;
@@ -144,37 +174,13 @@
     }
 
     if (ev.kind === 'thinking') {
-      let last = lastAssistantTurn();
-      if (!last) {
-        last = {
-          id: String(ev.seq),
-          role: 'assistant',
-          content: '',
-          toolBlocks: [],
-          isStreaming: true,
-          renderedHtml: '',
-          source: ev.source
-        };
-        turns.push(last);
-      }
+      const last = currentAssistantTurn(ev);
       last.thinking = (last.thinking ?? '') + (ev.content ?? '');
       return;
     }
 
     if (ev.kind === 'tool_call') {
-      let last = lastAssistantTurn();
-      if (!last) {
-        last = {
-          id: String(ev.seq),
-          role: 'assistant',
-          content: '',
-          toolBlocks: [],
-          isStreaming: true,
-          renderedHtml: '',
-          source: ev.source
-        };
-        turns.push(last);
-      }
+      const last = currentAssistantTurn(ev);
       last.toolBlocks.push({
         id: ev.tool_use_id ?? String(ev.seq),
         name: ev.tool_name ?? '(unknown)',
@@ -212,6 +218,7 @@
     const pending = turns.filter(
       (t) =>
         t.role === 'assistant' &&
+        t.source !== 'pty' &&
         !t.isStreaming &&
         t.content &&
         !t.renderedHtml &&
@@ -261,28 +268,63 @@
   // ---- SSE subscription -----------------------------------------------------
 
   let sseHandle: SSEHandle | null = null;
+  let ptyFallbackHandle: SSEHandle | null = null;
 
   function openSSE(sessionId: string) {
     closeSSE();
+    closePtyFallback();
     turns = [];
     renderingTurnIds = new Set();
     lastSeq = 0;
+    fallbackOutputBytes = 0;
+    fallbackArmed = false;
+    transcriptSeen = false;
     eventQueue = [];
     sseHandle = subscribeSSE(`/sessions/${sessionId}/transcript?since=0`, () => {}, {
       reconnect: true,
       events: {
         transcript: (data) => {
           const ev = data as TranscriptEvent;
+          transcriptSeen = true;
+          closePtyFallback();
           if (ev.seq > lastSeq) lastSeq = ev.seq;
           enqueueEvent(ev);
         }
       }
     });
+
+    fallbackTimer = setTimeout(() => {
+      if (!transcriptSeen && turns.length === 0) openPtyFallback(sessionId);
+    }, 900);
   }
 
   function closeSSE() {
     sseHandle?.close();
     sseHandle = null;
+    if (fallbackTimer) {
+      clearTimeout(fallbackTimer);
+      fallbackTimer = null;
+    }
+  }
+
+  function openPtyFallback(sessionId: string) {
+    if (ptyFallbackHandle || transcriptSeen) return;
+    fallbackArmed = true;
+    ptyFallbackHandle = subscribeSSE(`/events?session=${encodeURIComponent(sessionId)}`, () => {}, {
+      reconnect: true,
+      events: {
+        'session.output': (data) => {
+          if (transcriptSeen) return;
+          appendPtyFallback(data as PtyOutputEvent);
+        }
+      }
+    });
+  }
+
+  function closePtyFallback() {
+    ptyFallbackHandle?.close();
+    ptyFallbackHandle = null;
+    fallbackArmed = false;
   }
 
   $effect(() => {
@@ -291,10 +333,12 @@
       openSSE(sid);
     } else {
       closeSSE();
+      closePtyFallback();
       turns = [];
     }
     return () => {
       closeSSE();
+      closePtyFallback();
     };
   });
 
@@ -327,6 +371,55 @@
       for (const e of batch) processEvent(e);
       scheduleScroll();
     });
+  }
+
+  // ---- PTY fallback ---------------------------------------------------------
+
+  function appendPtyFallback(ev: PtyOutputEvent) {
+    if (!ev.b64) return;
+    const text = cleanPtyText(decodeBase64Utf8(ev.b64));
+    if (!text.trim()) return;
+
+    let turn = turns.find((t) => t.id === 'pty-fallback');
+    if (!turn) {
+      turn = {
+        id: 'pty-fallback',
+        role: 'assistant',
+        content: '',
+        toolBlocks: [],
+        isStreaming: true,
+        renderedHtml: '',
+        source: 'pty',
+        model: session?.kind ? `${session.kind} output` : 'agent output'
+      };
+      turns = [turn];
+    }
+
+    fallbackOutputBytes += text.length;
+    const next = `${turn.content}${text}`;
+    turn.content = next.length > 120_000 ? next.slice(next.length - 120_000) : next;
+    scheduleScroll();
+  }
+
+  function decodeBase64Utf8(value: string): string {
+    try {
+      const binary = atob(value);
+      const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+      return new TextDecoder().decode(bytes);
+    } catch {
+      return '';
+    }
+  }
+
+  function cleanPtyText(value: string): string {
+    return value
+      .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, '')
+      .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')
+      .replace(/\x1b[=>]/g, '')
+      .replace(/\r\n/g, '\n')
+      .replace(/\r/g, '\n')
+      .replace(/\u001b/g, '')
+      .replace(/\n{4,}/g, '\n\n\n');
   }
 
   // ---- Input handling -------------------------------------------------------
@@ -385,104 +478,140 @@
       return String(val);
     }
   }
+
+  function formatInt(value: number | null | undefined): string {
+    return new Intl.NumberFormat().format(value ?? 0);
+  }
+
+  function usageLabel(usage: TranscriptUsage | undefined): string | null {
+    if (!usage) return null;
+    const parts: string[] = [];
+    if (usage.input_tokens != null) parts.push(`${formatInt(usage.input_tokens)} in`);
+    if (usage.output_tokens != null) parts.push(`${formatInt(usage.output_tokens)} out`);
+    return parts.length > 0 ? parts.join(' · ') : null;
+  }
+
+  function toolState(block: ToolBlock): 'error' | 'done' | 'running' {
+    if (block.isError) return 'error';
+    if (block.result !== undefined) return 'done';
+    return 'running';
+  }
+
+  function toolPreview(value: unknown): string {
+    if (value == null) return '';
+    if (typeof value === 'string') return value.slice(0, 140);
+    if (Array.isArray(value)) return `${value.length} item${value.length === 1 ? '' : 's'}`;
+    if (typeof value === 'object') return Object.keys(value as Record<string, unknown>).join(', ');
+    return String(value);
+  }
 </script>
 
-<div class="flex h-full flex-col overflow-hidden" style="background: var(--surface-canvas);">
+<div class="chat-shell flex h-full flex-col overflow-hidden" style="background: var(--surface-canvas);">
   <!-- Message list -->
   <div
-    class="min-h-0 flex-1 overflow-y-auto py-6"
+    class="chat-scroll min-h-0 flex-1 overflow-y-auto"
     style="transform: translateZ(0); will-change: scroll-position;"
     bind:this={scrollEl}
   >
     {#if !session}
       <!-- No session selected -->
-      <div class="flex h-full flex-col items-center justify-center gap-2 text-center">
-        <p class="text-sm" style="color: var(--fg-muted);">
-          Select a session to view the transcript.
-        </p>
+      <div class="empty-chat mx-auto flex h-full max-w-[760px] flex-col items-center justify-center gap-4 px-6 text-center">
+        <div class="empty-mark" aria-hidden="true">✳</div>
+        <p class="empty-title">Select a session</p>
+        <p class="empty-subtitle">The structured transcript will appear here.</p>
       </div>
     {:else if turns.length === 0}
       <!-- Empty state -->
-      <div class="flex h-full flex-col items-center justify-center gap-2 text-center">
-        <Bot size={28} style="color: var(--fg-muted); opacity: 0.4;" />
-        <p class="text-sm" style="color: var(--fg-muted);">
+      <div class="empty-chat mx-auto flex h-full max-w-[760px] flex-col items-center justify-center gap-4 px-6 text-center">
+        <div class="empty-mark" aria-hidden="true">✳</div>
+        <p class="empty-title">Ready when you are</p>
+        <p class="empty-subtitle">
           {#if session.has_transcript === false}
-            No hay transcript aún — el agente generará el historial de conversación automáticamente.
+            No transcript yet. The agent will write one as it works.
+          {:else if fallbackArmed}
+            Reading live agent output…
           {:else}
             Waiting for transcript events…
           {/if}
         </p>
       </div>
     {:else}
-      <div class="mx-auto max-w-[820px] px-5 sm:px-7">
+      <div class="chat-thread mx-auto max-w-[820px] px-5 py-8 sm:px-7">
         {#each turns as turn (turn.id)}
           {#if turn.role === 'user'}
             <!-- User turn -->
             <div
-              class="chat-turn mb-8"
+              class="chat-turn user-turn"
               style="contain: content; content-visibility: auto; contain-intrinsic-size: 80px;"
             >
-              <div class="mb-2 flex items-center gap-2">
-                <span class="text-xs font-semibold" style="color: var(--fg-muted);">You</span>
+              <div class="turn-rail">
+                <div class="turn-avatar user-avatar"><User size={14} /></div>
+                <div class="turn-line"></div>
               </div>
-              <div class="chat-user-text text-sm whitespace-pre-wrap break-words leading-7">
-                {turn.content}
+              <div class="turn-body">
+                <div class="turn-meta">
+                  <span>You</span>
+                </div>
+                <div class="chat-user-text whitespace-pre-wrap break-words">
+                  {turn.content}
+                </div>
               </div>
             </div>
           {:else if turn.role === 'assistant'}
             <!-- Assistant turn -->
             <div
-              class="chat-turn mb-9"
+              class="chat-turn assistant-turn"
               style="contain: content; content-visibility: auto; contain-intrinsic-size: 220px;"
             >
-              <div class="mb-2 flex min-w-0 flex-wrap items-center gap-2">
-                <span class="text-xs font-semibold" style="color: var(--accent);">Agent</span>
-                {#if turn.model}
-                  <span
-                    class="rounded px-1.5 py-0.5 font-mono text-[10px]"
-                    style="background: var(--surface-window); color: var(--fg-muted); border: 1px solid var(--border-subtle);"
-                  >
-                    {turn.model}
-                  </span>
-                {:else if turn.source}
-                  <span class="font-mono text-[10px]" style="color: var(--fg-muted);">
-                    {turn.source}
-                  </span>
-                {/if}
+              <div class="turn-rail">
+                <div class="turn-avatar agent-avatar"><Bot size={14} /></div>
+                <div class="turn-line"></div>
               </div>
+              <div class="turn-body">
+                <div class="turn-meta">
+                  <span>Agent</span>
+                  {#if turn.model}
+                    <span class="meta-chip">{turn.model}</span>
+                  {:else if turn.source}
+                    <span class="meta-chip">{turn.source}</span>
+                  {/if}
+                  {#if turn.source === 'pty' && fallbackOutputBytes > 0}
+                    <span class="meta-dot"></span>
+                    <span class="usage-chip">{formatInt(fallbackOutputBytes)} chars</span>
+                  {/if}
+                  {#if usageLabel(turn.usage)}
+                    <span class="meta-dot"></span>
+                    <span class="usage-chip">{usageLabel(turn.usage)}</span>
+                  {/if}
+                </div>
 
-              <div class="min-w-0">
                 <!-- Thinking block -->
                 {#if turn.thinking}
                   {@const expanded = isThinkingExpanded(turn.id, turn.isStreaming)}
                   <div
-                    class="mb-3 overflow-hidden rounded-md border"
-                    style="border-color: var(--border-subtle);"
+                    class="action-block thinking-block"
+                    class:action-open={expanded}
                   >
                     <button
                       type="button"
                       onclick={() => toggleThinking(turn.id, turn.isStreaming)}
-                      class="flex w-full items-center gap-1.5 px-3 py-1.5 text-xs font-medium italic"
-                      style="color: var(--fg-muted);"
+                      class="action-header"
                     >
-                      {#if expanded}
-                        <ChevronUp size={12} />
-                      {:else}
-                        <ChevronDown size={12} />
-                      {/if}
-                      Thinking
-                      {#if turn.isStreaming && !turn.content}
-                        <span
-                          class="ml-1 inline-block h-1.5 w-1.5 rounded-full animate-pulse"
-                          style="background: var(--accent);"
-                        ></span>
-                      {/if}
+                      <span class="action-icon subtle">
+                        {#if turn.isStreaming && !turn.content}
+                          <Loader2 size={13} class="animate-spin" />
+                        {:else}
+                          <ChevronDown size={13} />
+                        {/if}
+                      </span>
+                      <span class="action-title">Thinking</span>
+                      <span class="action-preview">{turn.thinking.slice(0, 90)}</span>
+                      <span class="action-caret">
+                        {#if expanded}<ChevronUp size={13} />{:else}<ChevronDown size={13} />{/if}
+                      </span>
                     </button>
                     {#if expanded}
-                      <div
-                        class="border-t px-3 py-2 text-xs italic"
-                        style="border-color: var(--border-subtle); color: var(--fg-muted); white-space: pre-wrap; word-break: break-word;"
-                      >
+                      <div class="action-detail thinking-detail">
                         {turn.thinking}
                       </div>
                     {/if}
@@ -491,53 +620,44 @@
 
                 <!-- Tool call blocks -->
                 {#each turn.toolBlocks as block (block.id)}
+                  {@const state = toolState(block)}
                   <div
-                    class="mb-3 overflow-hidden rounded-md border"
-                    style="border-color: var(--border-subtle);"
+                    class="action-block tool-block"
+                    class:tool-error={state === 'error'}
+                    class:action-open={block.expanded}
                   >
                     <button
                       type="button"
                       onclick={() => {
                         block.expanded = !block.expanded;
                       }}
-                      class="flex w-full items-center gap-1.5 px-3 py-1.5 text-xs font-medium font-mono"
-                      style="color: var(--fg-muted);"
+                      class="action-header"
                     >
-                      <Wrench size={12} />
-                      <span class="flex-1 text-left" style="color: var(--fg-default);"
-                        >{block.name}</span
-                      >
-                      {#if block.expanded}
-                        <ChevronUp size={12} />
-                      {:else}
-                        <ChevronDown size={12} />
-                      {/if}
+                      <span class="action-icon" class:error={state === 'error'} class:done={state === 'done'}>
+                        {#if state === 'running'}
+                          <Loader2 size={13} class="animate-spin" />
+                        {:else if state === 'error'}
+                          <CircleAlert size={13} />
+                        {:else}
+                          <CircleCheck size={13} />
+                        {/if}
+                      </span>
+                      <span class="action-title font-mono">{block.name}</span>
+                      <span class="action-preview">{toolPreview(block.args)}</span>
+                      <span class="action-state">{state}</span>
+                      <span class="action-caret">
+                        {#if block.expanded}<ChevronUp size={13} />{:else}<ChevronDown size={13} />{/if}
+                      </span>
                     </button>
                     {#if block.expanded}
-                      <div class="border-t" style="border-color: var(--border-subtle);">
+                      <div class="action-detail">
                         <!-- Args -->
-                        <pre
-                          class="overflow-x-auto px-3 py-2 text-[11px] font-mono"
-                          style="background: var(--surface-window); color: var(--fg-muted); white-space: pre-wrap; word-break: break-word;">{prettyJson(
-                            block.args
-                          )}</pre>
+                        <div class="action-label">Arguments</div>
+                        <pre class="action-json">{prettyJson(block.args)}</pre>
                         <!-- Result (if available) -->
                         {#if block.result !== undefined}
-                          <div
-                            class="border-t px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wide"
-                            style="border-color: var(--border-subtle); color: {block.isError
-                              ? '#f87171'
-                              : 'var(--fg-muted)'};"
-                          >
-                            {block.isError ? 'Error' : 'Result'}
-                          </div>
-                          <pre
-                            class="overflow-x-auto px-3 py-2 text-[11px] font-mono"
-                            style="background: var(--surface-window); color: {block.isError
-                              ? '#fca5a5'
-                              : 'var(--fg-muted)'}; white-space: pre-wrap; word-break: break-word;">{prettyJson(
-                              block.result
-                            )}</pre>
+                          <div class="action-label">{block.isError ? 'Error' : 'Result'}</div>
+                          <pre class="action-json" class:error-json={block.isError}>{prettyJson(block.result)}</pre>
                         {/if}
                       </div>
                     {/if}
@@ -546,21 +666,17 @@
 
                 <!-- Main content: raw text while streaming, rendered HTML when done -->
                 {#if turn.content}
-                  {#if turn.renderedHtml}
+                  {#if turn.source === 'pty'}
+                    <pre class="pty-fallback-text">{turn.content}</pre>
+                  {:else if turn.renderedHtml}
                     <!-- Completed turn: safe rendered markdown -->
-                    <div
-                      class="chat-prose max-w-none leading-relaxed"
-                      style="color: var(--fg-default);"
-                    >
+                    <div class="chat-prose max-w-none leading-relaxed">
                       <!-- eslint-disable-next-line svelte/no-at-html-tags -->
                       {@html turn.renderedHtml}
                     </div>
                   {:else}
                     <!-- Streaming turn: raw text, no markdown parse overhead -->
-                    <p
-                      class="chat-streaming-text text-sm whitespace-pre-wrap break-words leading-7"
-                      style="color: var(--fg-default);"
-                    >
+                    <p class="chat-streaming-text whitespace-pre-wrap break-words">
                       {turn.content}
                     </p>
                   {/if}
@@ -568,47 +684,17 @@
 
                 <!-- Streaming cursor -->
                 {#if turn.isStreaming && !turn.content && !turn.thinking && turn.toolBlocks.length === 0}
-                  <span
-                    class="inline-block w-2 h-4 animate-pulse opacity-70"
-                    style="background: var(--fg-default);"
-                  ></span>
-                {/if}
-
-                <!-- Usage badge -->
-                {#if turn.usage}
-                  <div class="mt-3 flex flex-wrap gap-2">
-                    {#if turn.usage.input_tokens != null}
-                      <span
-                        class="rounded px-1.5 py-0.5 font-mono text-[10px]"
-                        style="background: var(--surface-window); color: var(--fg-muted); border: 1px solid var(--border-subtle);"
-                      >
-                        in {turn.usage.input_tokens}
-                      </span>
-                    {/if}
-                    {#if turn.usage.output_tokens != null}
-                      <span
-                        class="rounded px-1.5 py-0.5 font-mono text-[10px]"
-                        style="background: var(--surface-window); color: var(--fg-muted); border: 1px solid var(--border-subtle);"
-                      >
-                        out {turn.usage.output_tokens}
-                      </span>
-                    {/if}
-                  </div>
+                  <span class="stream-cursor"></span>
                 {/if}
               </div>
             </div>
           {:else}
             <!-- System turn — centered pill -->
             <div
-              class="my-2 flex justify-center"
+              class="system-turn my-4 flex justify-center"
               style="contain: content; content-visibility: auto; contain-intrinsic-size: 32px;"
             >
-              <span
-                class="rounded-full px-3 py-1 text-xs"
-                style="background: var(--surface-window); color: var(--fg-muted); border: 1px solid var(--border-subtle);"
-              >
-                {turn.content}
-              </span>
+              <span>{turn.content}</span>
             </div>
           {/if}
         {/each}
@@ -618,12 +704,10 @@
 
   <!-- Chat input footer -->
   <div
-    class="shrink-0 border-t px-4 py-4"
-    style="background: var(--surface-window); border-color: var(--border-subtle);"
+    class="chat-composer-wrap shrink-0 px-4 pb-4 pt-3"
   >
     <div
-      class="rounded-xl border"
-      style="background: var(--surface-canvas); border-color: var(--border-subtle);"
+      class="chat-composer mx-auto"
     >
       <!-- Textarea row -->
       <div class="px-4 pt-3 pb-1">
@@ -635,8 +719,7 @@
           placeholder={stopped ? 'Session not running' : 'Message the agent…'}
           disabled={stopped}
           rows={2}
-          class="w-full resize-none bg-transparent text-sm outline-none placeholder:opacity-40 disabled:cursor-not-allowed"
-          style="color: var(--fg-default); font-size: 0.875rem; line-height: 1.6; max-height: 120px; overflow-y: auto;"
+          class="composer-textarea w-full resize-none bg-transparent outline-none disabled:cursor-not-allowed"
         ></textarea>
       </div>
       <!-- Action bar: attach left, send right -->
@@ -644,8 +727,7 @@
         <button
           type="button"
           disabled={stopped}
-          class="flex h-8 w-8 items-center justify-center rounded-lg transition-colors hover:opacity-80 disabled:opacity-30"
-          style="color: var(--fg-muted);"
+          class="composer-icon-button"
           title="Attach file"
           aria-label="Attach file"
         >
@@ -655,8 +737,7 @@
           type="button"
           onclick={() => void sendInput()}
           disabled={sending || stopped || !input.trim()}
-          class="flex h-8 w-8 items-center justify-center rounded-xl transition-all disabled:opacity-30 hover:opacity-90 active:scale-95"
-          style="background: var(--accent); color: white;"
+          class="composer-send-button"
           title="Send (Enter)"
           aria-label="Send"
         >
@@ -668,14 +749,384 @@
 </div>
 
 <style>
-  .chat-turn {
+  .chat-shell {
     color: var(--fg-default);
+  }
+
+  .chat-scroll {
+    scrollbar-gutter: stable;
+  }
+
+  .chat-thread {
+    padding-bottom: 1.5rem;
+  }
+
+  .empty-mark {
+    color: var(--accent);
+    font-size: 2rem;
+    line-height: 1;
+  }
+
+  .empty-title {
+    color: var(--fg-default);
+    font-size: 1.55rem;
+    line-height: 1.2;
+    margin: 0;
+  }
+
+  .empty-subtitle {
+    color: var(--fg-muted);
+    font-size: 0.9rem;
+    line-height: 1.6;
+    margin: 0;
+    max-width: 32rem;
+  }
+
+  .chat-turn {
+    display: grid;
+    gap: 0.85rem;
+    grid-template-columns: 1.75rem minmax(0, 1fr);
+    color: var(--fg-default);
+    margin-bottom: 2rem;
+  }
+
+  .assistant-turn {
+    margin-bottom: 2.35rem;
+  }
+
+  .turn-rail {
+    align-items: center;
+    display: flex;
+    flex-direction: column;
+    gap: 0.55rem;
+    padding-top: 0.1rem;
+  }
+
+  .turn-avatar {
+    align-items: center;
+    border: 1px solid var(--border-subtle);
+    border-radius: 999px;
+    display: flex;
+    height: 1.75rem;
+    justify-content: center;
+    width: 1.75rem;
+  }
+
+  .user-avatar {
+    background: var(--surface-window);
+    color: var(--fg-muted);
+  }
+
+  .agent-avatar {
+    background: color-mix(in srgb, var(--accent) 14%, transparent);
+    border-color: color-mix(in srgb, var(--accent) 38%, var(--border-subtle));
+    color: var(--accent);
+  }
+
+  .turn-line {
+    background: var(--border-subtle);
+    flex: 1;
+    min-height: 0.5rem;
+    opacity: 0.7;
+    width: 1px;
+  }
+
+  .chat-turn:last-child .turn-line {
+    display: none;
+  }
+
+  .turn-body {
+    min-width: 0;
+  }
+
+  .turn-meta {
+    align-items: center;
+    color: var(--fg-muted);
+    display: flex;
+    flex-wrap: wrap;
+    font-size: 0.72rem;
+    font-weight: 600;
+    gap: 0.45rem;
+    line-height: 1.4;
+    margin-bottom: 0.55rem;
+  }
+
+  .meta-chip,
+  .usage-chip {
+    border: 1px solid var(--border-subtle);
+    border-radius: 999px;
+    color: var(--fg-muted);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-size: 0.64rem;
+    font-weight: 500;
+    padding: 0.08rem 0.45rem;
+  }
+
+  .usage-chip {
+    border-color: transparent;
+    padding-inline: 0;
+  }
+
+  .meta-dot {
+    background: var(--border-subtle);
+    border-radius: 999px;
+    height: 0.25rem;
+    width: 0.25rem;
   }
 
   .chat-user-text,
   .chat-streaming-text {
     color: var(--fg-default);
-    max-width: 72ch;
+    font-size: 0.92rem;
+    line-height: 1.75;
+    max-width: 74ch;
+  }
+
+  .chat-user-text {
+    background: color-mix(in srgb, var(--surface-window) 72%, transparent);
+    border: 1px solid var(--border-subtle);
+    border-radius: 0.85rem;
+    padding: 0.8rem 0.95rem;
+    width: fit-content;
+    max-width: min(74ch, 100%);
+  }
+
+  .pty-fallback-text {
+    background: transparent;
+    border: 0;
+    color: var(--fg-default);
+    font-family:
+      ui-sans-serif,
+      system-ui,
+      -apple-system,
+      BlinkMacSystemFont,
+      "Segoe UI",
+      sans-serif;
+    font-size: 0.9rem;
+    line-height: 1.72;
+    margin: 0;
+    max-width: 74ch;
+    overflow-x: auto;
+    padding: 0;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
+  .action-block {
+    background: color-mix(in srgb, var(--surface-window) 66%, transparent);
+    border: 1px solid var(--border-subtle);
+    border-radius: 0.7rem;
+    margin-bottom: 0.75rem;
+    overflow: hidden;
+  }
+
+  .action-open {
+    background: var(--surface-window);
+  }
+
+  .tool-error {
+    border-color: color-mix(in srgb, #ef4444 48%, var(--border-subtle));
+  }
+
+  .action-header {
+    align-items: center;
+    color: var(--fg-muted);
+    display: grid;
+    font-size: 0.74rem;
+    gap: 0.55rem;
+    grid-template-columns: 1.15rem minmax(max-content, 11rem) minmax(0, 1fr) auto auto;
+    line-height: 1.4;
+    min-height: 2.35rem;
+    padding: 0.48rem 0.65rem;
+    text-align: left;
+    width: 100%;
+  }
+
+  .action-header:hover {
+    background: color-mix(in srgb, var(--fg-default) 4%, transparent);
+  }
+
+  .action-icon {
+    align-items: center;
+    border-radius: 999px;
+    color: var(--fg-muted);
+    display: flex;
+    justify-content: center;
+  }
+
+  .action-icon.done {
+    color: #34d399;
+  }
+
+  .action-icon.error {
+    color: #f87171;
+  }
+
+  .action-icon.subtle {
+    color: var(--accent);
+  }
+
+  .action-title {
+    color: var(--fg-default);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .action-preview {
+    color: var(--fg-muted);
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .action-state {
+    border: 1px solid var(--border-subtle);
+    border-radius: 999px;
+    color: var(--fg-muted);
+    font-size: 0.63rem;
+    padding: 0.06rem 0.42rem;
+  }
+
+  .action-caret {
+    color: var(--fg-muted);
+    display: flex;
+  }
+
+  .action-detail {
+    border-top: 1px solid var(--border-subtle);
+    padding: 0.65rem;
+  }
+
+  .thinking-detail {
+    color: var(--fg-muted);
+    font-size: 0.78rem;
+    font-style: italic;
+    line-height: 1.65;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
+  .action-label {
+    color: var(--fg-muted);
+    font-size: 0.62rem;
+    font-weight: 700;
+    letter-spacing: 0;
+    margin-bottom: 0.35rem;
+    text-transform: uppercase;
+  }
+
+  .action-label:not(:first-child) {
+    margin-top: 0.75rem;
+  }
+
+  .action-json {
+    background: var(--surface-canvas);
+    border: 1px solid var(--border-subtle);
+    border-radius: 0.45rem;
+    color: var(--fg-muted);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-size: 0.7rem;
+    line-height: 1.55;
+    margin: 0;
+    overflow-x: auto;
+    padding: 0.65rem 0.75rem;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
+  .error-json {
+    color: #fca5a5;
+  }
+
+  .stream-cursor {
+    animation: pulse 1.1s ease-in-out infinite;
+    background: var(--fg-default);
+    display: inline-block;
+    height: 1rem;
+    opacity: 0.7;
+    vertical-align: -0.15rem;
+    width: 0.45rem;
+  }
+
+  .system-turn span {
+    background: var(--surface-window);
+    border: 1px solid var(--border-subtle);
+    border-radius: 999px;
+    color: var(--fg-muted);
+    font-size: 0.72rem;
+    padding: 0.28rem 0.75rem;
+  }
+
+  .chat-composer-wrap {
+    background: linear-gradient(
+      to top,
+      var(--surface-canvas) 0%,
+      var(--surface-canvas) 72%,
+      color-mix(in srgb, var(--surface-canvas) 0%, transparent) 100%
+    );
+  }
+
+  .chat-composer {
+    background: var(--surface-window);
+    border: 1px solid var(--border-subtle);
+    border-radius: 1.05rem;
+    box-shadow: 0 18px 50px rgb(0 0 0 / 0.18);
+    max-width: 780px;
+  }
+
+  .composer-textarea {
+    color: var(--fg-default);
+    font-size: 0.9rem;
+    line-height: 1.6;
+    max-height: 120px;
+    overflow-y: auto;
+  }
+
+  .composer-textarea::placeholder {
+    color: var(--fg-muted);
+    opacity: 0.72;
+  }
+
+  .composer-icon-button,
+  .composer-send-button {
+    align-items: center;
+    border-radius: 0.7rem;
+    display: flex;
+    height: 2rem;
+    justify-content: center;
+    transition:
+      opacity 120ms ease,
+      transform 120ms ease,
+      background 120ms ease;
+    width: 2rem;
+  }
+
+  .composer-icon-button {
+    color: var(--fg-muted);
+  }
+
+  .composer-icon-button:hover {
+    background: color-mix(in srgb, var(--fg-default) 6%, transparent);
+  }
+
+  .composer-send-button {
+    background: var(--fg-default);
+    color: var(--surface-canvas);
+  }
+
+  .composer-send-button:hover {
+    opacity: 0.9;
+  }
+
+  .composer-send-button:active {
+    transform: scale(0.96);
+  }
+
+  .composer-icon-button:disabled,
+  .composer-send-button:disabled {
+    opacity: 0.34;
   }
 
   .chat-prose {
@@ -793,5 +1244,30 @@
     background: var(--surface-window);
     color: var(--fg-default);
     font-weight: 600;
+  }
+
+  @media (max-width: 640px) {
+    .chat-thread {
+      padding-inline: 1rem;
+    }
+
+    .chat-turn {
+      gap: 0.65rem;
+      grid-template-columns: 1.5rem minmax(0, 1fr);
+    }
+
+    .turn-avatar {
+      height: 1.5rem;
+      width: 1.5rem;
+    }
+
+    .action-header {
+      grid-template-columns: 1.15rem minmax(0, 1fr) auto;
+    }
+
+    .action-preview,
+    .action-state {
+      display: none;
+    }
   }
 </style>

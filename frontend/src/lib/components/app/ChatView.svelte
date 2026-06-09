@@ -549,7 +549,7 @@
                   {#if turn.renderedHtml}
                     <!-- Completed turn: safe rendered markdown -->
                     <div
-                      class="chat-prose prose prose-sm dark:prose-invert max-w-none leading-relaxed"
+                      class="chat-prose max-w-none leading-relaxed"
                       style="color: var(--fg-default);"
                     >
                       <!-- eslint-disable-next-line svelte/no-at-html-tags -->

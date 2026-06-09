@@ -338,6 +338,48 @@ export interface SessionMetrics {
   observed_at: string;
 }
 
+export interface ContextGovernorStatus {
+  session_id: string;
+  thread_id: string;
+  task_id?: string | null;
+  role?: string | null;
+  latest_event_type?: string | null;
+  latest_event_at?: number | null;
+  checkpoint_requested_at?: number | null;
+  checkpoint_saved_at?: number | null;
+  clear_pending_at?: number | null;
+  clear_deferred_at?: number | null;
+  clear_recommended_at?: number | null;
+  cleared_at?: number | null;
+  pressure?: number | null;
+  context_tokens?: number | null;
+  max_context_tokens?: number | null;
+  model?: string | null;
+  checkpoint_preview?: string | null;
+  checkpoint_structured?: unknown;
+  indexed_events: number;
+}
+
+export interface ContextActionResponse {
+  status: string;
+  reason?: string | null;
+}
+
+export interface ContextSearchHit {
+  thread_id: string;
+  session_id: string;
+  event_type: string;
+  at: number;
+  pressure?: number | null;
+  model?: string | null;
+  snippet: string;
+}
+
+export interface ContextSearchResponse {
+  query: string;
+  hits: ContextSearchHit[];
+}
+
 export interface ChildSessionSummary {
   session_id: string;
   parent_session_id?: string | null;
@@ -650,6 +692,23 @@ export const api = {
       apiRequest<SessionMeta>(`/sessions/${sessionId}`, { signal }),
     metrics: (sessionId: string, signal?: AbortSignal) =>
       apiRequest<SessionMetrics>(`/sessions/${sessionId}/metrics`, { signal }),
+    context: (sessionId: string, signal?: AbortSignal) =>
+      apiRequest<ContextGovernorStatus>(`/sessions/${sessionId}/context`, { signal }),
+    searchContext: (sessionId: string, query: string, signal?: AbortSignal) =>
+      apiRequest<ContextSearchResponse>(
+        `/sessions/${sessionId}/context/search?q=${encodeURIComponent(query)}`,
+        { signal }
+      ),
+    requestContextCheckpoint: (sessionId: string, signal?: AbortSignal) =>
+      apiRequest<ContextActionResponse>(`/sessions/${sessionId}/context/checkpoint`, {
+        method: 'POST',
+        signal
+      }),
+    clearContext: (sessionId: string, signal?: AbortSignal) =>
+      apiRequest<ContextActionResponse>(`/sessions/${sessionId}/context/clear`, {
+        method: 'POST',
+        signal
+      }),
     children: (sessionId: string, signal?: AbortSignal) =>
       apiRequest<ChildSessionSummary[]>(`/sessions/${sessionId}/children`, { signal }),
     kill: (sessionId: string, signal?: AbortSignal) =>

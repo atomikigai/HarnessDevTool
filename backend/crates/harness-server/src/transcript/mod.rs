@@ -18,7 +18,9 @@ pub mod watcher;
 
 pub use event::TranscriptEvent;
 pub use store::TranscriptStore;
-pub use watcher::{spawn_transcript_watcher, WatcherHandle};
+pub use watcher::{
+    spawn_codex_transcript_watcher, spawn_transcript_watcher, TranscriptParser, WatcherHandle,
+};
 
 /// Re-export of `store::read_events_since` under a more-specific name so the
 /// route layer doesn't pull in the whole store module.

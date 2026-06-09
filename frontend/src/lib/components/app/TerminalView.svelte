@@ -4,6 +4,7 @@
 
   import { subscribeSSE, type SSEHandle } from '$lib/api/sse';
   import { api, ApiError } from '$lib/api/client';
+  import { isTauri, streamPtyOutputNative, type NativePtyStreamHandle } from '$lib/tauri';
   import { Button } from '$lib/components/ui/button';
   import { Square } from '$lib/icons';
   import { toast } from 'svelte-sonner';
@@ -26,6 +27,7 @@
   let term: Terminal | null = null;
   let fitAddon: FitAddon | null = null;
   let sse: SSEHandle | null = null;
+  let nativeStream: NativePtyStreamHandle | null = null;
   let ro: ResizeObserver | null = null;
   let resizeTimer: ReturnType<typeof setTimeout> | null = null;
   let killed = $state(false);
@@ -169,6 +171,81 @@
   let resizeInFlight = false;
   let resizeQueued = false;
 
+  type TerminalTransport = 'sse' | 'tauri-channel-binary';
+
+  type TerminalPerfStats = {
+    transport: TerminalTransport;
+    startedAt: number;
+    chunks: number;
+    bytes: number;
+    flushes: number;
+    writeBytes: number;
+    maxQueuedBytes: number;
+    lastUpdatedAt: number;
+  };
+
+  let perfStats: TerminalPerfStats | null = null;
+
+  function publishPerfStats() {
+    if (!perfStats || typeof window === 'undefined') return;
+    const elapsedSec = Math.max(0.001, (performance.now() - perfStats.startedAt) / 1000);
+    (
+      window as Window & {
+        __harnessTerminalPerf?: TerminalPerfStats & {
+          bytesPerSecond: number;
+          chunksPerSecond: number;
+          flushesPerSecond: number;
+        };
+      }
+    ).__harnessTerminalPerf = {
+      ...perfStats,
+      bytesPerSecond: perfStats.bytes / elapsedSec,
+      chunksPerSecond: perfStats.chunks / elapsedSec,
+      flushesPerSecond: perfStats.flushes / elapsedSec
+    };
+  }
+
+  function selectedTransport(): TerminalTransport {
+    if (!isTauri) return 'sse';
+    try {
+      return localStorage.getItem('harness.ptyTransport') === 'sse'
+        ? 'sse'
+        : 'tauri-channel-binary';
+    } catch {
+      return 'tauri-channel-binary';
+    }
+  }
+
+  function resetPerfStats(transport: TerminalTransport) {
+    perfStats = {
+      transport,
+      startedAt: performance.now(),
+      chunks: 0,
+      bytes: 0,
+      flushes: 0,
+      writeBytes: 0,
+      maxQueuedBytes: 0,
+      lastUpdatedAt: performance.now()
+    };
+    publishPerfStats();
+  }
+
+  function recordOutputChunk(byteLength: number) {
+    if (!perfStats) return;
+    perfStats.chunks += 1;
+    perfStats.bytes += byteLength;
+    perfStats.maxQueuedBytes = Math.max(perfStats.maxQueuedBytes, outputQueuedBytes);
+    perfStats.lastUpdatedAt = performance.now();
+  }
+
+  function recordOutputFlush(byteLength: number) {
+    if (!perfStats) return;
+    perfStats.flushes += 1;
+    perfStats.writeBytes += byteLength;
+    perfStats.lastUpdatedAt = performance.now();
+    publishPerfStats();
+  }
+
   // Reconnection policy: when SSE errors out, we close the current EventSource and
   // re-open after exponential backoff (max 10s). Because backend replays full
   // history on reconnect with seqs from 0, we reset the terminal before re-subscribing.
@@ -185,6 +262,7 @@
     if (!term || bytes.length === 0) return;
     outputQueue.push(bytes);
     outputQueuedBytes += bytes.length;
+    recordOutputChunk(bytes.length);
     if (outputRaf !== null) return;
     outputRaf = requestAnimationFrame(flushOutput);
   }
@@ -215,6 +293,7 @@
           })();
 
     const followTail = term.getViewportY() <= 1 && !term.hasSelection();
+    recordOutputFlush(bytes.length);
     term.write(bytes, () => {
       if (followTail) scrollTerminalToBottom();
     });
@@ -253,6 +332,7 @@
 
   function openSSE() {
     if (!term) return;
+    resetPerfStats('sse');
     connState = reconnectAttempts > 0 ? 'reconnecting' : 'connecting';
     // Reset terminal before catch-up replay so we don't duplicate output.
     if (reconnectAttempts > 0) {
@@ -319,6 +399,84 @@
         }
       }
     );
+  }
+
+  function openNativePtyOutput() {
+    if (!term) return;
+    resetPerfStats('tauri-channel-binary');
+    connState = reconnectAttempts > 0 ? 'reconnecting' : 'connecting';
+    if (reconnectAttempts > 0) {
+      clearOutputQueue();
+      term.reset();
+    }
+
+    void streamPtyOutputNative(
+      sessionId,
+      (bytes) => {
+        enqueueOutput(bytes);
+      },
+      (event) => {
+        if (event.type === 'started') {
+          connState = 'open';
+          reconnectAttempts = 0;
+          return;
+        }
+        if (event.type === 'lagged') {
+          nativeStream?.close();
+          nativeStream = null;
+          scheduleNativeReconnect();
+          return;
+        }
+        if (event.type === 'error') {
+          if (exited || killed) {
+            connState = 'closed';
+            return;
+          }
+          console.warn('native PTY stream failed', event.message);
+          scheduleNativeReconnect();
+          return;
+        }
+        if (event.type === 'exit') {
+          const parts: string[] = [];
+          if (event.code !== undefined && event.code !== null) parts.push(`code ${event.code}`);
+          if (event.signal) parts.push(`signal ${event.signal}`);
+          const tail = parts.length > 0 ? ` (${parts.join(' | ')})` : '';
+          flushOutput();
+          term?.write(`\r\n\x1b[33m[session ended${tail}]\x1b[0m\r\n`, scrollTerminalToBottom);
+          exited = true;
+          connState = 'closed';
+          nativeStream?.close();
+          nativeStream = null;
+        }
+      }
+    )
+      .then((handle) => {
+        nativeStream = handle;
+      })
+      .catch((err) => {
+        console.warn('native PTY stream failed to start', err);
+        scheduleNativeReconnect();
+      });
+  }
+
+  function scheduleNativeReconnect() {
+    if (exited || killed) {
+      connState = 'closed';
+      return;
+    }
+    if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+      connState = 'closed';
+      nativeStream?.close();
+      nativeStream = null;
+      toast.error('Lost connection to session after multiple retries');
+      return;
+    }
+    connState = 'reconnecting';
+    nativeStream?.close();
+    nativeStream = null;
+    const delay = Math.min(10_000, 500 * 2 ** reconnectAttempts);
+    reconnectAttempts++;
+    reconnectTimer = setTimeout(openNativePtyOutput, delay);
   }
 
   function fitTerminal(): boolean {
@@ -486,8 +644,7 @@
         const terminalCopyCombo =
           (!isMac && ev.ctrlKey && ev.shiftKey && key === 'c') ||
           (!isMac && ev.ctrlKey && ev.altKey && key === 'c');
-        const copyCombo =
-          primaryCopyCombo || selectionCopyCombo || terminalCopyCombo;
+        const copyCombo = primaryCopyCombo || selectionCopyCombo || terminalCopyCombo;
         const pasteCombo =
           (isMac && ev.metaKey && key === 'v') ||
           (!isMac && ev.shiftKey && key === 'insert') ||
@@ -533,8 +690,17 @@
       ro = new ResizeObserver(scheduleResize);
       ro.observe(containerEl);
 
-      openSSE();
-      void fitAndResize();
+      // The output replay must wait for the initial PTY resize. The native
+      // binary stream can replay history fast enough that stale cols/rows make
+      // the restored terminal screen wrap incorrectly and become unreadable.
+      await fitAndResize();
+      if (cancelled) return;
+
+      if (selectedTransport() === 'tauri-channel-binary') {
+        openNativePtyOutput();
+      } else {
+        openSSE();
+      }
       scrollTerminalToBottom();
 
       window.addEventListener('keydown', onWindowKey, true);
@@ -569,6 +735,8 @@
     ro = null;
     sse?.close();
     sse = null;
+    nativeStream?.close();
+    nativeStream = null;
     term?.dispose();
     term = null;
     window.removeEventListener('keydown', onWindowKey, true);
@@ -581,6 +749,8 @@
       killed = true;
       sse?.close();
       sse = null;
+      nativeStream?.close();
+      nativeStream = null;
       connState = 'closed';
       flushOutput();
       term?.write('\r\n\x1b[31m[killed by user]\x1b[0m\r\n', scrollTerminalToBottom);

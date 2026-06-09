@@ -2318,6 +2318,8 @@ dependencies = [
  "harness-session",
  "module-db",
  "module-ssh",
+ "rayon",
+ "rusqlite",
  "serde",
  "serde_json",
  "sha2 0.10.9",

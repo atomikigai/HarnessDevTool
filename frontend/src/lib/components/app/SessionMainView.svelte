@@ -19,7 +19,7 @@
 -->
 <script lang="ts">
   import { api, ApiError, type SessionMeta } from '$lib/api/client';
-  import { Bot, Paperclip, RotateCcw, Terminal } from '$lib/icons';
+  import { Bot, MessageSquare, Paperclip, RotateCcw, Send, Terminal } from '$lib/icons';
   import { toast } from 'svelte-sonner';
   import TerminalView from './TerminalView.svelte';
   import ChatView from './ChatView.svelte';
@@ -52,11 +52,15 @@
     onSessionKilled
   }: Props = $props();
 
+  let mainTab = $state<'terminal' | 'chat'>('terminal');
+  let input = $state('');
+  let sending = $state(false);
   let stopping = $state(false);
   let restarting = $state(false);
   let attaching = $state(false);
   let fileInputEl: HTMLInputElement | null = $state(null);
-  let viewMode = $state<'chat' | 'terminal'>('chat');
+
+  const encoder = new TextEncoder();
 
   const k = $derived(session ? kindChip(session.kind) : null);
   const u = $derived(uiStatus(session));
@@ -80,6 +84,36 @@
       return 'Zeus session';
     }
     return s.role ?? s.kind;
+  }
+
+  async function sendInput() {
+    if (!session || !input || sending || stopped) return;
+    sending = true;
+    const payload = input;
+    try {
+      // Send the text and the Enter as SEPARATE writes with a small gap so
+      // the running TUI (Claude/Codex) sees them as two distinct PTY reads:
+      // text first (renders into the prompt), then \r (submits). Sending
+      // `text + '\r'` in a single chunk lets the CLI's Ink reconciler treat
+      // the burst as a paste and swallow the trailing CR, so the message
+      // never gets submitted.
+      await api.sessions.input(session.id, encoder.encode(payload));
+      await new Promise((r) => setTimeout(r, 60));
+      await api.sessions.input(session.id, encoder.encode('\r'));
+      input = '';
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      toast.error(`Send failed: ${msg}`);
+    } finally {
+      sending = false;
+    }
+  }
+
+  function onInputKeydown(ev: KeyboardEvent) {
+    if (ev.key === 'Enter' && !ev.shiftKey) {
+      ev.preventDefault();
+      void sendInput();
+    }
   }
 
   function pickFiles() {
@@ -221,20 +255,6 @@
         <div class="flex gap-1.5">
           <button
             type="button"
-            onclick={pickFiles}
-            disabled={stopped || attaching}
-            class="inline-flex items-center gap-1 rounded-md border px-3 py-1 text-[11px] font-semibold transition-colors disabled:opacity-50"
-            style="
-              border-color: var(--border-subtle);
-              color: var(--fg-breadcrumb);
-              background: var(--surface-panel);
-            "
-          >
-            <Paperclip class="h-3 w-3" />
-            Attach
-          </button>
-          <button
-            type="button"
             onclick={onStop}
             disabled={stopping || stopped}
             class="rounded-md border px-3 py-1 text-[11px] font-semibold transition-colors disabled:opacity-50"
@@ -301,78 +321,137 @@
       </nav>
     {/if}
 
-    <!-- Primary work area: Chat first, terminal available as diagnostics. -->
+    <!-- Window frame (macOS dots + cwd line + terminal) -->
     <div class="flex min-h-0 flex-1 flex-col p-3">
       <div
         class="flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border"
         style="
-          background: var(--surface-window);
+          background: #0b1220;
           border-color: var(--border-subtle);
           box-shadow: var(--shadow-card);
         "
       >
+        <!-- "Title bar" — purely decorative -->
         <div
-          class="flex h-9 shrink-0 items-center gap-2 border-b px-3"
+          class="flex h-8 shrink-0 items-center gap-2 border-b px-3"
           style="
-            background: var(--surface-panel);
-            border-color: var(--border-subtle);
+            background: rgba(0, 0, 0, 0.3);
+            border-color: rgba(255, 255, 255, 0.06);
           "
         >
+          <div class="flex gap-1.5">
+            <span class="h-2.5 w-2.5 rounded-full" style="background: #ed6a5e;"></span>
+            <span class="h-2.5 w-2.5 rounded-full" style="background: #f4bf4f;"></span>
+            <span class="h-2.5 w-2.5 rounded-full" style="background: #61c554;"></span>
+          </div>
           <span
-            class="truncate font-mono text-[10.5px]"
-            style="color: var(--fg-muted);"
+            class="ml-2 truncate font-mono text-[10.5px]"
+            style="color: #94a3b8;"
             title={session.cwd ?? ''}
           >
             {k?.label ?? session.kind} · {session.cwd ?? '(default cwd)'}
           </span>
-          <div
-            class="ml-auto flex h-7 shrink-0 items-center rounded-md border p-0.5"
-            style="border-color: var(--border-subtle); background: var(--surface-titlebar);"
+          <span class="ml-auto shrink-0 font-mono text-[10px]" style="color: #4a5568;">
+            {tokensLabel(null)}
+          </span>
+        </div>
+
+        <!-- Tab bar: Terminal | Chat -->
+        <div
+          class="flex shrink-0 border-b"
+          style="border-color: rgba(255, 255, 255, 0.06); background: rgba(0, 0, 0, 0.2);"
+        >
+          {#each [{ id: 'terminal' as const, icon: Terminal, label: 'Terminal' }, { id: 'chat' as const, icon: MessageSquare, label: 'Chat' }] as t (t.id)}
+            <button
+              type="button"
+              onclick={() => (mainTab = t.id)}
+              class="flex items-center gap-1.5 px-4 py-2 text-xs font-medium border-b-2 transition-colors"
+              style={mainTab === t.id
+                ? 'border-color: var(--accent); color: var(--accent);'
+                : 'border-color: transparent; color: #94a3b8;'}
+            >
+              <t.icon size={12} />
+              {t.label}
+            </button>
+          {/each}
+        </div>
+
+        <!-- Body. `{#key session.id}` forces remount when the selected session
+             changes, so its terminal + SSE are torn down and rebuilt. -->
+        <div class="min-h-0 flex-1 overflow-hidden">
+          {#if mainTab === 'terminal'}
+            {#key session.id}
+              <TerminalView threadId={session.thread_id} sessionId={session.id} embedded />
+            {/key}
+          {:else}
+            {#key session.id}
+              <ChatView {session} />
+            {/key}
+          {/if}
+        </div>
+
+        <!-- Footer prompt (terminal tab only) -->
+        {#if mainTab === 'terminal'}
+        <div
+          class="flex shrink-0 items-center gap-2 border-t px-3 py-2"
+          style="
+            background: rgba(0, 0, 0, 0.25);
+            border-color: rgba(255, 255, 255, 0.06);
+          "
+        >
+          <input
+            type="file"
+            multiple
+            class="hidden"
+            bind:this={fileInputEl}
+            onchange={onFilesPicked}
+          />
+          <button
+            type="button"
+            onclick={pickFiles}
+            disabled={stopped || attaching}
+            class="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border transition-colors disabled:opacity-50"
+            style="
+              border-color: rgba(255, 255, 255, 0.1);
+              background: rgba(255, 255, 255, 0.05);
+              color: #cbd5e0;
+            "
+            title="Attach files to this session"
+            aria-label="Attach files"
           >
-            <button
-              type="button"
-              onclick={() => (viewMode = 'chat')}
-              class="inline-flex h-6 items-center gap-1.5 rounded px-2 text-[11px] font-semibold"
-              style="
-                color: {viewMode === 'chat' ? 'var(--accent)' : 'var(--fg-muted)'};
-                background: {viewMode === 'chat' ? 'var(--accent-soft)' : 'transparent'};
-              "
-            >
-              <Bot class="h-3.5 w-3.5" />
-              Chat
-            </button>
-            <button
-              type="button"
-              onclick={() => (viewMode = 'terminal')}
-              class="inline-flex h-6 items-center gap-1.5 rounded px-2 text-[11px] font-semibold"
-              style="
-                color: {viewMode === 'terminal' ? 'var(--accent)' : 'var(--fg-muted)'};
-                background: {viewMode === 'terminal' ? 'var(--accent-soft)' : 'transparent'};
-              "
-            >
-              <Terminal class="h-3.5 w-3.5" />
-              Terminal
-            </button>
+            <Paperclip class="h-3.5 w-3.5" />
+          </button>
+          <div
+            class="flex flex-1 items-center gap-2 rounded-md border px-3 py-1"
+            style="
+              border-color: rgba(255, 255, 255, 0.08);
+              background: rgba(255, 255, 255, 0.04);
+            "
+          >
+            <span style="color: var(--accent); font-weight: 700;">❯</span>
+            <input
+              type="text"
+              bind:value={input}
+              onkeydown={onInputKeydown}
+              placeholder="Message or command…"
+              disabled={stopped}
+              class="flex-1 bg-transparent text-sm outline-none placeholder:text-[#4a5568]"
+              style="color: #e2e8f0; font-family: var(--font-mono); font-size: 13px;"
+            />
+            {#if input.trim().length > 0}
+              <button
+                type="button"
+                onclick={sendInput}
+                disabled={sending || stopped}
+                class="inline-flex items-center gap-1 rounded px-2.5 py-0.5 text-[11px] font-semibold text-white disabled:opacity-50"
+                style="background: var(--accent);"
+              >
+                <Send class="h-3 w-3" /> Send
+              </button>
+            {/if}
           </div>
         </div>
-
-        <div class="min-h-0 flex-1">
-          {#key session.id}
-            {#if viewMode === 'chat'}
-              <ChatView {session} {stopped} />
-            {:else}
-              <TerminalView threadId={session.thread_id} sessionId={session.id} embedded />
-            {/if}
-          {/key}
-        </div>
-
-        <input
-          type="file"
-          multiple
-          class="hidden"
-          bind:this={fileInputEl}
-          onchange={onFilesPicked}
-        />
+        {/if}
       </div>
     </div>
   {/if}

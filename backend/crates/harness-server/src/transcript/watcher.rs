@@ -14,12 +14,18 @@ use tokio::task::JoinHandle;
 
 use super::event::TranscriptEvent;
 use super::store::TranscriptStore;
+use super::{claude, codex};
 
 /// Channel name the watcher broadcasts events on. We piggyback on a
 /// `broadcast::Sender<TranscriptEvent>` per session rather than overloading
 /// `SessionEvent`, so the existing PTY catch-up + tail logic stays clean.
 pub type TranscriptBus = broadcast::Sender<TranscriptEvent>;
-pub type TranscriptParser = fn(&str, &str) -> Vec<TranscriptEvent>;
+
+#[derive(Debug, Clone, Copy)]
+pub enum TranscriptParser {
+    Claude,
+    Codex,
+}
 
 /// Cancellation handle for an in-flight watcher task.
 pub struct WatcherHandle {
@@ -44,17 +50,91 @@ impl Drop for WatcherHandle {
 pub fn spawn_transcript_watcher(
     session_id: String,
     source_path: PathBuf,
+    parser: TranscriptParser,
     store: Arc<TranscriptStore>,
     bus: TranscriptBus,
-    parser: TranscriptParser,
 ) -> WatcherHandle {
     let join = tokio::spawn(async move {
-        if let Err(e) = watch_loop(&session_id, &source_path, store, bus, parser).await {
+        if let Err(e) = watch_loop(&session_id, &source_path, parser, store, bus).await {
             tracing::warn!(
                 session = %session_id,
                 source = %source_path.display(),
                 error = %e,
                 "transcript watcher exited"
+            );
+        }
+    });
+    WatcherHandle { join }
+}
+
+/// Spawn a Codex watcher whose source JSONL is discovered after the PTY has
+/// already started. Codex can create its session file after the backend route
+/// returns, so the transcript slot must exist before the source path does.
+pub fn spawn_codex_transcript_watcher(
+    session_id: String,
+    codex_home: PathBuf,
+    cwd: PathBuf,
+    started_at_ms: i64,
+    marker: String,
+    store: Arc<TranscriptStore>,
+    bus: TranscriptBus,
+) -> WatcherHandle {
+    let join = tokio::spawn(async move {
+        let mut attempts = 0u32;
+        let source_path = loop {
+            let marker_result =
+                codex::find_latest_transcript_path(&codex_home, &cwd, started_at_ms, Some(&marker));
+            match marker_result {
+                Ok(Some(path)) => break path,
+                Ok(None) => {}
+                Err(e) => {
+                    tracing::debug!(
+                        session = %session_id,
+                        error = %e,
+                        "codex transcript marker lookup failed"
+                    );
+                }
+            }
+
+            if attempts >= 10 {
+                match codex::find_latest_transcript_path(&codex_home, &cwd, started_at_ms, None) {
+                    Ok(Some(path)) => break path,
+                    Ok(None) => {}
+                    Err(e) => {
+                        tracing::debug!(
+                            session = %session_id,
+                            error = %e,
+                            "codex transcript fallback lookup failed"
+                        );
+                    }
+                }
+            }
+
+            attempts = attempts.saturating_add(1);
+            if attempts % 60 == 0 {
+                tracing::debug!(
+                    session = %session_id,
+                    cwd = %cwd.display(),
+                    "waiting for codex transcript file"
+                );
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        };
+
+        if let Err(e) = watch_loop(
+            &session_id,
+            &source_path,
+            TranscriptParser::Codex,
+            store,
+            bus,
+        )
+        .await
+        {
+            tracing::warn!(
+                session = %session_id,
+                source = %source_path.display(),
+                error = %e,
+                "codex transcript watcher exited"
             );
         }
     });
@@ -68,9 +148,9 @@ pub fn spawn_transcript_watcher(
 async fn watch_loop(
     session_id: &str,
     source_path: &Path,
+    parser: TranscriptParser,
     store: Arc<TranscriptStore>,
     bus: TranscriptBus,
-    parser: TranscriptParser,
 ) -> std::io::Result<()> {
     // Wait for the file to appear. Claude doesn't always write the
     // transcript line until the FIRST turn completes, so we may sit here
@@ -113,7 +193,10 @@ async fn watch_loop(
                 Ok((new_offset, lines)) => {
                     offset = new_offset;
                     for line in lines {
-                        let parsed = parser(&line, session_id);
+                        let parsed = match parser {
+                            TranscriptParser::Claude => claude::parse_line(&line, session_id),
+                            TranscriptParser::Codex => codex::parse_line(&line, session_id),
+                        };
                         for ev in parsed {
                             match store.ingest(ev).await {
                                 Ok(persisted) => {

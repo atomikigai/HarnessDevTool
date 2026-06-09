@@ -2,8 +2,11 @@ use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::Duration;
 
+use axum::body::{Body, Bytes};
 use axum::extract::{Query, State};
+use axum::http::{header, StatusCode};
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
+use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::Router;
 use base64::engine::general_purpose::STANDARD as B64;
@@ -26,10 +29,15 @@ pub struct EventsQuery {
 }
 
 pub fn router() -> Router<Arc<AppState>> {
-    Router::new().route("/api/events", get(events))
+    Router::new()
+        .route("/api/events", get(events))
+        .route("/api/events/pty", get(pty_events))
 }
 
 const PTY_CATCHUP_CHUNK: usize = 16 * 1024;
+const PTY_FRAME_OUTPUT: u8 = 1;
+const PTY_FRAME_EXIT: u8 = 2;
+const PTY_FRAME_LAGGED: u8 = 3;
 
 async fn events(
     State(state): State<Arc<AppState>>,
@@ -59,6 +67,24 @@ async fn events(
             .interval(Duration::from_secs(15))
             .text("keep-alive"),
     )
+}
+
+/// Binary PTY stream for native desktop clients.
+///
+/// Frame format:
+///   byte 0: frame kind (1 output, 2 exit JSON, 3 lagged JSON)
+///   bytes 1..5: big-endian u32 payload length
+///   bytes 5..: payload
+async fn pty_events(State(state): State<Arc<AppState>>, Query(q): Query<EventsQuery>) -> Response {
+    let Some(sid) = q.session else {
+        return (StatusCode::BAD_REQUEST, "missing session query parameter").into_response();
+    };
+
+    let stream = pty_binary_stream(state, sid);
+    Response::builder()
+        .header(header::CONTENT_TYPE, "application/octet-stream")
+        .body(Body::from_stream(stream))
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 
 /// Stream for `?thread=<tid>` (no session): forwards task events for the
@@ -174,14 +200,14 @@ fn session_stream(
             let event_name = ev.event_name();
             let payload = match ev {
                 SessionEvent::Output {
-                    session_id, b64, ..
+                    session_id, bytes, ..
                 } => {
                     let new_seq = next_seq.fetch_add(1, Ordering::SeqCst);
                     json!({
                         "type": "session.output",
                         "session_id": session_id,
                         "seq": new_seq,
-                        "b64": b64,
+                        "b64": B64.encode(bytes),
                     })
                     .to_string()
                 }
@@ -192,6 +218,96 @@ fn session_stream(
     });
 
     catchup_stream.chain(live)
+}
+
+fn pty_binary_stream(
+    state: Arc<AppState>,
+    sid: String,
+) -> impl Stream<Item = Result<Bytes, Infallible>> + Send {
+    let manager = state.manager.clone();
+    let rx = manager.subscribe();
+
+    let manager_for_history = manager.clone();
+    let sid_for_history = sid.clone();
+    let catchup_stream = stream::once(async move {
+        let sid_for_read = sid_for_history.clone();
+        let history = match tokio::task::spawn_blocking(move || {
+            manager_for_history.read_output(&sid_for_read)
+        })
+        .await
+        {
+            Ok(Ok(bytes)) => bytes,
+            Ok(Err(e)) => {
+                tracing::warn!(error = %e, session = %sid_for_history, "no output.log for binary catch-up");
+                Vec::new()
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, session = %sid_for_history, "binary output catch-up task failed");
+                Vec::new()
+            }
+        };
+
+        history
+            .chunks(PTY_CATCHUP_CHUNK)
+            .map(|chunk| Ok(pty_frame(PTY_FRAME_OUTPUT, chunk)))
+            .collect::<Vec<_>>()
+    })
+    .flat_map(stream::iter);
+
+    let sid_filter = sid.clone();
+    let live = BroadcastStream::new(rx).filter_map(move |res| {
+        let sid_filter = sid_filter.clone();
+        async move {
+            let ev = match res {
+                Ok(ev) => ev,
+                Err(BroadcastStreamRecvError::Lagged(skipped)) => {
+                    let payload = json!({
+                        "type": "lagged",
+                        "stream": "session",
+                        "session_id": sid_filter,
+                        "skipped": skipped,
+                        "resync": "reconnect",
+                    });
+                    return Some(Ok(pty_json_frame(PTY_FRAME_LAGGED, payload)));
+                }
+            };
+            if ev.session_id() != sid_filter {
+                return None;
+            }
+            match ev {
+                SessionEvent::Output { bytes, .. } => Some(Ok(pty_frame(PTY_FRAME_OUTPUT, &bytes))),
+                SessionEvent::Exit {
+                    session_id,
+                    code,
+                    signal,
+                } => {
+                    let payload = json!({
+                        "type": "session.exit",
+                        "session_id": session_id,
+                        "code": code,
+                        "signal": signal,
+                    });
+                    Some(Ok(pty_json_frame(PTY_FRAME_EXIT, payload)))
+                }
+                _ => None,
+            }
+        }
+    });
+
+    catchup_stream.chain(live)
+}
+
+fn pty_frame(kind: u8, payload: &[u8]) -> Bytes {
+    let len = u32::try_from(payload.len()).unwrap_or(u32::MAX);
+    let mut frame = Vec::with_capacity(5 + payload.len());
+    frame.push(kind);
+    frame.extend_from_slice(&len.to_be_bytes());
+    frame.extend_from_slice(payload);
+    Bytes::from(frame)
+}
+
+fn pty_json_frame(kind: u8, payload: serde_json::Value) -> Bytes {
+    pty_frame(kind, payload.to_string().as_bytes())
 }
 
 fn lagged_event(

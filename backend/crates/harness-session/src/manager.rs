@@ -28,7 +28,7 @@ pub enum SessionEvent {
     Output {
         session_id: String,
         seq: u64,
-        b64: String,
+        bytes: Vec<u8>,
     },
     #[serde(rename = "session.exit")]
     Exit {

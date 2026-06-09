@@ -287,8 +287,6 @@ impl AgentSession {
         let session_for_output = session.clone();
         let id_for_output = id.clone();
         let output_forwarder = tokio::spawn(async move {
-            use base64::engine::general_purpose::STANDARD as B64;
-
             let mut pending: Vec<u8> = Vec::with_capacity(PTY_CHUNK_TARGET * 2);
             let flush_interval = Duration::from_millis(PTY_FLUSH_INTERVAL_MS);
 
@@ -303,7 +301,6 @@ impl AgentSession {
                                 &session_for_output,
                                 &bus_for_output,
                                 &id_for_output,
-                                &B64,
                             );
                         }
                     }
@@ -315,7 +312,6 @@ impl AgentSession {
                                 &session_for_output,
                                 &bus_for_output,
                                 &id_for_output,
-                                &B64,
                             );
                         }
                         break;
@@ -328,7 +324,6 @@ impl AgentSession {
                                 &session_for_output,
                                 &bus_for_output,
                                 &id_for_output,
-                                &B64,
                             );
                         }
                         if session_for_output.shutdown_requested.load(Ordering::SeqCst) {
@@ -598,19 +593,17 @@ fn flush_chunk(
     session: &Arc<AgentSession>,
     bus: &broadcast::Sender<SessionEvent>,
     id: &str,
-    b64: &base64::engine::GeneralPurpose,
 ) {
-    use base64::Engine;
     if let Err(e) = session.writer.append(pending) {
         tracing::warn!(spawn_id = %id, error = %e, "output writer append failed");
     }
     let seq = session.seq.fetch_add(1, Ordering::SeqCst);
-    let encoded = b64.encode(&pending);
+    let bytes = pending.clone();
     pending.clear();
     let _ = bus.send(SessionEvent::Output {
         session_id: id.to_string(),
         seq,
-        b64: encoded,
+        bytes,
     });
 }
 

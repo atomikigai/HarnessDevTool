@@ -17,6 +17,18 @@ sources: []
 - Indexa: entradas de memoria + skills (cuando F5) + items relevantes de `events.jsonl`.
 - Regenerable: si se borra, el harness lo reconstruye al boot.
 
+## Índice de contexto vivo
+
+El context governor usa un índice derivado separado:
+
+- Archivo: `profiles/<active>/context.sqlite`.
+- Scope: **por profile**, nunca global.
+- Fuente de verdad: `profiles/<active>/threads/<thread>/events.jsonl`.
+- Uso: checkpoints compactos, eventos `session.context.*`, presión de contexto y búsqueda rápida en UI.
+- Reconstrucción: si se borra `context.sqlite`, el backend lo vuelve a poblar desde el log append-only al consultar `/api/sessions/:sid/context` o `/api/sessions/:sid/context/search`.
+
+No se guarda conversación canónica en SQLite: cualquier edición o checkpoint sigue siendo un evento append-only.
+
 ## Schema
 
 ```sql

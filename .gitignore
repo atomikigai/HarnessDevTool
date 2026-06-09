@@ -7,8 +7,16 @@ backend/crates/*/bindings/
 frontend/node_modules/
 frontend/.svelte-kit/
 frontend/build/
+frontend/build-tauri/
+frontend/playwright-report/
+frontend/test-results/
 frontend/src/lib/api/crates/
 frontend/src/lib/api/types/
+
+# Tauri
+src-tauri/binaries/
+src-tauri/gen/
+src-tauri/target/
 
 # Runtime / local
 *.log

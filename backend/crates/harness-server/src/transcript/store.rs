@@ -8,8 +8,6 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use tokio::fs::File as AsyncFile;
-use tokio::io::{AsyncBufReadExt, BufReader as AsyncBufReader};
 use tokio::sync::Mutex;
 
 use super::event::TranscriptEvent;
@@ -60,8 +58,12 @@ impl TranscriptStore {
     }
 }
 
-/// Stream every persisted event with `seq > since` from disk. Used by the
-/// replay arm of the SSE endpoint.
+/// Replay every persisted event with `seq > since` from disk.
+///
+/// Reads the whole file in one syscall, then deserialises lines in parallel
+/// across rayon's thread pool (offloaded from the tokio executor via
+/// `spawn_blocking`). Sorting after collection preserves seq order regardless
+/// of which thread finished first.
 pub async fn read_events_since(
     transcript_path: &Path,
     since: u64,
@@ -69,32 +71,40 @@ pub async fn read_events_since(
     if !transcript_path.exists() {
         return Ok(Vec::new());
     }
-    let file = AsyncFile::open(transcript_path).await?;
-    let mut reader = AsyncBufReader::new(file);
-    let mut out = Vec::new();
-    let mut buf = String::new();
-    loop {
-        buf.clear();
-        let n = reader.read_line(&mut buf).await?;
-        if n == 0 {
-            break;
-        }
-        let line = buf.trim();
-        if line.is_empty() {
-            continue;
-        }
-        match serde_json::from_str::<TranscriptEvent>(line) {
-            Ok(ev) => {
-                if ev.seq > since {
-                    out.push(ev);
+    // Single async read — one syscall, no per-line await overhead.
+    let bytes = tokio::fs::read(transcript_path).await?;
+
+    // CPU-bound work runs on the blocking pool so the tokio executor is free.
+    tokio::task::spawn_blocking(move || {
+        use rayon::prelude::*;
+
+        let text = std::str::from_utf8(&bytes)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+
+        let mut events: Vec<TranscriptEvent> = text
+            .par_lines()
+            .filter_map(|line| {
+                let line = line.trim();
+                if line.is_empty() {
+                    return None;
                 }
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "skipping malformed transcript line");
-            }
-        }
-    }
-    Ok(out)
+                match serde_json::from_str::<TranscriptEvent>(line) {
+                    Ok(ev) if ev.seq > since => Some(ev),
+                    Ok(_) => None,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "skipping malformed transcript line");
+                        None
+                    }
+                }
+            })
+            .collect();
+
+        // Parallel collection doesn't guarantee order — restore it.
+        events.sort_unstable_by_key(|ev| ev.seq);
+        Ok(events)
+    })
+    .await
+    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?
 }
 
 /// Scan the existing transcript file for the highest `seq` so we resume the

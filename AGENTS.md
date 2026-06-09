@@ -66,6 +66,8 @@ Cada skill describe cuándo usar la herramienta, patrones concretos y cuándo no
 | Skill | Herramienta | Uso principal |
 |---|---|---|
 | `opensrc` | CLI npm | Leer source code de dependencias |
+| `agent-browser` | CLI npm | Automatización browser compacta para agentes |
+| `context7` | MCP/CLI npm | Documentación actual de librerías para agentes de coding |
 | `ast-grep` | CLI npm | Búsqueda estructural de código por AST |
 | `difftastic` | CLI cargo | Diffs semánticos sin ruido |
 | `cargo-nextest` | CLI cargo | Tests Rust más rápidos |
@@ -74,7 +76,7 @@ Cada skill describe cuándo usar la herramienta, patrones concretos y cuándo no
 | `efficient-cli` | CLIs Rust/Go | Búsqueda, selección, HTTP, benchmarks, watchers y streams |
 | `rust-tooling` | CLIs cargo | Calidad, deps, tamaño binario y profiling Rust |
 | `security-tooling` | CLIs Rust/Go/sistema | Secret scanning, CVEs, containers, Dockerfiles y shell |
-| `frontend-testing` | pnpm/Playwright | Validación SvelteKit y E2E acotado con timeouts bajos |
+| `frontend-testing` | agent-browser/pnpm/Playwright | Validación frontend en browser real + checks acotados |
 
 ## CLIs soportados y auth compartida (importante)
 

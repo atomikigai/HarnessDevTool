@@ -12,7 +12,6 @@ use tokio::io::{AsyncBufReadExt, AsyncSeekExt, BufReader, SeekFrom};
 use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 
-use super::claude;
 use super::event::TranscriptEvent;
 use super::store::TranscriptStore;
 
@@ -20,6 +19,7 @@ use super::store::TranscriptStore;
 /// `broadcast::Sender<TranscriptEvent>` per session rather than overloading
 /// `SessionEvent`, so the existing PTY catch-up + tail logic stays clean.
 pub type TranscriptBus = broadcast::Sender<TranscriptEvent>;
+pub type TranscriptParser = fn(&str, &str) -> Vec<TranscriptEvent>;
 
 /// Cancellation handle for an in-flight watcher task.
 pub struct WatcherHandle {
@@ -46,9 +46,10 @@ pub fn spawn_transcript_watcher(
     source_path: PathBuf,
     store: Arc<TranscriptStore>,
     bus: TranscriptBus,
+    parser: TranscriptParser,
 ) -> WatcherHandle {
     let join = tokio::spawn(async move {
-        if let Err(e) = watch_loop(&session_id, &source_path, store, bus).await {
+        if let Err(e) = watch_loop(&session_id, &source_path, store, bus, parser).await {
             tracing::warn!(
                 session = %session_id,
                 source = %source_path.display(),
@@ -69,6 +70,7 @@ async fn watch_loop(
     source_path: &Path,
     store: Arc<TranscriptStore>,
     bus: TranscriptBus,
+    parser: TranscriptParser,
 ) -> std::io::Result<()> {
     // Wait for the file to appear. Claude doesn't always write the
     // transcript line until the FIRST turn completes, so we may sit here
@@ -111,7 +113,7 @@ async fn watch_loop(
                 Ok((new_offset, lines)) => {
                     offset = new_offset;
                     for line in lines {
-                        let parsed = claude::parse_line(&line, session_id);
+                        let parsed = parser(&line, session_id);
                         for ev in parsed {
                             match store.ingest(ev).await {
                                 Ok(persisted) => {

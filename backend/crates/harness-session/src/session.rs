@@ -224,7 +224,7 @@ impl AgentSession {
             parent_session_id: parent_session_id.clone(),
             root_session_id: root_session_id.clone(),
             detected_state: None,
-            has_transcript: matches!(kind, AgentKind::Claude),
+            has_transcript: matches!(kind, AgentKind::Claude | AgentKind::Codex),
         };
         persist_meta(&dir, &meta)?;
 

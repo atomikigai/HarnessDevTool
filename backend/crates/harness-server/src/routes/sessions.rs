@@ -645,22 +645,97 @@ pub async fn spawn_session_internal(
         persist_zeus_roles(state, &meta.id, &args.zeus_roles)?;
     }
 
-    // Start the transcript watcher for CLIs that emit a JSONL transcript.
-    // Today: Claude only. Zeus is backed by Codex, whose transcript parser is
-    // not wired yet.
-    // The file may not exist for a few seconds while Claude boots — the
-    // watcher loop tolerates that.
-    if matches!(underlying, AgentKind::Claude) {
-        if let Err(e) = start_claude_transcript_watcher(state, &meta.id, &cwd_for_transcript) {
-            tracing::warn!(
-                session = %meta.id,
-                error = %e,
-                "could not start transcript watcher; Chat view disabled for this session"
-            );
+    // Start the transcript watcher for CLIs that emit JSONL. Claude writes a
+    // per-session transcript under ~/.claude; Codex JSON-mode lines are tailed
+    // from the session output log when present.
+    match underlying {
+        AgentKind::Claude => {
+            if let Err(e) = start_claude_transcript_watcher(state, &meta.id, &cwd_for_transcript) {
+                tracing::warn!(
+                    session = %meta.id,
+                    error = %e,
+                    "could not start Claude transcript watcher; Chat view will fall back for this session"
+                );
+            }
         }
+        AgentKind::Codex => {
+            if let Err(e) = start_codex_transcript_watcher(state, &meta.id) {
+                tracing::warn!(
+                    session = %meta.id,
+                    error = %e,
+                    "could not start Codex transcript watcher; Chat view will fall back for this session"
+                );
+            }
+        }
+        _ => {}
     }
 
     Ok(meta.id)
+}
+
+fn session_transcript_dir(state: &AppState, session_id: &str) -> PathBuf {
+    state
+        .harness_home
+        .join("profiles")
+        .join(&state.profile)
+        .join("sessions")
+        .join(session_id)
+}
+
+fn register_transcript_watcher(
+    state: &Arc<AppState>,
+    session_id: &str,
+    source_path: PathBuf,
+    parser: crate::transcript::watcher::TranscriptParser,
+) -> Result<(), String> {
+    let transcript_dir = session_transcript_dir(state, session_id);
+    let store = crate::transcript::TranscriptStore::open(&transcript_dir)
+        .map_err(|e| format!("open transcript store: {e}"))?;
+    let (bus, _) = tokio::sync::broadcast::channel(256);
+    let handle = crate::transcript::spawn_transcript_watcher(
+        session_id.to_string(),
+        source_path,
+        store.clone(),
+        bus.clone(),
+        parser,
+    );
+
+    state.transcripts.insert(
+        session_id.to_string(),
+        crate::state::TranscriptSlot { store, bus, handle },
+    );
+    Ok(())
+}
+
+fn start_codex_transcript_watcher(state: &Arc<AppState>, session_id: &str) -> Result<(), String> {
+    let source_path = session_transcript_dir(state, session_id).join("output.log");
+    register_transcript_watcher(
+        state,
+        session_id,
+        source_path,
+        crate::transcript::codex::parse_line,
+    )
+}
+
+/// Resolve the Claude transcript JSONL path for a session and start the
+/// tail watcher. Stores the slot on `AppState.transcripts` keyed by sid.
+fn start_claude_transcript_watcher(
+    state: &Arc<AppState>,
+    session_id: &str,
+    cwd: &std::path::Path,
+) -> Result<(), String> {
+    let claude_home = std::env::var("CLAUDE_CONFIG_DIR")
+        .map(std::path::PathBuf::from)
+        .ok()
+        .or_else(|| dirs::home_dir().map(|h| h.join(".claude")))
+        .ok_or_else(|| "could not resolve $HOME for claude".to_string())?;
+    let source_path = crate::transcript::claude::transcript_path(&claude_home, cwd, session_id);
+    register_transcript_watcher(
+        state,
+        session_id,
+        source_path,
+        crate::transcript::claude::parse_line,
+    )
 }
 
 fn detect_and_touch_repo(
@@ -732,44 +807,6 @@ fn project_context_brief(repo: &RepoContext) -> String {
             .to_string(),
     );
     lines.join("\n")
-}
-
-/// Resolve the Claude transcript JSONL path for a session and start the
-/// tail watcher. Stores the slot on `AppState.transcripts` keyed by sid.
-fn start_claude_transcript_watcher(
-    state: &Arc<AppState>,
-    session_id: &str,
-    cwd: &std::path::Path,
-) -> Result<(), String> {
-    let claude_home = std::env::var("CLAUDE_CONFIG_DIR")
-        .map(std::path::PathBuf::from)
-        .ok()
-        .or_else(|| dirs::home_dir().map(|h| h.join(".claude")))
-        .ok_or_else(|| "could not resolve $HOME for claude".to_string())?;
-    let source_path = crate::transcript::claude::transcript_path(&claude_home, cwd, session_id);
-
-    let transcript_dir = state
-        .harness_home
-        .join("profiles")
-        .join(&state.profile)
-        .join("sessions")
-        .join(session_id);
-    let store = crate::transcript::TranscriptStore::open(&transcript_dir)
-        .map_err(|e| format!("open transcript store: {e}"))?;
-    let (bus, _) = tokio::sync::broadcast::channel(256);
-
-    let handle = crate::transcript::spawn_transcript_watcher(
-        session_id.to_string(),
-        source_path,
-        store.clone(),
-        bus.clone(),
-    );
-
-    state.transcripts.insert(
-        session_id.to_string(),
-        crate::state::TranscriptSlot { store, bus, handle },
-    );
-    Ok(())
 }
 
 /// Build `SpawnOpts` carrying the per-session MCP config. Returns

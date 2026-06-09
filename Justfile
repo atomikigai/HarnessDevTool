@@ -94,6 +94,12 @@ setup:
         fail "$tool no encontrado — instálalo manualmente"
       fi
     done
+    if command -v node &>/dev/null; then
+      node_major="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)"
+      if [ "${node_major:-0}" -lt 18 ]; then
+        fail "Node.js 18+ requerido para Context7; versión actual: $(node --version 2>/dev/null || echo desconocida)"
+      fi
+    fi
 
     # — Herramientas npm globales —
     echo ""
@@ -111,6 +117,25 @@ setup:
     }
     npm_global_install "opensrc" "opensrc"
     npm_global_install "@ast-grep/cli" "ast-grep"
+    npm_global_install "agent-browser" "agent-browser"
+    if command -v agent-browser &>/dev/null; then
+      echo -e "  ${YELLOW}→${NC} Verificando navegador de agent-browser..."
+      if agent-browser install 2>&1 | tail -1; then
+        ok "agent-browser browser runtime listo"
+      else
+        warn "agent-browser instalado, pero falló 'agent-browser install'; ejecútalo manualmente si necesitas automatización browser"
+      fi
+    fi
+    if command -v npx &>/dev/null; then
+      echo -e "  ${YELLOW}→${NC} Configurando Context7 para agentes de coding..."
+      if CONTEXT7_API_KEY="${CONTEXT7_API_KEY:-}" npx -y ctx7 setup 2>&1 | tail -1; then
+        ok "Context7 configurado"
+      else
+        warn "Context7 no se pudo configurar; ejecuta 'npx ctx7 setup'"
+      fi
+    else
+      warn "npx no encontrado — Context7 requiere Node/npm"
+    fi
 
     # — Herramientas cargo (se instalan si faltan, primera vez puede tardar) —
     echo ""
@@ -305,7 +330,7 @@ tools-doctor:
       uv duckdb lsof strace socat
       cargo-nextest cargo-audit cargo-deny cargo-machete cargo-bloat cargo-add cargo-flamegraph
       gitleaks osv-scanner trivy shellcheck hadolint
-      opensrc ast-grep pdf-oxide
+      opensrc ast-grep agent-browser pdf-oxide
     )
     for tool in "${tools[@]}"; do
       check_tool "$tool"
@@ -323,6 +348,19 @@ tools-doctor:
     done
     check_optional "astro"
     check_optional "mdbook"
+    if command -v npx >/dev/null 2>&1; then
+      printf "ok      %-18s %s\n" "ctx7" "via npx"
+    else
+      printf "missing %-18s\n" "npx/ctx7"
+      missing=1
+    fi
+    if command -v node >/dev/null 2>&1; then
+      node_major="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)"
+      if [ "${node_major:-0}" -lt 18 ]; then
+        printf "missing %-18s Node.js 18+ required, found %s\n" "node>=18" "$(node --version 2>/dev/null || echo unknown)"
+        missing=1
+      fi
+    fi
     if [ -d frontend ] && (cd frontend && pnpm exec playwright --version >/dev/null 2>&1); then
       printf "ok      %-18s %s\n" "playwright" "$(cd frontend && pnpm exec playwright --version)"
     else

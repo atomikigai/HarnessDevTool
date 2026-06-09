@@ -65,5 +65,6 @@ export {
   PanelLeftClose,
   PanelLeftOpen,
   PanelRightClose,
-  PanelRightOpen
+  PanelRightOpen,
+  Wrench
 } from 'lucide-svelte';

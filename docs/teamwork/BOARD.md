@@ -15,10 +15,14 @@ Modelo operativo: ver [`docs/teamwork/OPERATING_MODEL.md`](./OPERATING_MODEL.md)
 
 ## En curso
 
+_Sin tarea activa._
+
+## Última cerrada — Production hardening Wave 1
+
 | Campo | Valor |
 |---|---|
 | **Tarea** | Production hardening — Wave 1 |
-| **Estado** | `EXECUTE` — Desktop queda explicitamente al final. Slice 1-3 cerrados; siguiente foco: lifecycle/shutdown de sesiones, SSE resync frontend y cleanup de shutdown backend. |
+| **Estado** | ✅ DONE — cerrada 2026-06-09. Slices 1-16 completados; just test verde; desktop fuera de alcance. |
 | **Objetivo** | Reducir riesgos operativos reales en lifecycle de sesiones/SSE, frontend API/SSE/polling y module-db leases/timeouts, manteniendo append-only, protocolo versionado y tipos Rust→TS como contrato. |
 | **Alcance / archivos** | Backend: `backend/crates/harness-session/**`, `backend/crates/harness-server/**`; DB: `backend/crates/module-db/**`; Frontend: `frontend/src/lib/api/**`, `frontend/src/lib/stores/**`, `frontend/src/lib/components/app/**`, `frontend/src/routes/+page.svelte`; Docs: `docs/teamwork/BOARD.md`, `docs/12-build-plan/improvement-plan.md` si cambia el estado. Desktop/Slint/Tauri fuera de alcance. |
 | **Responsables** | Codex hub. Auditorias auxiliares internas: backend lifecycle/SSE (`Nietzsche`), frontend (`Copernicus`), module-db (`Ohm`). Estas auditorias no cuentan como QA oficial. |

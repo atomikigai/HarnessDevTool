@@ -11,6 +11,7 @@
 //! is a matter of implementing `TranscriptParser` for that source.
 
 pub mod claude;
+pub mod codex;
 pub mod event;
 pub mod store;
 pub mod watcher;

@@ -67,6 +67,80 @@ pub fn spawn_transcript_watcher(
     WatcherHandle { join }
 }
 
+/// Spawn a Codex watcher whose source JSONL is discovered after the PTY has
+/// already started. Codex can create its session file after the backend route
+/// returns, so the transcript slot must exist before the source path does.
+pub fn spawn_codex_transcript_watcher(
+    session_id: String,
+    codex_home: PathBuf,
+    cwd: PathBuf,
+    started_at_ms: i64,
+    marker: String,
+    store: Arc<TranscriptStore>,
+    bus: TranscriptBus,
+) -> WatcherHandle {
+    let join = tokio::spawn(async move {
+        let mut attempts = 0u32;
+        let source_path = loop {
+            let marker_result =
+                codex::find_latest_transcript_path(&codex_home, &cwd, started_at_ms, Some(&marker));
+            match marker_result {
+                Ok(Some(path)) => break path,
+                Ok(None) => {}
+                Err(e) => {
+                    tracing::debug!(
+                        session = %session_id,
+                        error = %e,
+                        "codex transcript marker lookup failed"
+                    );
+                }
+            }
+
+            if attempts >= 10 {
+                match codex::find_latest_transcript_path(&codex_home, &cwd, started_at_ms, None) {
+                    Ok(Some(path)) => break path,
+                    Ok(None) => {}
+                    Err(e) => {
+                        tracing::debug!(
+                            session = %session_id,
+                            error = %e,
+                            "codex transcript fallback lookup failed"
+                        );
+                    }
+                }
+            }
+
+            attempts = attempts.saturating_add(1);
+            if attempts % 60 == 0 {
+                tracing::debug!(
+                    session = %session_id,
+                    cwd = %cwd.display(),
+                    "waiting for codex transcript file"
+                );
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        };
+
+        if let Err(e) = watch_loop(
+            &session_id,
+            &source_path,
+            TranscriptParser::Codex,
+            store,
+            bus,
+        )
+        .await
+        {
+            tracing::warn!(
+                session = %session_id,
+                source = %source_path.display(),
+                error = %e,
+                "codex transcript watcher exited"
+            );
+        }
+    });
+    WatcherHandle { join }
+}
+
 /// Polling-based tail. We re-stat every 500ms; when the file grows beyond
 /// the last offset, we read the new lines, parse them, and ingest. The
 /// source file may not exist yet at spawn time (Claude creates it on first

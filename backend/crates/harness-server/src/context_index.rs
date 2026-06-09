@@ -3,6 +3,18 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use harness_core::Event;
 use rusqlite::{params, Connection};
+use serde::Serialize;
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ContextSearchHit {
+    pub thread_id: String,
+    pub session_id: String,
+    pub event_type: String,
+    pub at: i64,
+    pub pressure: Option<f64>,
+    pub model: Option<String>,
+    pub snippet: String,
+}
 
 fn db_path(harness_home: &Path, profile: &str) -> PathBuf {
     harness_home
@@ -122,6 +134,64 @@ pub fn index_context_events(harness_home: &Path, profile: &str, events: &[Event]
     Ok(indexed)
 }
 
+pub fn search_context_events(
+    harness_home: &Path,
+    profile: &str,
+    session_id: &str,
+    query: &str,
+    limit: usize,
+) -> Result<Vec<ContextSearchHit>> {
+    let conn = open(harness_home, profile)?;
+    let query = query.trim();
+    if query.is_empty() {
+        return Ok(Vec::new());
+    }
+    let fts_query = fts_query(query);
+    let limit = i64::try_from(limit.clamp(1, 50)).unwrap_or(20);
+    let mut stmt = conn.prepare(
+        r#"
+        SELECT e.thread_id, e.session_id, e.event_type, e.at, e.pressure, e.model,
+               snippet(context_events_fts, 3, '', '', ' ... ', 12) AS snippet
+        FROM context_events_fts
+        JOIN context_events e ON e.rowid = context_events_fts.rowid
+        WHERE context_events_fts MATCH ?1
+          AND e.session_id = ?2
+        ORDER BY bm25(context_events_fts), e.at DESC
+        LIMIT ?3
+        "#,
+    )?;
+    let rows = stmt.query_map(params![fts_query, session_id, limit], |row| {
+        Ok(ContextSearchHit {
+            thread_id: row.get(0)?,
+            session_id: row.get(1)?,
+            event_type: row.get(2)?,
+            at: row.get(3)?,
+            pressure: row.get(4)?,
+            model: row.get::<_, Option<String>>(5)?.filter(|s| !s.is_empty()),
+            snippet: row.get(6)?,
+        })
+    })?;
+    Ok(rows.filter_map(|row| row.ok()).collect())
+}
+
+fn fts_query(query: &str) -> String {
+    query
+        .split_whitespace()
+        .filter_map(|term| {
+            let clean = term
+                .chars()
+                .filter(|ch| ch.is_alphanumeric() || *ch == '_' || *ch == '-')
+                .collect::<String>();
+            if clean.is_empty() {
+                None
+            } else {
+                Some(format!("\"{clean}\""))
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -168,5 +238,45 @@ mod tests {
             .query_row("SELECT count(*) FROM context_events", [], |row| row.get(0))
             .unwrap();
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn searches_context_events_by_session() {
+        let dir = tempdir().unwrap();
+        let events = vec![
+            Event {
+                seq: 1,
+                at: 10,
+                event_type: "session.context.checkpoint_saved".into(),
+                items: vec![Item::Text {
+                    text: "Saved compact context checkpoint.".into(),
+                }],
+                thread_id: Some("t1".into()),
+                actor: Some("context-governor".into()),
+                payload: Some(json!({
+                    "session_id": "s1",
+                    "checkpoint": "CONTEXT CHECKPOINT\nnext_action: fix ChatView transcript"
+                })),
+            },
+            Event {
+                seq: 2,
+                at: 11,
+                event_type: "session.context.checkpoint_saved".into(),
+                items: vec![Item::Text {
+                    text: "Other".into(),
+                }],
+                thread_id: Some("t1".into()),
+                actor: Some("context-governor".into()),
+                payload: Some(json!({
+                    "session_id": "s2",
+                    "checkpoint": "CONTEXT CHECKPOINT\nnext_action: fix ChatView transcript"
+                })),
+            },
+        ];
+
+        index_context_events(dir.path(), "default", &events).unwrap();
+        let hits = search_context_events(dir.path(), "default", "s1", "ChatView", 10).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].session_id, "s1");
     }
 }

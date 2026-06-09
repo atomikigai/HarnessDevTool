@@ -72,10 +72,13 @@ build-sidecar:
     cp backend/target/release/harness-server "src-tauri/binaries/harness-server-${TARGET}"
     echo "Sidecar ready: src-tauri/binaries/harness-server-${TARGET}" >&2
 
-# Inicia la app Tauri en modo dev — el sidecar lanza el backend automáticamente.
-# Prerequisito: correr `just build-sidecar` al menos una vez (y cada vez que cambie Rust del backend).
-dev-tauri:
+# Inicia la app Tauri en modo dev — recompila el sidecar y lanza el backend automáticamente.
+dev-tauri: build-sidecar
     cargo tauri dev
+
+# Build release de la app Tauri con sidecar actualizado.
+tauri-build: build-sidecar
+    cargo tauri build
 
 # Run only frontend (local)
 dev-frontend:

@@ -15,6 +15,7 @@
     api,
     type ChildSessionSummary,
     type ContextGovernorStatus,
+    type ContextSearchHit,
     type SessionMeta,
     type SessionMetrics
   } from '$lib/api/client';
@@ -38,9 +39,12 @@
   let children = $state<ChildSessionSummary[]>([]);
   let metrics = $state<SessionMetrics | null>(null);
   let contextStatus = $state<ContextGovernorStatus | null>(null);
+  let contextQuery = $state('');
+  let contextHits = $state<ContextSearchHit[]>([]);
   let metricsError = $state<string | null>(null);
   let contextError = $state<string | null>(null);
   let contextBusy = $state(false);
+  let contextSearchBusy = $state(false);
   let childrenError = $state<string | null>(null);
   let pollTimer: ReturnType<typeof setInterval> | null = null;
   let metricsTimer: ReturnType<typeof setInterval> | null = null;
@@ -187,6 +191,25 @@
     }
   }
 
+  async function searchContext() {
+    if (!session || contextSearchBusy) return;
+    const query = contextQuery.trim();
+    if (!query) {
+      contextHits = [];
+      return;
+    }
+    contextSearchBusy = true;
+    try {
+      const res = await api.sessions.searchContext(session.id, query);
+      contextHits = res.data.hits;
+      contextError = null;
+    } catch (err) {
+      contextError = err instanceof Error ? err.message : String(err);
+    } finally {
+      contextSearchBusy = false;
+    }
+  }
+
   /**
    * Diff the polled list against what we already showed: surface new spawns
    * and status transitions as toasts so the user gets a real "something
@@ -270,6 +293,8 @@
     }
     contextStatus = null;
     contextError = null;
+    contextQuery = '';
+    contextHits = [];
     if (session) {
       const sessionId = session.id;
       void loadContextStatus(sessionId);
@@ -639,6 +664,55 @@
                 Clear
               </button>
             </div>
+
+            <form
+              class="mt-2 flex gap-1.5"
+              onsubmit={(ev) => {
+                ev.preventDefault();
+                void searchContext();
+              }}
+            >
+              <input
+                class="min-w-0 flex-1 rounded border px-2 py-1.5 font-mono text-[11px] outline-none"
+                style="background: var(--surface-window); border-color: var(--border-subtle); color: var(--fg-default);"
+                placeholder="Search checkpoints"
+                bind:value={contextQuery}
+              />
+              <button
+                type="submit"
+                class="rounded border px-2 py-1.5 text-[11px] font-medium transition-colors hover:bg-[var(--accent-soft)] disabled:opacity-50"
+                style="border-color: var(--border-subtle); color: var(--fg-default);"
+                disabled={contextSearchBusy || !contextQuery.trim()}
+              >
+                Search
+              </button>
+            </form>
+
+            {#if contextHits.length > 0}
+              <div class="mt-2 flex flex-col gap-1.5">
+                {#each contextHits as hit (`${hit.thread_id}-${hit.at}-${hit.event_type}`)}
+                  <div
+                    class="rounded border px-2 py-1.5"
+                    style="border-color: var(--border-subtle); background: var(--surface-window);"
+                  >
+                    <div class="mb-1 flex items-center justify-between gap-2">
+                      <span class="truncate font-mono text-[10px]" style="color: var(--fg-muted);">
+                        {hit.event_type.replace('session.context.', '')}
+                      </span>
+                      <span class="shrink-0 font-mono text-[10px]" style="color: var(--fg-muted);">
+                        {fmtTime(hit.at)}
+                      </span>
+                    </div>
+                    <p
+                      class="line-clamp-2 text-[11px] leading-relaxed"
+                      style="color: var(--fg-default);"
+                    >
+                      {hit.snippet}
+                    </p>
+                  </div>
+                {/each}
+              </div>
+            {/if}
           {/if}
         </section>
 

@@ -365,6 +365,21 @@ export interface ContextActionResponse {
   reason?: string | null;
 }
 
+export interface ContextSearchHit {
+  thread_id: string;
+  session_id: string;
+  event_type: string;
+  at: number;
+  pressure?: number | null;
+  model?: string | null;
+  snippet: string;
+}
+
+export interface ContextSearchResponse {
+  query: string;
+  hits: ContextSearchHit[];
+}
+
 export interface ChildSessionSummary {
   session_id: string;
   parent_session_id?: string | null;
@@ -679,6 +694,11 @@ export const api = {
       apiRequest<SessionMetrics>(`/sessions/${sessionId}/metrics`, { signal }),
     context: (sessionId: string, signal?: AbortSignal) =>
       apiRequest<ContextGovernorStatus>(`/sessions/${sessionId}/context`, { signal }),
+    searchContext: (sessionId: string, query: string, signal?: AbortSignal) =>
+      apiRequest<ContextSearchResponse>(
+        `/sessions/${sessionId}/context/search?q=${encodeURIComponent(query)}`,
+        { signal }
+      ),
     requestContextCheckpoint: (sessionId: string, signal?: AbortSignal) =>
       apiRequest<ContextActionResponse>(`/sessions/${sessionId}/context/checkpoint`, {
         method: 'POST',

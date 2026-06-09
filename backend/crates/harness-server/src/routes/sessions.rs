@@ -4,7 +4,7 @@ use std::path::{Path as FsPath, PathBuf};
 use std::sync::Arc;
 
 use axum::body::Bytes;
-use axum::extract::{Multipart, Path, State};
+use axum::extract::{Multipart, Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
@@ -190,12 +190,45 @@ pub struct ContextActionResponse {
     pub reason: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct ContextSearchQuery {
+    #[serde(default)]
+    pub q: String,
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Serialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export, export_to = "../../../bindings/"))]
+pub struct ContextSearchHit {
+    pub thread_id: String,
+    pub session_id: String,
+    pub event_type: String,
+    pub at: i64,
+    pub pressure: Option<f64>,
+    pub model: Option<String>,
+    pub snippet: String,
+}
+
+#[derive(Debug, Serialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export, export_to = "../../../bindings/"))]
+pub struct ContextSearchResponse {
+    pub query: String,
+    pub hits: Vec<ContextSearchHit>,
+}
+
 pub fn router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/api/threads/:tid/sessions", post(create_session))
         .route("/api/sessions/:sid", get(get_session))
         .route("/api/sessions/:sid/metrics", get(get_session_metrics))
         .route("/api/sessions/:sid/context", get(get_context_status))
+        .route(
+            "/api/sessions/:sid/context/search",
+            get(search_context_status),
+        )
         .route(
             "/api/sessions/:sid/context/checkpoint",
             post(request_context_checkpoint),
@@ -724,9 +757,7 @@ pub async fn spawn_session_internal(
             &cwd_for_transcript,
             meta.started_at,
             &meta.id,
-        )
-        .await
-        {
+        ) {
             tracing::warn!(
                 session = %meta.id,
                 error = %e,
@@ -861,7 +892,7 @@ fn start_claude_transcript_watcher(
     Ok(())
 }
 
-async fn start_codex_transcript_watcher(
+fn start_codex_transcript_watcher(
     state: &Arc<AppState>,
     session_id: &str,
     cwd: &std::path::Path,
@@ -873,38 +904,6 @@ async fn start_codex_transcript_watcher(
         .ok()
         .or_else(|| dirs::home_dir().map(|h| h.join(".codex")))
         .ok_or_else(|| "could not resolve $HOME for codex".to_string())?;
-    let mut source_path = None;
-    for attempt in 0..10 {
-        source_path = crate::transcript::codex::find_latest_transcript_path(
-            &codex_home,
-            cwd,
-            started_at_ms,
-            Some(&codex_harness_session_marker(marker_session_id)),
-        )
-        .map_err(|e| format!("find codex transcript: {e}"))?;
-        if source_path.is_some() {
-            break;
-        }
-        if attempt < 9 {
-            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-        }
-    }
-    if source_path.is_none() {
-        source_path = crate::transcript::codex::find_latest_transcript_path(
-            &codex_home,
-            cwd,
-            started_at_ms,
-            None,
-        )
-        .map_err(|e| format!("find codex transcript fallback: {e}"))?;
-    }
-    let source_path = source_path.ok_or_else(|| {
-        format!(
-            "codex transcript not found for cwd {} after {}",
-            cwd.display(),
-            started_at_ms
-        )
-    })?;
 
     let transcript_dir = state
         .harness_home
@@ -929,10 +928,12 @@ async fn start_codex_transcript_watcher(
         );
     }
 
-    let handle = crate::transcript::spawn_transcript_watcher(
+    let handle = crate::transcript::spawn_codex_transcript_watcher(
         session_id.to_string(),
-        source_path,
-        crate::transcript::TranscriptParser::Codex,
+        codex_home,
+        cwd.to_path_buf(),
+        started_at_ms,
+        codex_harness_session_marker(marker_session_id),
         store.clone(),
         bus.clone(),
     );
@@ -1338,6 +1339,40 @@ async fn get_context_status(
         &events,
         indexed_events,
     )))
+}
+
+async fn search_context_status(
+    State(state): State<Arc<AppState>>,
+    Path(sid): Path<String>,
+    Query(query): Query<ContextSearchQuery>,
+) -> Result<Json<ContextSearchResponse>, ApiError> {
+    let meta = load_session_meta(&state, &sid).await?;
+    let events = state.store.read_events(&meta.thread_id)?;
+    crate::context_index::index_context_events(&state.harness_home, &state.profile, &events)
+        .map_err(|e| ApiError::Internal(format!("index context events: {e}")))?;
+    let hits = crate::context_index::search_context_events(
+        &state.harness_home,
+        &state.profile,
+        &sid,
+        &query.q,
+        query.limit.unwrap_or(10),
+    )
+    .map_err(|e| ApiError::Internal(format!("search context events: {e}")))?
+    .into_iter()
+    .map(|hit| ContextSearchHit {
+        thread_id: hit.thread_id,
+        session_id: hit.session_id,
+        event_type: hit.event_type,
+        at: hit.at,
+        pressure: hit.pressure,
+        model: hit.model,
+        snippet: hit.snippet,
+    })
+    .collect();
+    Ok(Json(ContextSearchResponse {
+        query: query.q,
+        hits,
+    }))
 }
 
 async fn request_context_checkpoint(

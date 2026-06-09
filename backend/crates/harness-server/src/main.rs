@@ -5,6 +5,7 @@ mod auth;
 mod config;
 mod context_governor;
 mod context_index;
+mod data;
 mod error;
 mod routes;
 mod sse;

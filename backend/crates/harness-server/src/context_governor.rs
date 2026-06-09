@@ -1,4 +1,4 @@
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use chrono::Utc;
 use harness_core::{Event, Handoff, Item, Store};
@@ -116,7 +116,7 @@ async fn handle_event(
         .and_then(|usage| context_pressure(event.model.as_deref(), usage, event.seq))
     {
         let actions = {
-            let mut s = state.lock().expect("context governor mutex poisoned");
+            let mut s = lock_or_recover(state);
             s.latest_pressure = Some(pressure.clone());
             let should_request =
                 pressure.pressure >= CHECKPOINT_THRESHOLD && !s.checkpoint_requested;
@@ -158,7 +158,7 @@ async fn handle_event(
     if is_checkpoint_candidate(&event) {
         let checkpoint = event.content.unwrap_or_default();
         let should_clear = {
-            let mut s = state.lock().expect("context governor mutex poisoned");
+            let mut s = lock_or_recover(state);
             if s.checkpoint_requested && !s.checkpoint_saved {
                 s.checkpoint_saved = true;
                 true
@@ -290,12 +290,12 @@ async fn clear_and_resume(
             }),
             "Context clear recommended, but automatic clear is disabled for this role.",
         );
-        let mut s = state.lock().expect("context governor mutex poisoned");
+        let mut s = lock_or_recover(state);
         s.clear_pending = false;
         return;
     }
     let pressure = {
-        let mut s = state.lock().expect("context governor mutex poisoned");
+        let mut s = lock_or_recover(state);
         if s.cleared || s.clear_in_progress || !s.clear_pending || !s.checkpoint_saved {
             return;
         }
@@ -303,7 +303,7 @@ async fn clear_and_resume(
         s.latest_pressure.clone()
     };
     let Some(session) = manager.get(&target.session_id) else {
-        let mut s = state.lock().expect("context governor mutex poisoned");
+        let mut s = lock_or_recover(state);
         s.clear_in_progress = false;
         return;
     };
@@ -326,7 +326,7 @@ async fn clear_and_resume(
             payload,
             "Deferred context clear because the session was not idle.",
         );
-        let mut s = state.lock().expect("context governor mutex poisoned");
+        let mut s = lock_or_recover(state);
         s.clear_in_progress = false;
         return;
     }
@@ -337,7 +337,7 @@ async fn clear_and_resume(
             error = %e,
             "context governor could not clear session"
         );
-        let mut s = state.lock().expect("context governor mutex poisoned");
+        let mut s = lock_or_recover(state);
         s.clear_in_progress = false;
         return;
     }
@@ -352,12 +352,12 @@ async fn clear_and_resume(
             error = %e,
             "context governor could not resume session after clear"
         );
-        let mut s = state.lock().expect("context governor mutex poisoned");
+        let mut s = lock_or_recover(state);
         s.clear_in_progress = false;
         return;
     }
     {
-        let mut s = state.lock().expect("context governor mutex poisoned");
+        let mut s = lock_or_recover(state);
         s.cleared = true;
         s.clear_in_progress = false;
     }
@@ -570,6 +570,17 @@ fn merge_pressure_payload(payload: &mut Value, pressure: &ContextPressure) {
             Value::Number(pressure.source_seq.into()),
         );
     }
+}
+
+fn lock_or_recover(mutex: &Mutex<GovernorState>) -> MutexGuard<'_, GovernorState> {
+    mutex.lock().unwrap_or_else(|poisoned| {
+        tracing::warn!(
+            "context governor state lock was poisoned; recovering and resetting clear_in_progress"
+        );
+        let mut state = poisoned.into_inner();
+        state.clear_in_progress = false;
+        state
+    })
 }
 
 #[cfg(test)]

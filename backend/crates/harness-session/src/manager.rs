@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
@@ -207,7 +207,7 @@ impl Manager {
     /// session state must remain available for detached replay after restart.
     pub async fn shutdown_all(&self) -> Vec<String> {
         let sessions = {
-            let _guard = self.lifecycle_lock.lock().expect("lifecycle lock poisoned");
+            let _guard = lock_or_recover(&self.lifecycle_lock);
             self.shutting_down.store(true, Ordering::SeqCst);
             let mut sessions = self.all();
             sessions.sort_by_key(|session| std::cmp::Reverse(self.tree_depth(session.id())));
@@ -275,7 +275,7 @@ impl Manager {
         cwd: PathBuf,
         opts: SpawnOpts,
     ) -> Result<Arc<AgentSession>, SessionError> {
-        let _guard = self.lifecycle_lock.lock().expect("lifecycle lock poisoned");
+        let _guard = lock_or_recover(&self.lifecycle_lock);
         if self.shutting_down.load(Ordering::SeqCst) {
             return Err(SessionError::Invalid(
                 "session manager is shutting down".to_string(),
@@ -403,7 +403,7 @@ impl Manager {
     /// resources deterministically.
     pub async fn kill_tree_and_tombstone(&self, sid: &str) -> KillTreeResult {
         let (sessions_to_kill, affected, tombstone_error) = {
-            let _guard = self.lifecycle_lock.lock().expect("lifecycle lock poisoned");
+            let _guard = lock_or_recover(&self.lifecycle_lock);
             let mut affected = Vec::new();
             let mut sessions_to_kill = Vec::new();
             let mut tombstone_error = None;
@@ -771,6 +771,12 @@ fn sanitize_pty_prompt(prompt: &str) -> String {
         .chars()
         .filter(|ch| !ch.is_control() || matches!(ch, '\n' | '\r' | '\t'))
         .collect::<String>()
+}
+
+fn lock_or_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 #[cfg(test)]

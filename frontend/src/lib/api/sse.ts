@@ -119,7 +119,10 @@ export function subscribeSSE<T = unknown>(
     if (closed || reconnectTimer || attempts >= maxAttempts) return;
     es?.close();
     es = null;
-    const delay = Math.min(maxDelay, baseDelay * 2 ** attempts);
+    // Full-jitter: pick uniformly in [0, cap] to spread reconnections and avoid
+    // thundering-herd when many clients reconnect simultaneously.
+    const cap = Math.min(maxDelay, baseDelay * 2 ** attempts);
+    const delay = Math.max(250, Math.random() * cap);
     attempts += 1;
     reconnectTimer = setTimeout(() => {
       reconnectTimer = null;

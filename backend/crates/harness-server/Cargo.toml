@@ -46,3 +46,6 @@ tempfile = "3"
 rayon = { workspace = true }
 ts-rs = { workspace = true, optional = true }
 rusqlite = { workspace = true }
+csv = { workspace = true }
+calamine = { workspace = true }
+rust_xlsxwriter = { workspace = true }

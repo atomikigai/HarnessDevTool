@@ -16,6 +16,27 @@
   const REFRESH_MS = 10_000;
   let timer: ReturnType<typeof setInterval> | null = null;
 
+  function startHealthTimer(): void {
+    if (timer) return;
+    health.refresh();
+    timer = setInterval(() => health.refresh(), REFRESH_MS);
+  }
+
+  function stopHealthTimer(): void {
+    if (timer) {
+      clearInterval(timer);
+      timer = null;
+    }
+  }
+
+  function onVisibilityChange(): void {
+    if (document.hidden) {
+      stopHealthTimer();
+    } else {
+      startHealthTimer();
+    }
+  }
+
   function isEditableTarget(target: EventTarget | null): boolean {
     if (!(target instanceof HTMLElement)) return false;
     if (target.isContentEditable) return true;
@@ -32,15 +53,16 @@
   }
 
   onMount(() => {
-    health.refresh();
     pauseAll.refresh();
     window.addEventListener('keydown', onGlobalKeydown);
-    timer = setInterval(() => health.refresh(), REFRESH_MS);
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    startHealthTimer();
   });
 
   onDestroy(() => {
     window.removeEventListener('keydown', onGlobalKeydown);
-    if (timer) clearInterval(timer);
+    document.removeEventListener('visibilitychange', onVisibilityChange);
+    stopHealthTimer();
   });
 
   const dotClass = $derived.by(() => {

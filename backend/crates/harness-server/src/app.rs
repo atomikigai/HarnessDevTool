@@ -65,6 +65,7 @@ pub fn build_router(state: Arc<AppState>, cfg: &Config) -> Router {
         .merge(routes::approvals::router())
         .merge(routes::control::router())
         .merge(routes::budget::router())
+        .merge(routes::data::router())
         .merge(routes::db::router())
         .merge(routes::ssh::router())
         .merge(routes::profiles::router())

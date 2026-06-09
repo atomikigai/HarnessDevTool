@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use chrono::Utc;
@@ -139,7 +139,7 @@ impl TaskStore {
         &self,
         tid: &str,
     ) -> Result<(Arc<Mutex<Index>>, broadcast::Sender<TaskEvent>), Error> {
-        let mut threads = self.threads.lock().expect("threads mutex poisoned");
+        let mut threads = lock_or_recover(&self.threads);
         if let Some(s) = threads.get(tid) {
             return Ok((s.index.clone(), s.bus.clone()));
         }
@@ -164,7 +164,7 @@ impl TaskStore {
         dir: &Path,
         index: &Arc<Mutex<Index>>,
     ) -> Result<(), Error> {
-        let idx = index.lock().expect("index mutex poisoned");
+        let idx = lock_or_recover(index);
         idx.clear()?;
         if !dir.exists() {
             return Ok(());
@@ -193,7 +193,7 @@ impl TaskStore {
     pub fn list(&self, tid: &str, filters: ListFilters) -> Result<Vec<Task>, Error> {
         let (index, _) = self.ensure_thread(tid)?;
         let ids = {
-            let idx = index.lock().expect("index mutex poisoned");
+            let idx = lock_or_recover(&index);
             idx.list_ids(&filters)?
         };
         let mut out = Vec::with_capacity(ids.len());
@@ -318,7 +318,7 @@ impl TaskStore {
         let path = self.task_path(tid, &id)?;
         write_task_atomic(&path, &task)?;
         {
-            let idx = index.lock().expect("index mutex poisoned");
+            let idx = lock_or_recover(&index);
             idx.upsert(&task)?;
         }
         self.emit(
@@ -349,7 +349,7 @@ impl TaskStore {
             with_locked_task(&path, |task| apply_patch(task, &patch, by, &handoffs))?;
 
         {
-            let idx = index.lock().expect("index mutex poisoned");
+            let idx = lock_or_recover(&index);
             idx.upsert(&task)?;
         }
         if prev_status != task.status {
@@ -436,7 +436,7 @@ impl TaskStore {
             Ok(ClaimResult::Granted(lease))
         })?;
         {
-            let idx = index.lock().expect("index mutex poisoned");
+            let idx = lock_or_recover(&index);
             // Re-read to upsert with the persisted version
             let t = read_task_file(&path)?;
             idx.upsert(&t)?;
@@ -493,7 +493,7 @@ impl TaskStore {
             Ok::<_, Error>(lease)
         })?;
         {
-            let idx = index.lock().expect("index mutex poisoned");
+            let idx = lock_or_recover(&index);
             let t = read_task_file(&path)?;
             idx.upsert(&t)?;
         }
@@ -740,13 +740,19 @@ impl TaskStore {
         let (_, out) = with_locked_task(&path, |t| f(t))?;
         let (index, _) = self.ensure_thread(tid)?;
         let t = read_task_file(&path)?;
-        let idx = index.lock().expect("index mutex poisoned");
+        let idx = lock_or_recover(&index);
         idx.upsert(&t)?;
         Ok(out)
     }
 }
 
 // ---------- helpers ----------
+
+fn lock_or_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 fn apply_patch(
     task: &mut Task,
@@ -1179,6 +1185,23 @@ mod tests {
             .open(path)
             .unwrap();
         writeln!(file, "{}", serde_json::to_string(&handoff).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn recovers_after_threads_mutex_poisoning() {
+        let (_dir, s) = store();
+        s.create("thr-1", mk_draft("before poison")).unwrap();
+
+        let poisoned = s.clone();
+        let join = std::thread::spawn(move || {
+            let _guard = lock_or_recover(&poisoned.threads);
+            panic!("poison threads mutex");
+        });
+        assert!(join.join().is_err());
+
+        let listed = s.list("thr-1", ListFilters::default()).unwrap();
+        assert_eq!(listed.len(), 1);
+        s.create("thr-1", mk_draft("after poison")).unwrap();
     }
 
     #[test]

@@ -1,7 +1,7 @@
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex as StdMutex};
+use std::sync::{Arc, Mutex as StdMutex, MutexGuard as StdMutexGuard};
 use std::time::Duration;
 
 use chrono::Utc;
@@ -35,6 +35,12 @@ impl SessionRuntime {
             handle.abort();
         }
     }
+}
+
+fn lock_or_recover<T>(mutex: &StdMutex<T>) -> StdMutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// Handle to a running agent process.
@@ -262,6 +268,7 @@ impl AgentSession {
         // PTY reader task: blocking reads in a dedicated thread, forwarded
         // through a channel into the async runtime.
         let (tx_bytes, mut rx_bytes) = tokio::sync::mpsc::channel::<Vec<u8>>(128);
+        let (tx_free_buffers, mut rx_free_buffers) = tokio::sync::mpsc::channel::<Vec<u8>>(128);
         let id_for_reader = id.clone();
         std::thread::spawn(move || {
             let mut reader = reader;
@@ -270,7 +277,13 @@ impl AgentSession {
                 match reader.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
-                        if tx_bytes.blocking_send(buf[..n].to_vec()).is_err() {
+                        buf.truncate(n);
+                        let mut next_buf = rx_free_buffers
+                            .try_recv()
+                            .unwrap_or_else(|_| vec![0u8; PTY_CHUNK_TARGET]);
+                        next_buf.resize(PTY_CHUNK_TARGET, 0);
+                        let chunk = std::mem::replace(&mut buf, next_buf);
+                        if tx_bytes.blocking_send(chunk).is_err() {
                             break;
                         }
                     }
@@ -295,6 +308,7 @@ impl AgentSession {
                 match recv {
                     Ok(Some(chunk)) => {
                         pending.extend_from_slice(&chunk);
+                        let _ = tx_free_buffers.try_send(chunk);
                         if pending.len() >= PTY_CHUNK_TARGET {
                             flush_chunk(
                                 &mut pending,
@@ -431,20 +445,20 @@ impl AgentSession {
         exit_waiter: JoinHandle<()>,
         state_detector: JoinHandle<()>,
     ) {
-        let mut runtime = self.runtime.lock().expect("session runtime lock poisoned");
+        let mut runtime = lock_or_recover(&self.runtime);
         runtime.output_forwarder = Some(output_forwarder);
         runtime.exit_waiter = Some(exit_waiter);
         runtime.state_detector = Some(state_detector);
     }
 
     pub fn set_prompt_injector(&self, handle: JoinHandle<()>) {
-        let mut runtime = self.runtime.lock().expect("session runtime lock poisoned");
+        let mut runtime = lock_or_recover(&self.runtime);
         runtime.prompt_injector = Some(handle);
     }
 
     #[cfg(test)]
     pub(crate) fn interruptible_abort_handles_for_test(&self) -> InterruptibleAbortHandles {
-        let runtime = self.runtime.lock().expect("session runtime lock poisoned");
+        let runtime = lock_or_recover(&self.runtime);
         InterruptibleAbortHandles {
             state_detector: runtime
                 .state_detector
@@ -458,7 +472,7 @@ impl AgentSession {
     }
 
     fn abort_interruptible_tasks(&self) {
-        let mut runtime = self.runtime.lock().expect("session runtime lock poisoned");
+        let mut runtime = lock_or_recover(&self.runtime);
         runtime.abort_interruptible();
     }
 

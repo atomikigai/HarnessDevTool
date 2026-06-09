@@ -2,6 +2,7 @@ pub mod agents;
 pub mod approvals;
 pub mod budget;
 pub mod control;
+pub mod data;
 pub mod db;
 pub mod events;
 pub mod health;

@@ -197,15 +197,13 @@ falso positivo de §8.
 
 ## 10. Plan recomendado (orden de ataque)
 
-1. **Cerrar data loader** (gen-types + review/QA + board) — está a un paso.
-2. **Lock poisoning** → `parking_lot` en governor/store/manager. Barato, elimina el peor modo
-   de falla sistémico.
+1. ✅ **(Wave 2, 2026-06-09) Cerrar data loader** (gen-types + review/QA + board) — completado en Wave 2.
+2. ✅ **(Wave 2, 2026-06-09) Lock poisoning** → `parking_lot` en governor/store/manager. Barato, elimina el peor modo de falla sistémico. — completado.
 3. **Fase C / P1 rendimiento**: scheduler indexado, `read_output` streaming, seq atómico,
    SSE lagged/resync, y de paso la copia en `session.rs:273`.
 4. **CI mínimo** (check + clippy + nextest + pnpm check + verificación de gen-types limpio).
 5. **Gateway MCP (P3)** — prerequisito de todo lo demás de autonomía.
-6. **Capabilities v2**: telemetría de uso → scoring → re-resolución en checkpoints → MCP
-   pooled (§8).
+6. **Capabilities v2**: telemetría de uso → scoring (✅ scoring ponderado role/scopes/cwd/prompts e implementado en Wave 2) → re-resolución en checkpoints → MCP pooled (§8).
 7. **Governor checkpoint a disco + métricas exportadas** — lo que falta para sesiones largas
    desatendidas y para llamarlo producción sin asterisco.
 8. **Frontend**: consolidar polling→SSE, Vitest, y los stubs F3 (TaskGraph DAG, panel de

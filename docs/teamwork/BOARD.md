@@ -17,7 +17,48 @@ Modelo operativo: ver [`docs/teamwork/OPERATING_MODEL.md`](./OPERATING_MODEL.md)
 
 _Sin tarea activa._
 
-## Última cerrada — Production hardening Wave 1
+## Última cerrada — Harness improvement Wave 2
+
+| Campo | Valor |
+|---|---|
+| **Tarea** | Harness improvement Wave 2 — robustez, rendimiento y carga inteligente de capabilities |
+| **Estado** | ✅ DONE — cerrada 2026-06-09. QA PASS en los 6 criterios; just test verde (348 tests Rust + svelte-check 0 errores). |
+| **Objetivo** | (1) Eliminar el modo de falla sistémico por lock poisoning; (2) optimizar hot paths (copia por chunk PTY, polling frontend); (3) subir la precisión del smart capability loader (matching por token con scoring, sin falsos positivos por substring); (4) cerrar el data loader en curso (tests + gen-types). Base: `docs/12-build-plan/harness-analysis-2026-06-09.md`. |
+| **Alcance / archivos** | Backend A (Codex): `backend/crates/harness-server/src/context_governor.rs`, `backend/crates/harness-core/src/tasks/store.rs`, `backend/crates/harness-session/src/{manager.rs,session.rs}` — SIN tocar `routes/sessions.rs`. Backend B (Codex, tras A): `backend/crates/harness-server/src/{routes/sessions.rs,routes/data.rs,data.rs,state.rs}`. Frontend (subagente): `frontend/src/lib/components/app/{SessionRightPanel,TopBar}.svelte`, `frontend/src/lib/stores/**`, `frontend/src/lib/api/sse.ts`. Docs: `docs/teamwork/BOARD.md`, `docs/12-build-plan/improvement-plan.md`. |
+| **Responsables** | Planner: Claude (orquesta, no edita código). Backend: Codex (slices A y B, secuenciales). Frontend: subagente `frontend` (paralelo a A). Revisor/QA: subagentes nativos al final. Docs: subagente `doc-agent`. |
+| **Criterio de aceptación** | (1) Cero `expect("poisoned")` en paths de runtime de los archivos en alcance, con tests de recuperación; (2) PTY reader sin copia extra por chunk; (3) polling de panel/topbar consolidado y pausado cuando no visible, `pnpm check` verde; (4) heurística de capabilities con matching por límites de palabra + scoring, con tests que cubran falsos positivos previos ("csv" en texto de auditoría NO carga data_loader; task backend con la palabra "frontend" en un path NO carga skills de UI); (5) data loader con tests y `just gen-types` corrido; (6) `just test` completo verde antes del cierre. |
+| **Checks obligatorios** | `cargo test -p harness-core -p harness-session -p harness-server`, `just gen-types` (tipos TS nuevos del data loader), `pnpm --dir frontend check`, `just test` al cierre. |
+
+### Contrato breve — Wave 2
+
+1. Write-scopes estrictos: Backend A no toca `routes/sessions.rs` (lo edita B después); Frontend no toca `frontend/src/lib/api/types/` (generado).
+2. El data loader ya define el contrato HTTP: `POST /api/data/inspect` y `POST /api/data/write` con tipos `ts-rs` (`DataInspectRequest/Response`, `DataWriteRequest/Response`, etc.). Backend B regenera tipos con `just gen-types`; Frontend NO los consume aún en esta wave (sin UI nueva).
+3. Sin cambios de protocolo: `X-Protocol-Version` intacto; event log append-only intacto.
+4. Cada slice agrega tests proporcionales; reviewer/QA oficiales antes del cierre.
+
+### Handoff Backend A — Codex 2026-06-09
+- Helper `lock_or_recover` (`unwrap_or_else(|p| p.into_inner())`) reemplaza todos los `expect("...poisoned")` en: harness-core/src/tasks/store.rs, harness-server/src/context_governor.rs, harness-session/src/manager.rs, harness-session/src/session.rs.
+- PTY reader sin copia por chunk: envía el Vec leído y recicla buffers devueltos por el forwarder vía canal interno (std::mem::replace + try_send).
+- Test nuevo: recovers_after_threads_mutex_poisoning. cargo test -p harness-core -p harness-session -p harness-server verde (104+78+35).
+
+### Handoff Backend B + fix round — Codex 2026-06-09
+- Smart capability loader v2 (routes/sessions.rs): matching por token con límites de palabra (tokenize_capability_text) y scoring ponderado role=5 > scopes=4 > cwd=2 > prompts=1, umbral 4; data_loader exige señal de formato y score ≥5; subskills dependientes umbral 1 tras confirmar dominio padre. Tests de falsos positivos: "csv" débil en prompt no carga data_loader; "mycsvparser" no matchea; "frontend" en segmento de path no carga skills UI; positivos previos preservados.
+- Data loader cerrado (data.rs + routes/data.rs): confinamiento de TODA ruta (relativa y absoluta) canonicalizada bajo HARNESS_DATA_ROOT (default cwd), symlinks que escapan rechazados; inspección limitada por MAX_INSPECT_ROWS=100k con campo `truncated`; `warnings` por headers CSV duplicados. just gen-types corrido (Data*.ts regenerados).
+- context_governor: al recuperar lock envenenado loguea tracing::warn! y resetea clear_in_progress (evita sesión atascada sin clears).
+- state.rs: ManagerSpawner alinea señales smart (auto_intro + role_prompt + task text) con la ruta REST.
+- cargo test -p harness-server verde (91).
+
+### Handoff Frontend — subagente Sonnet 2026-06-09
+- SessionRightPanel.svelte: 3 setInterval consolidados en un tick de 1500ms (children cada tick, context cada 2, metrics cada 4), carga inicial como tick 0 sin disparo redundante, AbortController por endpoint (aborta obsoletos, descarta out-of-order), pausa/reanuda con visibilitychange.
+- TopBar.svelte: health polling pausable con visibilitychange.
+- sse.ts: full-jitter en backoff de reconexión con mínimo 250ms.
+- pnpm --dir frontend check verde (0 errores).
+
+### Review y QA — 2026-06-09
+- Revisor: 0 P0; 2 P1 (rutas absolutas sin confinamiento; inspección sin límite de lectura) corregidos en fix round; P2 frontend corregidos; P2 restantes anotados.
+- QA: PASS en los 6 criterios con smoke real (inspect/write OK; /etc/passwd, traversal y write absoluto fuera de raíz → 400; archivos no creados). just test: 348 tests Rust + pnpm check 0 errores, ~25s.
+
+## Cerrada — Production hardening Wave 1
 
 | Campo | Valor |
 |---|---|

@@ -22,7 +22,7 @@
   import { tasksState } from '$lib/stores/tasks.svelte';
   import { Bot, RefreshCw, RotateCcw, Save } from '$lib/icons';
   import { taskProgress } from '$lib/sessionDisplay';
-  import { onDestroy } from 'svelte';
+  import { onDestroy, onMount } from 'svelte';
   import { toast } from 'svelte-sonner';
 
   interface Props {
@@ -46,9 +46,16 @@
   let contextBusy = $state(false);
   let contextSearchBusy = $state(false);
   let childrenError = $state<string | null>(null);
+  // Unified visibility-aware polling.
+  // children: every tick (~1500ms), context: every 2nd tick (~3000ms), metrics: every 4th (~6000ms).
+  const TICK_MS = 1500;
+  const CONTEXT_EVERY = 2;
+  const METRICS_EVERY = 4;
   let pollTimer: ReturnType<typeof setInterval> | null = null;
-  let metricsTimer: ReturnType<typeof setInterval> | null = null;
-  let contextTimer: ReturnType<typeof setInterval> | null = null;
+  let pollTick = 0;
+  let childrenAbort: AbortController | null = null;
+  let metricsAbort: AbortController | null = null;
+  let contextAbort: AbortController | null = null;
   // Track ids and statuses across polls so we can fire toasts when something
   // actually changes — a hard refresh of the list always renders, but the
   // visual blip belongs on transitions.
@@ -106,49 +113,52 @@
     knownStatuses = new Map();
   }
 
-  async function loadChildren(sessionId: string) {
+  async function loadChildren(sessionId: string, signal?: AbortSignal) {
     if (!session || session.id !== sessionId) {
       children = [];
       return;
     }
     try {
-      const res = await api.sessions.children(sessionId);
+      const res = await api.sessions.children(sessionId, signal);
       const next = (res.data ?? []).toSorted((a, b) => a.started_at - b.started_at);
       if (!session || session.id !== sessionId) return;
       diffAndToast(next);
       children = next;
       childrenError = null;
     } catch (err) {
+      if ((err as { name?: string }).name === 'AbortError') return;
       childrenError = err instanceof Error ? err.message : String(err);
     }
   }
 
-  async function loadMetrics(sessionId: string) {
+  async function loadMetrics(sessionId: string, signal?: AbortSignal) {
     if (!session || session.id !== sessionId) {
       metrics = null;
       return;
     }
     try {
-      const res = await api.sessions.metrics(sessionId);
+      const res = await api.sessions.metrics(sessionId, signal);
       if (!session || session.id !== sessionId) return;
       metrics = res.data;
       metricsError = null;
     } catch (err) {
+      if ((err as { name?: string }).name === 'AbortError') return;
       metricsError = err instanceof Error ? err.message : String(err);
     }
   }
 
-  async function loadContextStatus(sessionId: string) {
+  async function loadContextStatus(sessionId: string, signal?: AbortSignal) {
     if (!session || session.id !== sessionId) {
       contextStatus = null;
       return;
     }
     try {
-      const res = await api.sessions.context(sessionId);
+      const res = await api.sessions.context(sessionId, signal);
       if (!session || session.id !== sessionId) return;
       contextStatus = res.data;
       contextError = null;
     } catch (err) {
+      if ((err as { name?: string }).name === 'AbortError') return;
       contextError = err instanceof Error ? err.message : String(err);
     }
   }
@@ -242,6 +252,60 @@
     }
   }
 
+  function stopPanelPoll(): void {
+    if (pollTimer) {
+      clearInterval(pollTimer);
+      pollTimer = null;
+    }
+    childrenAbort?.abort();
+    metricsAbort?.abort();
+    contextAbort?.abort();
+    childrenAbort = metricsAbort = contextAbort = null;
+  }
+
+  function tickPoll(sessionId: string): void {
+    pollTick += 1;
+    // Children — every tick
+    childrenAbort?.abort();
+    childrenAbort = new AbortController();
+    void loadChildren(sessionId, childrenAbort.signal);
+    // Context status — every CONTEXT_EVERY ticks; initial load is in startPanelPoll (tick 0)
+    if (pollTick % CONTEXT_EVERY === 0) {
+      contextAbort?.abort();
+      contextAbort = new AbortController();
+      void loadContextStatus(sessionId, contextAbort.signal);
+    }
+    // Metrics — every METRICS_EVERY ticks; initial load is in startPanelPoll (tick 0)
+    if (pollTick % METRICS_EVERY === 0) {
+      metricsAbort?.abort();
+      metricsAbort = new AbortController();
+      void loadMetrics(sessionId, metricsAbort.signal);
+    }
+  }
+
+  function startPanelPoll(sessionId: string): void {
+    stopPanelPoll();
+    pollTick = 0;
+    // Eagerly load context and metrics once (counts as tick-0 of each cadence).
+    // tickPoll will then fire them again at CONTEXT_EVERY / METRICS_EVERY intervals.
+    contextAbort?.abort();
+    contextAbort = new AbortController();
+    void loadContextStatus(sessionId, contextAbort.signal);
+    metricsAbort?.abort();
+    metricsAbort = new AbortController();
+    void loadMetrics(sessionId, metricsAbort.signal);
+    tickPoll(sessionId);
+    pollTimer = setInterval(() => tickPoll(sessionId), TICK_MS);
+  }
+
+  function onVisibilityChange(): void {
+    if (document.hidden) {
+      stopPanelPoll();
+    } else if (session) {
+      startPanelPoll(session.id);
+    }
+  }
+
   // Defensive: every time the Tasks tab becomes visible, refetch the list.
   // SSE wiring should keep this in sync but if a `task.created` event was
   // dropped (timing race, MCP fallback to local FS, etc.) the user still
@@ -252,60 +316,41 @@
     }
   });
 
-  // Poll children whenever there's a session selected — not only when the
-  // Agents tab is open. That way the badge count + toasts stay live even
-  // while the user is reading tasks or info.
+  // Single unified polling effect — replaces the former three separate setInterval blocks.
+  // Pauses automatically when the tab is hidden (via onVisibilityChange); resumes on focus.
   $effect(() => {
-    if (pollTimer) {
-      clearInterval(pollTimer);
-      pollTimer = null;
-    }
     if (session) {
       const sessionId = session.id;
       resetChildren();
       activeSessionId = sessionId;
-      void loadChildren(sessionId);
-      pollTimer = setInterval(() => void loadChildren(sessionId), 1500);
+      metrics = null;
+      metricsError = null;
+      contextStatus = null;
+      contextError = null;
+      contextQuery = '';
+      contextHits = [];
+      if (!document.hidden) startPanelPoll(sessionId);
     } else {
+      stopPanelPoll();
       resetChildren();
       activeSessionId = null;
+      metrics = null;
+      metricsError = null;
+      contextStatus = null;
+      contextError = null;
+      contextQuery = '';
+      contextHits = [];
     }
+    return () => stopPanelPoll();
   });
 
-  $effect(() => {
-    if (metricsTimer) {
-      clearInterval(metricsTimer);
-      metricsTimer = null;
-    }
-    metrics = null;
-    metricsError = null;
-    if (session) {
-      const sessionId = session.id;
-      void loadMetrics(sessionId);
-      metricsTimer = setInterval(() => void loadMetrics(sessionId), 5000);
-    }
-  });
-
-  $effect(() => {
-    if (contextTimer) {
-      clearInterval(contextTimer);
-      contextTimer = null;
-    }
-    contextStatus = null;
-    contextError = null;
-    contextQuery = '';
-    contextHits = [];
-    if (session) {
-      const sessionId = session.id;
-      void loadContextStatus(sessionId);
-      contextTimer = setInterval(() => void loadContextStatus(sessionId), 3000);
-    }
+  onMount(() => {
+    document.addEventListener('visibilitychange', onVisibilityChange);
   });
 
   onDestroy(() => {
-    if (pollTimer) clearInterval(pollTimer);
-    if (metricsTimer) clearInterval(metricsTimer);
-    if (contextTimer) clearInterval(contextTimer);
+    stopPanelPoll();
+    document.removeEventListener('visibilitychange', onVisibilityChange);
   });
 
   function statusColor(s: string): string {

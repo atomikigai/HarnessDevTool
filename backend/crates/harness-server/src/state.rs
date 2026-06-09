@@ -621,7 +621,19 @@ impl SessionSpawner for ManagerSpawner {
             Some(&req.role),
             Some(&cwd),
             [
-                Some(role.prompt_template.as_str()),
+                opts.auto_intro.as_deref(),
+                opts.role_prompt.as_deref(),
+                task_skill_text.as_deref(),
+            ],
+            &opts.scopes,
+            crate::routes::sessions::CapabilityProfile::Auto,
+        );
+        let smart_tool_groups = crate::routes::sessions::resolve_smart_tool_groups(
+            Some(&req.role),
+            Some(&cwd),
+            [
+                opts.auto_intro.as_deref(),
+                opts.role_prompt.as_deref(),
                 task_skill_text.as_deref(),
             ],
             &opts.scopes,
@@ -689,10 +701,12 @@ impl SessionSpawner for ManagerSpawner {
                     crate::routes::sessions::loaded_mcp_capabilities_with_skills(
                         load_crawl4ai,
                         smart_skills,
+                        smart_tool_groups,
                     );
                 let capability_intro = crate::routes::sessions::spawn_capability_intro(
                     load_crawl4ai,
                     &loaded_capabilities.skills,
+                    &loaded_capabilities.tool_groups,
                 );
                 let config = json!({ "mcpServers": serde_json::Value::Object(mcp_servers) });
                 if let Err(e) = crate::routes::sessions::write_private_json(&path, &config) {

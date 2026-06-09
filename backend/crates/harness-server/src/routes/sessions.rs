@@ -548,6 +548,17 @@ pub async fn spawn_session_internal(
         &args.scopes,
         args.capability_profile,
     );
+    let smart_tool_groups = resolve_smart_tool_groups(
+        args.role.as_deref(),
+        Some(&args.cwd),
+        [
+            args.auto_intro.as_deref(),
+            args.initial_prompt.as_deref(),
+            task_skill_text.as_deref(),
+        ],
+        &args.scopes,
+        args.capability_profile,
+    );
 
     let (mut opts, config_path) = build_spawn_opts(
         state,
@@ -561,6 +572,7 @@ pub async fn spawn_session_internal(
         &args.scopes,
         args.capability_profile.mcp_enabled(),
         smart_skills,
+        smart_tool_groups,
     )?;
     opts.session_id_override = Some(session_id.clone());
     opts.initial_size = args.initial_size;
@@ -974,12 +986,17 @@ fn build_spawn_opts(
     scopes: &[String],
     mcp_enabled: bool,
     smart_skills: Vec<String>,
+    smart_tool_groups: Vec<String>,
 ) -> Result<(SpawnOpts, Option<PathBuf>), ApiError> {
     if !mcp_enabled {
+        let mut tool_groups = vec!["agent_builtin".to_string()];
+        for tool_group in smart_tool_groups {
+            push_unique(&mut tool_groups, tool_group);
+        }
         return Ok((
             SpawnOpts {
                 loaded_capabilities: LoadedCapabilities {
-                    tool_groups: vec!["agent_builtin".to_string()],
+                    tool_groups,
                     ..LoadedCapabilities::default()
                 },
                 ..SpawnOpts::default()
@@ -991,13 +1008,31 @@ fn build_spawn_opts(
     // `--mcp-config`, but it does
     // support per-invocation `-c mcp_servers.*` overrides.
     if !matches!(kind, AgentKind::Claude | AgentKind::Codex) {
-        return Ok((SpawnOpts::default(), None));
+        return Ok((
+            SpawnOpts {
+                loaded_capabilities: LoadedCapabilities {
+                    tool_groups: smart_tool_groups,
+                    ..LoadedCapabilities::default()
+                },
+                ..SpawnOpts::default()
+            },
+            None,
+        ));
     }
     let mcp_bin = match state.mcp_server_binary.as_ref() {
         Some(p) => p.clone(),
         None => {
             tracing::warn!("spawning {kind} without MCP injection (no harness-mcp-server binary)");
-            return Ok((SpawnOpts::default(), None));
+            return Ok((
+                SpawnOpts {
+                    loaded_capabilities: LoadedCapabilities {
+                        tool_groups: smart_tool_groups,
+                        ..LoadedCapabilities::default()
+                    },
+                    ..SpawnOpts::default()
+                },
+                None,
+            ));
         }
     };
 
@@ -1070,8 +1105,13 @@ fn build_spawn_opts(
     } else {
         Vec::new()
     };
-    let loaded_capabilities = loaded_mcp_capabilities_with_skills(load_crawl4ai, smart_skills);
-    let capability_intro = spawn_capability_intro(load_crawl4ai, &loaded_capabilities.skills);
+    let loaded_capabilities =
+        loaded_mcp_capabilities_with_skills(load_crawl4ai, smart_skills, smart_tool_groups);
+    let capability_intro = spawn_capability_intro(
+        load_crawl4ai,
+        &loaded_capabilities.skills,
+        &loaded_capabilities.tool_groups,
+    );
 
     // `--server-url` lets the MCP child delegate `task_create` back to the
     // harness HTTP server so the in-process broadcast bus emits the SSE
@@ -1148,6 +1188,7 @@ pub(crate) fn crawl4ai_context_intro() -> &'static str {
 pub(crate) fn loaded_mcp_capabilities_with_skills(
     load_crawl4ai: bool,
     smart_skills: Vec<String>,
+    smart_tool_groups: Vec<String>,
 ) -> LoadedCapabilities {
     let mut loaded = LoadedCapabilities {
         mcp_servers: vec!["harness".to_string()],
@@ -1160,10 +1201,17 @@ pub(crate) fn loaded_mcp_capabilities_with_skills(
     for skill in smart_skills {
         push_unique(&mut loaded.skills, skill);
     }
+    for tool_group in smart_tool_groups {
+        push_unique(&mut loaded.tool_groups, tool_group);
+    }
     loaded
 }
 
-pub(crate) fn spawn_capability_intro(load_crawl4ai: bool, skills: &[String]) -> String {
+pub(crate) fn spawn_capability_intro(
+    load_crawl4ai: bool,
+    skills: &[String],
+    tool_groups: &[String],
+) -> String {
     let mut parts = vec![harness_mcp_intro().to_string()];
     if load_crawl4ai {
         parts.push(crawl4ai_context_intro().to_string());
@@ -1186,6 +1234,14 @@ pub(crate) fn spawn_capability_intro(load_crawl4ai: bool, skills: &[String]) -> 
                 .join(", ")
         ));
     }
+    if tool_groups.iter().any(|group| group == "data_loader") {
+        parts.push(
+            "[harness] Native data loader is available for CSV/XLSX work. Prefer the harness \
+             API endpoints `POST /api/data/inspect` and `POST /api/data/write` for deterministic \
+             spreadsheet parsing/writing instead of asking the model to parse table files from raw text."
+                .to_string(),
+        );
+    }
     parts.join("\n\n")
 }
 
@@ -1201,32 +1257,14 @@ pub(crate) fn resolve_smart_skills<'a>(
         return Vec::new();
     }
 
-    let mut haystack = String::new();
-    if let Some(role) = role {
-        haystack.push_str(role);
-        haystack.push('\n');
-    }
-    if let Some(cwd) = cwd {
-        haystack.push_str(&cwd.display().to_string());
-        haystack.push('\n');
-    }
-    for scope in scopes {
-        haystack.push_str(scope);
-        haystack.push('\n');
-    }
-    for text in texts.into_iter().flatten() {
-        haystack.push_str(text);
-        haystack.push('\n');
-    }
-    let lower = haystack.to_ascii_lowercase();
+    let signals = SmartCapabilitySignals::new(role, cwd, texts, scopes);
 
     let mut skills = Vec::new();
     if load_crawl4ai {
         push_unique(&mut skills, "crawl4ai-context".to_string());
     }
 
-    let frontend = has_any(
-        &lower,
+    let frontend = signals.matches(
         &[
             "frontend",
             ".svelte",
@@ -1241,11 +1279,11 @@ pub(crate) fn resolve_smart_skills<'a>(
             "component",
             "layout",
         ],
+        4,
     );
     if frontend {
         push_unique(&mut skills, "agent-browser".to_string());
-        if has_any(
-            &lower,
+        if signals.matches(
             &[
                 "design",
                 "visual",
@@ -1259,17 +1297,17 @@ pub(crate) fn resolve_smart_skills<'a>(
                 "look better",
                 "user friendly",
             ],
+            1,
         ) {
             push_unique(&mut skills, "design-md".to_string());
             push_unique(&mut skills, "frontend-design".to_string());
         }
-        if has_any(&lower, &["shadcn", "bits ui", "component library"]) {
+        if signals.matches(&["shadcn", "bits ui", "component library"], 1) {
             push_unique(&mut skills, "shadcn-svelte".to_string());
         }
     }
 
-    let rust_backend = has_any(
-        &lower,
+    let rust_backend = signals.matches(
         &[
             "backend",
             ".rs",
@@ -1281,16 +1319,16 @@ pub(crate) fn resolve_smart_skills<'a>(
             "harness-session",
             "harness-core",
         ],
+        4,
     );
     if rust_backend {
         push_unique(&mut skills, "rust-tooling".to_string());
-        if has_any(&lower, &["test", "tests", "nextest", "qa", "regression"]) {
+        if signals.matches(&["test", "tests", "nextest", "qa", "regression"], 1) {
             push_unique(&mut skills, "cargo-nextest".to_string());
         }
     }
 
-    if has_any(
-        &lower,
+    if signals.matches(
         &[
             "review",
             "quality gate",
@@ -1298,15 +1336,15 @@ pub(crate) fn resolve_smart_skills<'a>(
             "audit change",
             "lgtm",
         ],
+        4,
     ) {
         push_unique(&mut skills, "code-review-and-quality".to_string());
         push_unique(&mut skills, "difftastic".to_string());
     }
-    if has_any(&lower, &["refactor", "simplify", "clarity", "cleanup"]) {
+    if signals.matches(&["refactor", "simplify", "clarity", "cleanup"], 4) {
         push_unique(&mut skills, "code-simplification".to_string());
     }
-    if has_any(
-        &lower,
+    if signals.matches(
         &[
             "performance",
             "perf",
@@ -1315,11 +1353,11 @@ pub(crate) fn resolve_smart_skills<'a>(
             "benchmark",
             "profile",
         ],
+        4,
     ) {
         push_unique(&mut skills, "performance-optimization".to_string());
     }
-    if has_any(
-        &lower,
+    if signals.matches(
         &[
             "security",
             "secret",
@@ -1328,37 +1366,155 @@ pub(crate) fn resolve_smart_skills<'a>(
             "sandbox",
             "auth",
         ],
+        4,
     ) {
         push_unique(&mut skills, "security-tooling".to_string());
         if rust_backend {
             push_unique(&mut skills, "cargo-audit".to_string());
         }
     }
-    if has_any(
-        &lower,
-        &["docs", "documentation", "api reference", "context7"],
-    ) {
+    if signals.matches(&["docs", "documentation", "api reference", "context7"], 4) {
         push_unique(&mut skills, "context7".to_string());
     }
-    if has_any(
-        &lower,
+    if signals.matches(
         &["diagram", "excalidraw", "architecture board", "wireframe"],
+        4,
     ) {
         push_unique(&mut skills, "excalidraw-diagram".to_string());
         push_unique(&mut skills, "excalidraw-board".to_string());
     }
-    if has_any(&lower, &["pdf", ".pdf"]) {
+    if signals.matches(&["pdf", ".pdf"], 4) {
         push_unique(&mut skills, "pdf-oxide".to_string());
     }
-    if has_any(&lower, &["skill", "skills", "skill loader", "capability"]) {
+    if signals.matches(&["skill", "skills", "skill loader", "capability"], 4) {
         push_unique(&mut skills, "skill-creator".to_string());
     }
 
     skills
 }
 
-fn has_any(text: &str, needles: &[&str]) -> bool {
-    needles.iter().any(|needle| text.contains(needle))
+pub(crate) fn resolve_smart_tool_groups<'a>(
+    role: Option<&str>,
+    cwd: Option<&FsPath>,
+    texts: impl IntoIterator<Item = Option<&'a str>>,
+    scopes: &[String],
+    profile: CapabilityProfile,
+) -> Vec<String> {
+    if !profile.mcp_enabled() {
+        return Vec::new();
+    }
+
+    let signals = SmartCapabilitySignals::new(role, cwd, texts, scopes);
+    let mut tool_groups = Vec::new();
+    let file_format_score = signals.score(&[
+        "csv",
+        ".csv",
+        "tsv",
+        ".tsv",
+        "xlsx",
+        ".xlsx",
+        "xlsm",
+        ".xlsm",
+        "excel",
+        "spreadsheet",
+    ]);
+    let data_context_score = signals.score(&[
+        "data",
+        "datos",
+        "dataset",
+        "dataframe",
+        "tabla",
+        "hoja de calculo",
+        "hoja de cálculo",
+    ]);
+    if file_format_score > 0 && file_format_score + data_context_score >= 5 {
+        push_unique(&mut tool_groups, "data_loader".to_string());
+    }
+    tool_groups
+}
+
+#[derive(Debug)]
+struct SmartCapabilitySignals {
+    signals: Vec<SmartCapabilitySignal>,
+}
+
+#[derive(Debug)]
+struct SmartCapabilitySignal {
+    weight: u16,
+    tokens: Vec<String>,
+}
+
+impl SmartCapabilitySignals {
+    fn new<'a>(
+        role: Option<&str>,
+        cwd: Option<&FsPath>,
+        texts: impl IntoIterator<Item = Option<&'a str>>,
+        scopes: &[String],
+    ) -> Self {
+        let mut signals = Vec::new();
+        if let Some(role) = role {
+            signals.push(SmartCapabilitySignal::new(role, 5));
+        }
+        for scope in scopes {
+            signals.push(SmartCapabilitySignal::new(scope, 4));
+        }
+        if let Some(cwd) = cwd {
+            signals.push(SmartCapabilitySignal::new(&cwd.display().to_string(), 2));
+        }
+        for text in texts.into_iter().flatten() {
+            signals.push(SmartCapabilitySignal::new(text, 1));
+        }
+        Self { signals }
+    }
+
+    fn matches(&self, terms: &[&str], threshold: u16) -> bool {
+        self.score(terms) >= threshold
+    }
+
+    fn score(&self, terms: &[&str]) -> u16 {
+        self.signals
+            .iter()
+            .filter(|signal| terms.iter().any(|term| signal.matches(term)))
+            .map(|signal| signal.weight)
+            .sum()
+    }
+}
+
+impl SmartCapabilitySignal {
+    fn new(text: &str, weight: u16) -> Self {
+        Self {
+            weight,
+            tokens: tokenize_capability_text(text),
+        }
+    }
+
+    fn matches(&self, term: &str) -> bool {
+        let term_tokens = tokenize_capability_text(term);
+        if term_tokens.is_empty() {
+            return false;
+        }
+        if term_tokens.len() == 1 {
+            let term = &term_tokens[0];
+            if term.starts_with('.') {
+                return self.tokens.iter().any(|token| token.ends_with(term));
+            }
+            return self.tokens.iter().any(|token| token == term);
+        }
+        self.tokens
+            .windows(term_tokens.len())
+            .any(|window| window == term_tokens.as_slice())
+    }
+}
+
+fn tokenize_capability_text(text: &str) -> Vec<String> {
+    text.to_lowercase()
+        .split(|ch: char| !(ch.is_alphanumeric() || ch == '.' || ch == '-' || ch == '_'))
+        .flat_map(|part| {
+            part.split(|ch| ch == '-' || ch == '_')
+                .filter(|token| !token.is_empty())
+        })
+        .map(str::to_string)
+        .collect()
 }
 
 fn push_unique(items: &mut Vec<String>, item: String) {
@@ -2873,18 +3029,72 @@ mod tests {
 
     #[test]
     fn loaded_mcp_capabilities_records_harness_and_optional_crawl4ai() {
-        let normal = loaded_mcp_capabilities_with_skills(false, Vec::new());
+        let normal = loaded_mcp_capabilities_with_skills(false, Vec::new(), Vec::new());
         assert_eq!(normal.mcp_servers, vec!["harness".to_string()]);
         assert!(normal.skills.is_empty());
         assert!(normal.tool_groups.is_empty());
 
-        let docs = loaded_mcp_capabilities_with_skills(true, Vec::new());
+        let docs = loaded_mcp_capabilities_with_skills(true, Vec::new(), Vec::new());
         assert_eq!(
             docs.mcp_servers,
             vec!["harness".to_string(), "crawl4ai".to_string()]
         );
         assert_eq!(docs.skills, vec!["crawl4ai-context".to_string()]);
         assert!(docs.tool_groups.is_empty());
+    }
+
+    #[test]
+    fn smart_loader_selects_data_loader_tool_group() {
+        let tool_groups = resolve_smart_tool_groups(
+            Some("backend"),
+            Some(std::path::Path::new("/repo/data/sales.xlsx")),
+            [Some("Inspecciona este Excel y crea un CSV normalizado")],
+            &["data".to_string()],
+            CapabilityProfile::Auto,
+        );
+
+        assert_eq!(tool_groups, vec!["data_loader".to_string()]);
+    }
+
+    #[test]
+    fn smart_loader_does_not_select_data_loader_for_weak_prompt_csv_mention() {
+        let tool_groups = resolve_smart_tool_groups(
+            Some("auditor"),
+            Some(std::path::Path::new("/repo/backend/crates/harness-server")),
+            [Some(
+                "Review the change carefully. It mentions csv only as an example in prose.",
+            )],
+            &["backend".to_string()],
+            CapabilityProfile::Auto,
+        );
+
+        assert!(tool_groups.is_empty());
+    }
+
+    #[test]
+    fn smart_loader_selects_data_loader_for_data_role_with_explicit_format() {
+        let tool_groups = resolve_smart_tool_groups(
+            Some("data"),
+            Some(std::path::Path::new("/repo/backend/crates/harness-server")),
+            [Some("Inspect the CSV export and normalize the rows")],
+            &[],
+            CapabilityProfile::Auto,
+        );
+
+        assert_eq!(tool_groups, vec!["data_loader".to_string()]);
+    }
+
+    #[test]
+    fn smart_loader_does_not_match_csv_inside_another_word() {
+        let tool_groups = resolve_smart_tool_groups(
+            Some("data"),
+            Some(std::path::Path::new("/repo/backend/crates/harness-server")),
+            [Some("Investigate the internal mycsvparser module")],
+            &[],
+            CapabilityProfile::Auto,
+        );
+
+        assert!(tool_groups.is_empty());
     }
 
     #[test]
@@ -2932,6 +3142,39 @@ mod tests {
     }
 
     #[test]
+    fn smart_skill_loader_ignores_frontend_path_segment_for_backend_task() {
+        let skills = resolve_smart_skills(
+            false,
+            Some("backend"),
+            Some(std::path::Path::new(
+                "/repo/services/frontend-proxy/backend/src/lib.rs",
+            )),
+            [Some("Add Rust regression tests for the axum route")],
+            &["backend".to_string()],
+            CapabilityProfile::Auto,
+        );
+
+        assert_eq!(
+            skills,
+            vec!["rust-tooling".to_string(), "cargo-nextest".to_string()]
+        );
+    }
+
+    #[test]
+    fn smart_skill_loader_does_not_match_keywords_inside_words() {
+        let skills = resolve_smart_skills(
+            false,
+            Some("reviewer"),
+            Some(std::path::Path::new("/repo/app")),
+            [Some("The user is frustrated, but this is not a Rust task")],
+            &[],
+            CapabilityProfile::Auto,
+        );
+
+        assert!(skills.is_empty());
+    }
+
+    #[test]
     fn smart_skill_loader_respects_light_capability_profile() {
         let skills = resolve_smart_skills(
             true,
@@ -2954,11 +3197,20 @@ mod tests {
                 "agent-browser".to_string(),
                 "frontend-design".to_string(),
             ],
+            &[],
         );
 
         assert!(intro.contains("crawl4ai` MCP server is loaded"));
         assert!(intro.contains("`agent-browser`, `frontend-design`"));
         assert!(!intro.contains("`crawl4ai-context`, `agent-browser`"));
+    }
+
+    #[test]
+    fn spawn_capability_intro_names_data_loader_tool_group() {
+        let intro = spawn_capability_intro(false, &[], &["data_loader".to_string()]);
+
+        assert!(intro.contains("Native data loader is available"));
+        assert!(intro.contains("POST /api/data/inspect"));
     }
 
     #[test]

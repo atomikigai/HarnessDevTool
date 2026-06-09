@@ -12,6 +12,18 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
+const HARNESS_PROTOCOL_VERSION_HEADER: &str = "X-Protocol-Version";
+const HARNESS_PROTOCOL_VERSION: &str = "1.0";
+
+fn harness_request(req: ureq::Request, api_token: Option<&str>) -> ureq::Request {
+    let req = req.set(HARNESS_PROTOCOL_VERSION_HEADER, HARNESS_PROTOCOL_VERSION);
+    if let Some(token) = api_token {
+        req.set("Authorization", &format!("Bearer {token}"))
+    } else {
+        req
+    }
+}
+
 fn str_arg<'a>(args: &'a Value, key: &str) -> Result<&'a str, String> {
     args.get(key)
         .and_then(|v| v.as_str())
@@ -37,7 +49,7 @@ pub fn spawn_child(
     })?;
     let server = server_url.ok_or_else(|| "session.spawn_child needs --server-url".to_string())?;
 
-    let kind = str_arg(args, "kind")?;
+    let kind = opt_str(args, "kind");
     let role = str_arg(args, "role")?;
     let initial_prompt = str_arg(args, "initial_prompt")?;
     let cwd = opt_str(args, "working_dir");
@@ -66,10 +78,7 @@ pub fn spawn_child(
         "scopes": scopes,
         "cwd": cwd,
     });
-    let mut req = ureq::post(&url).timeout(Duration::from_secs(10));
-    if let Some(token) = api_token {
-        req = req.set("Authorization", &format!("Bearer {token}"));
-    }
+    let req = harness_request(ureq::post(&url).timeout(Duration::from_secs(10)), api_token);
     req.send_json(&body)
         .map_err(|e| e.to_string())?
         .into_json::<Value>()
@@ -91,10 +100,7 @@ pub fn list_children(
         server.trim_end_matches('/'),
         parent_sid
     );
-    let mut req = ureq::get(&url).timeout(Duration::from_secs(5));
-    if let Some(token) = api_token {
-        req = req.set("Authorization", &format!("Bearer {token}"));
-    }
+    let req = harness_request(ureq::get(&url).timeout(Duration::from_secs(5)), api_token);
     req.call()
         .map_err(|e| e.to_string())?
         .into_json::<Value>()
@@ -125,12 +131,12 @@ pub fn send_input(
         parent_sid,
         child_sid
     );
-    let mut req = ureq::post(&url)
-        .timeout(Duration::from_secs(5))
-        .set("Content-Type", "application/octet-stream");
-    if let Some(token) = api_token {
-        req = req.set("Authorization", &format!("Bearer {token}"));
-    }
+    let req = harness_request(
+        ureq::post(&url)
+            .timeout(Duration::from_secs(5))
+            .set("Content-Type", "application/octet-stream"),
+        api_token,
+    );
     req.send_bytes(text.as_bytes()).map_err(|e| e.to_string())?;
     Ok(json!({ "ok": true, "bytes": text.len() }))
 }
@@ -154,10 +160,10 @@ pub fn cancel_child(
         parent_sid,
         child_sid
     );
-    let mut req = ureq::delete(&url).timeout(Duration::from_secs(5));
-    if let Some(token) = api_token {
-        req = req.set("Authorization", &format!("Bearer {token}"));
-    }
+    let mut req = harness_request(
+        ureq::delete(&url).timeout(Duration::from_secs(5)),
+        api_token,
+    );
     if let Some(r) = reason {
         req = req.set("X-Cancel-Reason", r);
     }
@@ -184,10 +190,7 @@ pub fn read_child_summary(
         server.trim_end_matches('/'),
         child_sid
     );
-    let mut req = ureq::get(&url).timeout(Duration::from_secs(5));
-    if let Some(token) = api_token {
-        req = req.set("Authorization", &format!("Bearer {token}"));
-    }
+    let req = harness_request(ureq::get(&url).timeout(Duration::from_secs(5)), api_token);
     req.call()
         .map_err(|e| e.to_string())?
         .into_json::<Value>()
@@ -231,10 +234,7 @@ pub fn mailbox_send(
         "task_id": task_id,
         "scopes": scopes,
     });
-    let mut req = ureq::post(&url).timeout(Duration::from_secs(5));
-    if let Some(token) = api_token {
-        req = req.set("Authorization", &format!("Bearer {token}"));
-    }
+    let req = harness_request(ureq::post(&url).timeout(Duration::from_secs(5)), api_token);
     req.send_json(&body)
         .map_err(|e| e.to_string())?
         .into_json::<Value>()
@@ -254,10 +254,7 @@ pub fn mailbox_list(
         server.trim_end_matches('/'),
         sid
     );
-    let mut req = ureq::get(&url).timeout(Duration::from_secs(5));
-    if let Some(token) = api_token {
-        req = req.set("Authorization", &format!("Bearer {token}"));
-    }
+    let req = harness_request(ureq::get(&url).timeout(Duration::from_secs(5)), api_token);
     req.call()
         .map_err(|e| e.to_string())?
         .into_json::<Value>()
@@ -281,10 +278,7 @@ pub fn mailbox_ack(
         sid,
         message_id
     );
-    let mut req = ureq::post(&url).timeout(Duration::from_secs(5));
-    if let Some(token) = api_token {
-        req = req.set("Authorization", &format!("Bearer {token}"));
-    }
+    let req = harness_request(ureq::post(&url).timeout(Duration::from_secs(5)), api_token);
     req.call()
         .map_err(|e| e.to_string())?
         .into_json::<Value>()

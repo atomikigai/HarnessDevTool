@@ -347,7 +347,7 @@ impl Manager {
                 let payload = sanitize_pty_prompt(&payload);
                 let s = session.clone();
                 let sid = s.id().to_string();
-                tokio::spawn(async move {
+                let injector = tokio::spawn(async move {
                     tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
                     let mut buf: Vec<u8> = Vec::with_capacity(payload.len() + 16);
                     buf.extend_from_slice(b"\x1b[200~");
@@ -368,6 +368,7 @@ impl Manager {
                         "injected role prompt via bracketed paste + CR"
                     );
                 });
+                session.set_prompt_injector(injector);
             }
         }
 

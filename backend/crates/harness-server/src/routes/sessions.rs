@@ -496,9 +496,24 @@ pub async fn spawn_session_internal(
     // need it after spawn to compute transcript paths for CLIs that have them.
     let cwd_for_transcript = args.cwd.clone();
     let session =
-        state
+        match state
             .manager
-            .spawn_with_opts(underlying, binary, args.thread_id, args.cwd, opts)?;
+            .spawn_with_opts(underlying, binary, args.thread_id, args.cwd, opts)
+        {
+            Ok(session) => session,
+            Err(e) => {
+                if let Some(path) = config_path.as_ref() {
+                    if let Err(remove_err) = std::fs::remove_file(path) {
+                        tracing::warn!(
+                            path = %path.display(),
+                            error = %remove_err,
+                            "failed to clean MCP config after spawn failure"
+                        );
+                    }
+                }
+                return Err(ApiError::from(e));
+            }
+        };
     let meta = session.meta().await;
     if let Some(path) = config_path {
         state.mcp_configs.insert(meta.id.clone(), path);
@@ -1077,7 +1092,8 @@ async fn kill_session(
 
 #[derive(Debug, Deserialize)]
 pub struct SpawnChildBody {
-    pub kind: AgentKind,
+    #[serde(default)]
+    pub kind: Option<AgentKind>,
     pub role: String,
     pub initial_prompt: String,
     #[serde(default)]
@@ -1167,7 +1183,14 @@ async fn spawn_child_route(
     };
     let zeus_roles = load_zeus_roles(&state, &parent_sid)?;
     let zeus_role = selected_zeus_role(&zeus_roles, &body.role);
-    let child_kind = zeus_role.map(|role| role.provider).unwrap_or(body.kind);
+    let child_kind = zeus_role
+        .map(|role| role.provider)
+        .or(body.kind)
+        .ok_or_else(|| {
+            ApiError::BadRequest(
+                "child kind is required when no Zeus role matrix entry matches".into(),
+            )
+        })?;
     if zeus_role.is_some() && !matches!(child_kind, AgentKind::Claude | AgentKind::Codex) {
         return Err(ApiError::BadRequest(
             "Zeus child provider must be claude or codex".into(),
@@ -1176,7 +1199,7 @@ async fn spawn_child_route(
 
     tracing::info!(
         parent_session_id = %parent_sid,
-        requested_kind = %body.kind,
+        requested_kind = ?body.kind,
         resolved_kind = %child_kind,
         role = %body.role,
         cwd = %cwd.display(),

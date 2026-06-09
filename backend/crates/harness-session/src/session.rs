@@ -1,12 +1,13 @@
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
 use chrono::Utc;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use tokio::sync::{broadcast, Mutex as AsyncMutex};
+use tokio::task::JoinHandle;
 
 use crate::errors::SessionError;
 use crate::kind::AgentKind;
@@ -16,6 +17,25 @@ use crate::output::OutputWriter;
 
 const PTY_FLUSH_INTERVAL_MS: u64 = 16;
 const PTY_CHUNK_TARGET: usize = 16 * 1024;
+
+#[derive(Default)]
+struct SessionRuntime {
+    output_forwarder: Option<JoinHandle<()>>,
+    exit_waiter: Option<JoinHandle<()>>,
+    state_detector: Option<JoinHandle<()>>,
+    prompt_injector: Option<JoinHandle<()>>,
+}
+
+impl SessionRuntime {
+    fn abort_interruptible(&mut self) {
+        if let Some(handle) = self.state_detector.take() {
+            handle.abort();
+        }
+        if let Some(handle) = self.prompt_injector.take() {
+            handle.abort();
+        }
+    }
+}
 
 /// Handle to a running agent process.
 pub struct AgentSession {
@@ -30,6 +50,7 @@ pub struct AgentSession {
     killer: AsyncMutex<Box<dyn portable_pty::ChildKiller + Send + Sync>>,
     kill_lock: AsyncMutex<()>,
     shutdown_requested: AtomicBool,
+    runtime: StdMutex<SessionRuntime>,
     child_pid: u32,
     seq: AtomicU64,
     /// Immutable identity, cached outside the async meta lock so non-async
@@ -217,6 +238,7 @@ impl AgentSession {
             killer: AsyncMutex::new(killer),
             kill_lock: AsyncMutex::new(()),
             shutdown_requested: AtomicBool::new(false),
+            runtime: StdMutex::new(SessionRuntime::default()),
             child_pid,
             seq: AtomicU64::new(0),
             id_static: id.clone(),
@@ -264,7 +286,7 @@ impl AgentSession {
         let bus_for_output = bus.clone();
         let session_for_output = session.clone();
         let id_for_output = id.clone();
-        tokio::spawn(async move {
+        let output_forwarder = tokio::spawn(async move {
             use base64::engine::general_purpose::STANDARD as B64;
 
             let mut pending: Vec<u8> = Vec::with_capacity(PTY_CHUNK_TARGET * 2);
@@ -322,7 +344,7 @@ impl AgentSession {
         let session_for_exit = session.clone();
         let id_for_exit = id.clone();
         let handle_for_exit = tokio::runtime::Handle::current();
-        tokio::task::spawn_blocking(move || {
+        let exit_waiter = tokio::task::spawn_blocking(move || {
             let exit_status = match child.wait() {
                 Ok(s) => s,
                 Err(e) => {
@@ -364,7 +386,7 @@ impl AgentSession {
         let id_for_state = id.clone();
         let kind_for_state = kind;
         let dir_for_state = dir.clone();
-        tokio::spawn(async move {
+        let state_detector = tokio::spawn(async move {
             use crate::detect::{detect as detect_fn, AgentState, TAIL_WINDOW_BYTES};
             let mut prev: AgentState = AgentState::Unknown;
             loop {
@@ -403,8 +425,31 @@ impl AgentSession {
                 prev = next;
             }
         });
+        session.set_runtime_handles(output_forwarder, exit_waiter, state_detector);
 
         Ok(session)
+    }
+
+    fn set_runtime_handles(
+        &self,
+        output_forwarder: JoinHandle<()>,
+        exit_waiter: JoinHandle<()>,
+        state_detector: JoinHandle<()>,
+    ) {
+        let mut runtime = self.runtime.lock().expect("session runtime lock poisoned");
+        runtime.output_forwarder = Some(output_forwarder);
+        runtime.exit_waiter = Some(exit_waiter);
+        runtime.state_detector = Some(state_detector);
+    }
+
+    pub fn set_prompt_injector(&self, handle: JoinHandle<()>) {
+        let mut runtime = self.runtime.lock().expect("session runtime lock poisoned");
+        runtime.prompt_injector = Some(handle);
+    }
+
+    fn abort_interruptible_tasks(&self) {
+        let mut runtime = self.runtime.lock().expect("session runtime lock poisoned");
+        runtime.abort_interruptible();
     }
 
     pub async fn meta(&self) -> SessionMeta {
@@ -449,6 +494,7 @@ impl AgentSession {
     pub async fn kill(&self) -> Result<(), SessionError> {
         let _guard = self.kill_lock.lock().await;
         self.shutdown_requested.store(true, Ordering::SeqCst);
+        self.abort_interruptible_tasks();
         {
             let mut m = self.meta.lock().await;
             if m.status != SessionStatus::Running {

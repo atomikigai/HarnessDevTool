@@ -1120,12 +1120,12 @@ pub fn list_descriptors() -> Vec<ToolDescriptor> {
                     .into(),
             input_schema: json!({
                 "type": "object",
-                "required": ["kind", "role", "initial_prompt"],
+                "required": ["role", "initial_prompt"],
                 "properties": {
                     "kind": {
                         "type": "string",
                         "enum": ["claude", "codex", "cursor", "antigravity"],
-                        "description": "Which CLI backs the child PTY."
+                        "description": "Optional CLI backing the child PTY. For Zeus roots with a role matrix, omit this and the harness resolves it from the selected role."
                     },
                     "role": {
                         "type": "string",

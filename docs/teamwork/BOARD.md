@@ -155,6 +155,17 @@ Modelo operativo: ver [`docs/teamwork/OPERATING_MODEL.md`](./OPERATING_MODEL.md)
 - ✅ `cargo test -p harness-server`
 - ✅ `pnpm --dir frontend check`
 
+**Slice 16 — cierre de pendientes production-grade post-Zeus:**
+- `backend/crates/harness-session/src/session.rs` y `backend/crates/harness-session/src/manager.rs`: `AgentSession` ahora posee handles runtime para forwarder, waiter, detector e injector; `kill()` aborta tasks interruptibles (`state_detector`, `prompt_injector`) sin cortar el waiter ni el flush path del forwarder.
+- `backend/crates/harness-server/src/routes/sessions.rs`: `SpawnChildBody.kind` pasa a ser opcional; si la sesion padre tiene matriz Zeus persistida, el backend resuelve `kind/model/effort` por `role`. Fuera de matriz, `kind` sigue requerido con error explicito.
+- `backend/crates/harness-server/src/routes/sessions.rs`: si se crea config MCP temporal y `spawn_with_opts` falla, el archivo se limpia antes de devolver error.
+- `backend/crates/harness-mcp-server/src/tools/session.rs` y `backend/crates/harness-mcp-server/src/tools/mod.rs`: las llamadas REST internas del MCP session tree mandan `X-Protocol-Version: 1.0`; `session_spawn_child` ya no requiere `kind` cuando Zeus puede resolverlo por matriz.
+- QA operativo cubierto por suite completa; desktop sigue fuera de alcance.
+
+**Checks corridos:**
+- ✅ `cargo test -p harness-session -p harness-server -p harness-mcp-server`
+- ✅ `just test`
+
 **Slice 3 — transcript watcher cleanup:**
 - `backend/crates/harness-server/src/transcript/watcher.rs`: `WatcherHandle` ahora aborta el task en `Drop`, no solo cuando se llama `stop(self)`. Esto evita watchers vivos si un reload/shutdown descarta el handle sin parada explicita.
 

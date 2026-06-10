@@ -33,6 +33,15 @@ Los hallazgos aplican a ambos planos salvo nota. La mejora de planificación que
 en esencia, la misma en los dos: **producir contratos que Codex pueda ejecutar de forma
 determinística y verificar el resultado, porque Codex es rápido pero no se auto-controla.**
 
+> **Aclaración del usuario (2026-06-10) — el objetivo primario es NORMALIZACIÓN, no "optimizar para
+> Codex":** *"La orquestación puede variar — uso modo Zeus y combino los agentes que quiera — pero
+> todos trabajan bajo las mismas instrucciones, tools, MCPs, etc. Todo debe estar normalizado para
+> cualquiera de los 2: Claude o Codex."* Es decir: el planner emite **un solo contrato CLI-agnóstico**
+> y el harness debe entregarlo **idéntico** sea quien sea el ejecutor. La orquestación (quién hace qué,
+> qué combinas en Zeus) es una capa libre **encima** del sustrato normalizado. Esto reordena el
+> análisis: ver **§1·B (matriz de paridad)**. Los huecos de contrato/verificación/aislamiento de §1/§2
+> son *cómo* se logra la paridad, dado que **ningún** CLI está gateado a nivel de su tooling nativo.
+
 ---
 
 ## 1. Hallazgo central (reorienta todo lo demás)
@@ -67,6 +76,64 @@ resto del documento se ordena por ese principio.
 > `autonomy_profile` solo influye en la auto-resolución de approvals (`routes/approvals.rs:155-169`),
 > que Codex de todos modos no consulta para editar. **Resultado: `manual` no da ninguna protección
 > extra a una sesión Codex.** Hay que decidir explícitamente (ver §6).
+
+---
+
+## 1·B. Normalización Claude↔Codex (la matriz de paridad — objetivo primario)
+
+El planner debe emitir **un solo contrato CLI-agnóstico**; el harness garantiza paridad a lo largo de
+estos ejes. Lo que ya está parejo conviene **preservarlo**; lo que diverge es el trabajo a planificar.
+
+| Eje | ¿Normalizado hoy? | Evidencia | Acción |
+|---|---|---|---|
+| **A. Contenido del briefing** (rol, contrato, project_context, capability_intro) | ✅ **Sí** | `auto_intro`/`role_prompt` se arman CLI-agnósticos en `state.rs:628-660` y `routes/sessions.rs:516-681`; el mismo `SpawnOpts` alimenta a ambos | Preservar. Mejorar el contenido (M1), no el mecanismo |
+| **B. Mecanismo de entrega del briefing** | ⚠️ **Difiere (aceptable)** | Claude: `--append-system-prompt` + paste PTY (`manager.rs:728-753`). Codex: `-c developer_instructions` + arg posicional (`manager.rs:694-710`) | Es legítimo que difiera por CLI; solo verificar que el contenido entregado sea idéntico (test de paridad) |
+| **C. Superficie MCP / policy / capabilities** | ✅ **Sí en destino** / ⚠️ **rota por spawn-path** | Ambos llegan al mismo `harness` MCP server → mismas tools, mismo gate, misma carga inteligente. Pero el scheduler omite `--session-id`/`--profile` que sí pasa REST (B1) | Unificar las 2 configs MCP (M6) para que la superficie sea idéntica por cualquier ruta |
+| **D. Nudge de routing de tools nativas** | ❌ **No** | Claude recibe `--disallowed-tools TodoWrite` para forzar `task_*` del harness (`manager.rs:737-740`); **Codex no tiene equivalente** → puede usar su plan/todo nativo en vez de las tools del harness | **M13:** mapa de "supresión de tools nativas" por CLI para que ambos enruten por el harness |
+| **E. House rules / contexto de proyecto** | ⚠️ **Parcial** | El harness inyecta el mismo `project_context_brief` a ambos (`routes/sessions.rs:951-968`), pero Claude auto-carga `CLAUDE.md` y Codex auto-carga `AGENTS.md` (`threads.rs:392`). Si difieren, las reglas de casa divergen | **M14:** fuente única de house-rules inyectada a ambos (o garantizar CLAUDE.md≡AGENTS.md) |
+| **F. Modelo de contención / permisos** | ❌ **No** | Claude `--permission-mode bypassPermissions`; Codex `--dangerously-bypass-approvals-and-sandbox` (niveles de contención distintos) | **M15:** decidir un modelo de contención único (ver §6 decisión 1) |
+| **G. Edición de archivos nativa** | ❌ **Ninguno gateado** (pero parejo entre sí) | Ambos editan directo, no por `repo_write_file` | La paridad aquí es por verificación posterior: el scope-drift (M2) aplica igual a ambos |
+
+**Lectura:** la base ya es bastante pareja (A, C-destino, G-simetría). Lo que **rompe la
+normalización** y hay que planificar es: **D** (Codex no enruta por las tools del harness como Claude),
+**E** (reglas de casa por archivo distinto), **F** (contención asimétrica) y **C** (la superficie MCP
+no es idéntica por spawn-path). Estos se materializan como **M13–M15** más **M6** (ya existente).
+
+---
+
+## 1·C. Harness agnóstico al agente (principio rector)
+
+> **Aclaración del usuario (2026-06-10):** *"Todo el harness debe ser agnóstico al agente, pero debe
+> trabajar lo suficientemente bien con cualquier agente."*
+
+Dos exigencias acopladas:
+
+1. **Núcleo agnóstico:** planner, scheduler, policy, tasks, eventos, budget — **nunca** deben ramificar
+   por CLI. Toda especificidad de agente vive detrás de **un adaptador por CLI** con un *descriptor de
+   capacidades* (¿soporta MCP? ¿cómo?; ¿system-prompt silencioso?; flag de modo autónomo; supresión de
+   tools nativas; pin de `--session-id`; dir de auth). Añadir un agente = implementar un adaptador; el
+   núcleo no se toca.
+2. **Trabajar bien con cualquiera:** cada adaptador debe cubrir un set de capacidades *suficiente*, y
+   donde una capacidad falte, el harness **degrada con gracia** de forma explícita (p.ej. sin
+   system-prompt silencioso → entregar por PTY; sin MCP injection → ese CLI no puede ser worker de
+   tasks gateadas y se marca como degradado, no se usa a ciegas).
+
+**Estado actual (no cumple aún):**
+- La lógica per-CLI es un **`match AgentKind` disperso**, no un adaptador: `build_extra_args`
+  (`harness-session/src/manager.rs:624-775`) más ramas en `routes/sessions.rs` y `state.rs` (las 2
+  configs MCP divergentes, B1). El núcleo conoce los CLIs concretos.
+- Por la matriz de [[agents/supported-clis]]: **solo Claude y Codex están completos.** Cursor y
+  Antigravity **no tienen** MCP injection, ni system-prompt silencioso, ni `--disallowed-tools`, ni pin
+  de `--session-id` (`manager.rs:712-719,759-765` son TODOs). ⇒ El harness **no** trabaja "lo
+  suficientemente bien con cualquier agente" todavía; trabaja bien con 2 de 4.
+- No hay contrato explícito de **degradación**: hoy un CLI sin MCP simplemente no recibe tools y nada
+  lo declara como worker degradado.
+
+Esto se ataca con **M16** (abstracción `AgentAdapter` + descriptor de capacidades; el núcleo deja de
+ramificar) y **M17** (completar/clasificar los adaptadores Cursor/Antigravity y definir el contrato de
+degradación). M6/M13/M15 pasan a ser *capacidades del adaptador*, no ramas sueltas. La matriz de
+[[agents/supported-clis]] es la fuente de verdad del descriptor y debería quedar **derivada del
+código**, no mantenida a mano.
 
 ---
 
@@ -115,6 +182,34 @@ resto del documento se ordena por ese principio.
 ## 4. Mejoras propuestas — roadmap priorizado
 
 Ordenado por el principio de §1: primero volver duras las compuertas que sí constriñen a Codex.
+
+### P0·N — Normalización del sustrato (objetivo primario del usuario, §1·B)
+
+> Cierran los ejes que rompen la paridad Claude↔Codex. M6 (abajo, en P1) también sirve a este fin
+> (eje C). M1 y M2 son CLI-agnósticos por diseño y refuerzan la normalización del contrato y la
+> verificación.
+
+- **M13 — Paridad de supresión de tools nativas (eje D).** Mapa por CLI de tools nativas a desactivar
+  para que ambos enruten el trabajo por las tools del harness (`task_*`, etc.). Hoy solo Claude recibe
+  `--disallowed-tools TodoWrite`; definir el equivalente para Codex (o documentar por qué no aplica) y
+  cubrirlo con un test de paridad. **ALTA / S.**
+- **M14 — Fuente única de house-rules (eje E).** Garantizar que Claude (CLAUDE.md) y Codex (AGENTS.md)
+  reciban las mismas reglas de casa: o inyectar un house-rules normalizado vía `auto_intro` a ambos, o
+  mantener CLAUDE.md≡AGENTS.md por generación/symlink y verificarlo en VERIFY. **MEDIA / S.**
+- **M15 — Modelo de contención único (eje F).** Decidir y aplicar un nivel de contención equivalente
+  para ambos CLIs (ver §6 decisión 1); hoy `bypassPermissions` (Claude) y
+  `bypass-approvals-and-sandbox` (Codex) no son simétricos. **MEDIA / M.**
+- **M16 — Abstracción `AgentAdapter` + descriptor de capacidades (§1·C, núcleo agnóstico).** Reemplazar
+  el `match AgentKind` disperso (`manager.rs:624-775` + ramas en `sessions.rs`/`state.rs`) por un
+  adaptador por CLI que declare sus capacidades (MCP, system-prompt silencioso, modo autónomo,
+  supresión de tools nativas, pin de session-id, auth dir). El núcleo (planner/scheduler/policy) deja
+  de conocer CLIs concretos. M6/M13/M15 se implementan como capacidades del adaptador. La matriz de
+  [[agents/supported-clis]] se deriva del descriptor. **ALTA / L.**
+- **M17 — Completar/clasificar adaptadores + contrato de degradación (§1·C, "trabajar bien con
+  cualquiera").** Completar Cursor/Antigravity (MCP injection, entrega de briefing) o marcarlos
+  formalmente como degradados; definir qué pasa cuando falta una capacidad (sin MCP → no worker de
+  tasks gateadas; sin system-prompt silencioso → entrega por PTY visible) para que ningún CLI se use a ciegas.
+  **MEDIA / M-L.**
 
 ### P0 — Volver load-bearing el contrato previo y la verificación posterior
 
@@ -173,14 +268,24 @@ Ordenado por el principio de §1: primero volver duras las compuertas que sí co
 
 ## 5. Quick wins vs estructural
 
-- **Quick wins (S, alto impacto):** M1 (briefing), M4 (cap K=2), M11 + M12 (receta + plantilla
-  Codex), documentar B2, arreglar `--session-id`/`--profile` del scheduler (parte de M6).
-- **Estructural (M/L):** M2 (scope-drift), M3 (compuerta dura), M5 (routing), M6 (unificar config),
+- **Quick wins (S, alto impacto):** M1 (briefing), M13 (supresión de tools nativas Codex), M14
+  (house-rules único), M4 (cap K=2), M11 + M12 (receta + plantilla Codex), documentar B2, arreglar
+  `--session-id`/`--profile` del scheduler (parte de M6).
+- **Estructural (M/L):** M16 (`AgentAdapter`), M17 (adaptadores Cursor/Antigravity + degradación),
+  M15 (contención único), M2 (scope-drift), M3 (compuerta dura), M5 (routing), M6 (unificar config),
   M7 (contrato tipado), M8 (worktrees), M9, M10.
 
-Secuencia sugerida para la próxima sesión: **M1 → M12 → M2 → M5 → M3 → M4**, luego M6/M7, luego
-M8/M9/M10. M1+M12 desbloquean inmediatamente "planificar y delegar bien a Codex"; M2+M3 cierran el
-hueco de seguridad de un Codex sin sandbox; M5 activa la velocidad de Codex.
+Secuencia sugerida para la próxima sesión (normalización + agnosticismo primero, por las aclaraciones
+del usuario): **M13 → M14 → M6 → M1 → M12 → M2 → M5 → M3 → M4 → M15**, luego **M16 → M17** (refactor a
+adaptadores, que absorbe M6/M13/M15 como capacidades), luego M7, luego M8/M9/M10. M13/M14/M6 normalizan
+el sustrato (tools, house-rules, superficie MCP) para que cualquier CLI sea intercambiable; M16/M17
+vuelven el núcleo agnóstico al agente y hacen que el harness trabaje bien con *cualquiera* (no solo
+Claude/Codex); M1+M12 dan el contrato CLI-agnóstico; M2+M3 cierran el hueco de seguridad de un
+ejecutor sin sandbox; M5 activa la velocidad de Codex.
+
+> **Nota de orden:** si se prefiere atacar la causa estructural primero, M16 (`AgentAdapter`) puede ir
+> al frente: M6/M13/M15 caen como capacidades del adaptador en vez de parches sueltos. El trade-off es
+> L de refactor vs varios S/M incrementales. Decisión del usuario en la próxima sesión.
 
 ---
 

@@ -728,6 +728,8 @@ export const api = {
       }),
     children: (sessionId: string, signal?: AbortSignal) =>
       apiRequest<ChildSessionSummary[]>(`/sessions/${sessionId}/children`, { signal }),
+    stop: (sessionId: string, signal?: AbortSignal) =>
+      apiRequest<null>(`/sessions/${sessionId}/stop`, { method: 'POST', signal }),
     kill: (sessionId: string, signal?: AbortSignal) =>
       apiRequest<null>(`/sessions/${sessionId}`, { method: 'DELETE', signal }),
     resize: (sessionId: string, cols: number, rows: number, signal?: AbortSignal) =>

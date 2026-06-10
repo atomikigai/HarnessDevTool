@@ -42,6 +42,8 @@
     onSessionReplaced?: (newSessionId: string) => void;
     /** Notified after a Kill so the parent can refresh its list. */
     onSessionKilled?: (sessionId: string) => void;
+    /** Notified when ChatView computes transcript token totals. */
+    onSessionTokens?: (sessionId: string, totalTokens: number) => void;
   }
 
   let {
@@ -49,7 +51,8 @@
     relatedSessions = [],
     onSelectSession,
     onSessionReplaced,
-    onSessionKilled
+    onSessionKilled,
+    onSessionTokens
   }: Props = $props();
 
   let mainTab = $state<'terminal' | 'chat'>('chat');
@@ -173,7 +176,7 @@
     if (!session || stopping) return;
     stopping = true;
     try {
-      await api.sessions.kill(session.id);
+      await api.sessions.stop(session.id);
       toast.success('Session stopped');
       onSessionKilled?.(session.id);
     } catch (err) {
@@ -446,7 +449,13 @@
                 prevSid={prevSidForChat}
                 onSwitchToTerminal={() => (mainTab = 'terminal')}
                 {onRestart}
-                onTotalTokens={(inp, out) => { chatInputTok = inp; chatOutputTok = out; }}
+                onTotalTokens={(inp, out) => {
+                  chatInputTok = inp;
+                  chatOutputTok = out;
+                  const sid = session.id;
+                  const total = inp + out;
+                  queueMicrotask(() => onSessionTokens?.(sid, total));
+                }}
               />
             {/key}
           {/if}

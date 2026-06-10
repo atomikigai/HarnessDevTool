@@ -96,6 +96,11 @@ pub struct KillTreeResult {
     pub tombstone_error: Option<SessionError>,
 }
 
+#[derive(Debug)]
+pub struct StopTreeResult {
+    pub affected: Vec<String>,
+}
+
 impl Manager {
     /// `sessions_root` is `<home>/profiles/<profile>/sessions`.
     pub fn new(sessions_root: impl Into<PathBuf>) -> Result<Self, SessionError> {
@@ -471,6 +476,36 @@ impl Manager {
             affected,
             tombstone_error,
         }
+    }
+
+    /// Stop a session tree without removing or tombstoning persisted metadata.
+    /// Used by the UI Stop action so the killed session remains visible for
+    /// transcript replay and for an explicit Restart action.
+    pub async fn stop_tree(&self, sid: &str) -> StopTreeResult {
+        let sessions_to_stop = {
+            let _guard = lock_or_recover(&self.lifecycle_lock);
+            let mut sessions = self.descendants_of(sid);
+            sessions.reverse();
+            if let Some(session) = self.get(sid) {
+                sessions.push(session);
+            }
+            sessions
+        };
+
+        let mut affected = Vec::with_capacity(sessions_to_stop.len());
+        for session in sessions_to_stop {
+            let cid = session.id().to_string();
+            if let Err(e) = session.kill().await {
+                tracing::warn!(
+                    session = %cid,
+                    parent = %sid,
+                    error = %e,
+                    "stop tree: session returned error"
+                );
+            }
+            affected.push(cid);
+        }
+        StopTreeResult { affected }
     }
 
     /// Direct children of `parent_sid` (one level only). Order is unspecified.

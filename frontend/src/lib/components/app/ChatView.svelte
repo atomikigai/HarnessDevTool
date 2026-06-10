@@ -1073,6 +1073,8 @@
       histHandle = null;
       historicalTurns = tempTurns;
       historicalLoaded = true;
+      forceNextScroll = true;
+      scheduleScroll();
     };
 
     const resetIdle = () => {

@@ -41,6 +41,7 @@
     onDelete: (sessionId: string) => Promise<void> | void;
     collapsed: boolean;
     onToggleCollapsed: () => void;
+    tokenTotalsBySession?: Record<string, number>;
     /** Optional per-thread task progress. F2: caller supplies only for the
      *  selected thread; everything else falls back to 0/0. F3 will index
      *  this by thread id once we wire a multi-thread progress store. */
@@ -55,6 +56,7 @@
     onDelete,
     collapsed,
     onToggleCollapsed,
+    tokenTotalsBySession = {},
     progressByThread = {}
   }: Props = $props();
 
@@ -163,6 +165,10 @@
 
   function progressFor(s: SessionMeta): TaskProgress {
     return progressByThread[s.thread_id] ?? { done: 0, total: 0, pct: 0 };
+  }
+
+  function tokenTotalFor(s: SessionMeta): number | null {
+    return tokenTotalsBySession[s.id] ?? null;
   }
 </script>
 
@@ -332,7 +338,7 @@
           </span>
         {/if}
         <span class="font-mono text-[10px]" style="color: var(--fg-muted);">
-          {uptime(s.started_at)} · {tokensLabel(null)}
+          {uptime(s.started_at)} · {tokensLabel(tokenTotalFor(s))}
         </span>
       </div>
       <div class="flex items-center gap-2">

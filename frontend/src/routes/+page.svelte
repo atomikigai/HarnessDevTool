@@ -68,6 +68,7 @@
   });
   let collapsed = $state(false);
   let newDialogOpen = $state(false);
+  let tokenTotalsBySession = $state<Record<string, number>>({});
 
   // Mirror selection into localStorage so reloads land back on the same
   // session card. Scoped by active profile so each workspace remembers its
@@ -181,6 +182,10 @@
   async function onSessionKilled() {
     // Refresh the list so the killed session updates its status badge.
     refreshSessions();
+  }
+
+  function onSessionTokens(sessionId: string, totalTokens: number) {
+    tokenTotalsBySession = { ...tokenTotalsBySession, [sessionId]: totalTokens };
   }
 
   /// Hard-delete a session from the Agents panel (kebab → Delete).
@@ -346,6 +351,7 @@
       onDelete={onSessionDelete}
       {collapsed}
       {onToggleCollapsed}
+      {tokenTotalsBySession}
       {progressByThread}
     />
     <SessionMainView
@@ -354,6 +360,7 @@
       onSelectSession={onSelect}
       {onSessionReplaced}
       {onSessionKilled}
+      {onSessionTokens}
     />
     <SessionRightPanel
       session={selectedSession}

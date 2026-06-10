@@ -255,6 +255,7 @@ pub fn router() -> Router<Arc<AppState>> {
         )
         .route("/api/sessions/:sid/input", post(post_input))
         .route("/api/sessions/:sid/resize", post(post_resize))
+        .route("/api/sessions/:sid/stop", post(stop_session))
         .route("/api/sessions/:sid", delete(kill_session))
         .route(
             "/api/sessions/:sid/attach",
@@ -2104,6 +2105,19 @@ async fn post_resize(
         .get(&sid)
         .ok_or_else(|| ApiError::SessionNotFound(sid.clone()))?;
     session.resize(req.cols, req.rows).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `POST /api/sessions/:sid/stop` — kill the PTY if it is live, but keep the
+/// session metadata visible for transcript replay and an explicit Restart CTA.
+async fn stop_session(
+    State(state): State<Arc<AppState>>,
+    Path(sid): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    let result = state.manager.stop_tree(&sid).await;
+    for id in result.affected {
+        state.cleanup_session_resources(&id);
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 

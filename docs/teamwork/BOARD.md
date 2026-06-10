@@ -16,9 +16,32 @@ Rendimiento de ejecutores y puntuación del usuario: [`SCOREBOARD.md`](./SCOREBO
 
 ## En curso
 
-_Sin tarea de ejecución activa._
+_Sin tarea de ejecución activa._ (Sesión cerrada por time-box 2026-06-10; handoff abajo.)
 
-**Cola pendiente de aprobación (2026-06-10):** análisis del harness + revisión del fuente de Codex completados; ver [`docs/12-build-plan/harness-analysis-2026-06-10.md`](../12-build-plan/harness-analysis-2026-06-10.md) y las tareas H1–H6 en [`pending-implementation-tasks.md`](../12-build-plan/pending-implementation-tasks.md). El Planner no ejecuta hasta que el usuario apruebe qué tareas abrir. Quick wins listos para arrancar: H1 (fix headless Codex), H2 (CLAUDE.md §3), H3 (reporter de costo Codex).
+### Hecho y pusheado esta sesión (2026-06-10)
+- **Análisis del harness + revisión del fuente de Codex** (`docs/12-build-plan/harness-analysis-2026-06-10.md`): bugs P1 verificados, perf, hueco de seguridad de delegación, formato de rollout de Codex, fix del cuelgue headless.
+- **Fix headless de Codex** validado (`HEADLESS_OK` 4s) + receta corregida en `CLAUDE.md §3` (`codex exec "PROMPT" … < /dev/null`).
+- **Bug P1 gateway MCP read timeout — CERRADO** vía primer head-to-head codex-vs-sonnet: merge de la impl de Sonnet + el assert de reaping de Codex en `harness-mcp-server/src/gateway.rs` (69 tests verdes). Fila comparativa en `SCOREBOARD.md`.
+- **Roster de Zeus + regla cross-model formalizados** (`CLAUDE.md §1–§3` + `docs/13-agents/zeus-orchestrator.md`): Opus orquesta · **Codex codifica (backend+frontend)** · **Sonnet revisa código + UI designer** · **Codex QA (agent-browser)** · ciclo `generar→revisar ×1 cross-model→incorporar→verificar`, cap=1, generador dueño del código, compuerta objetiva.
+- Commits: `b6e19f6`, `9fb3bdd`, `13ae622`, `041b8b8`, `40fa731`, `55dbb74` (todos en `origin/main`).
+
+### PRÓXIMA TAREA (handoff) — Pipeline Zeus sobre ChatView (frontend)
+Estrenar el roster de Zeus en una mejora de **frontend ChatView**. **Objetivo (criterio del usuario):** comprobar y mejorar que ChatView (1) funcione bien, (2) muestre detalles relevantes, (3) muestre el **thinking en vivo**, (4) renderice bien el **formato del texto** de las respuestas, (5) permita **adjuntar archivos/imágenes y pasarlos al agente** para lectura. Archivos probables: `frontend/src/lib/components/app/ChatView.svelte` y aledaños.
+
+**Pipeline a correr (Zeus, manual vía Planner):**
+1. **QA-assess** — Codex + `agent-browser` (ya en PATH) recorre ChatView en vivo y reporta el estado de los 5 ítems (qué funciona / qué falla / qué se ve mal).
+2. **CODIFY** — Codex corrige lo roto en `frontend/`.
+3. **REVIEW + UI** — Sonnet 4.6 revisa código (1 ronda) y hace UI-design del visual.
+4. **INCORPORATE** — Codex aplica los must-fix de Sonnet.
+5. **re-QA** — Codex + agent-browser confirma.
+6. **VERIFY** — Planner (Opus) verifica + el usuario puntúa 1-5 en SCOREBOARD.
+
+**Notas operativas (críticas para la próxima sesión):**
+- ⚠️ Al iniciar había una app del harness **ya corriendo** (tauri sidecar, ~4h, puertos dinámicos altos) — **probablemente la sesión activa del usuario**. NO testear contra ella. Levantar un **stack aislado** (`just dev-raw` con `HARNESS_HOME` temporal y puertos altos libres), como el VERIFY previo de ChatView round 3.
+- `agent-browser` está en PATH (`/run/user/1000/fnm_multishells/.../bin/agent-browser`), referenciado en `Justfile`. Codex sabe usarlo.
+- Decidir: trabajar en **main** (loop de hot-reload simple, gates dan la seguridad) vs **worktree aislado** (necesita su propio dev server + node_modules, más pesado). Recomendado: main + stack aislado de dev-raw.
+- **Gap a cerrar antes de spawnear**: la formalización referencia `subagent_type: ui-designer`, que **no existe** en `.claude/agents/` (hay `frontend`, `reviewer`, `qa`, `doc-agent`). Crear `.claude/agents/ui-designer.md` (Sonnet 4.6) o usar `frontend`/`reviewer` con brief de UI-design.
+- Roster y regla del pipeline: ver `CLAUDE.md §1–§2` y memoria `decision-cross-model-review`.
 
 ## Última cerrada — ChatView live round 3: vivo post-restart, auto-scroll, fallback PTY, restart con continuidad, robustez SSE backend
 

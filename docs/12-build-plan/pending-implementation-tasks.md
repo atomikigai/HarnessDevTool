@@ -13,6 +13,13 @@ sources: []
 Backlog ordenado para retomar el harness tarea por tarea. Cada bloque se puede
 revisar, aprobar y ejecutar sin mezclar scopes.
 
+> **Análisis pendiente de convertir en tareas (2026-06-10):**
+> [[build-plan/planning-codex-delegation-2026-06-10]] — auditoría de la planificación y la delegación
+> a Codex (`--dangerously-bypass-approvals-and-sandbox`). Hallazgo central: Codex corre sin sandbox y
+> edita con sus propias tools, así que el gating runtime no lo constriñe; el peso debe ir al contrato
+> previo (M1 briefing rico, M12 plantilla de BRIEF), la verificación posterior dura (M2 scope-drift,
+> M3 compuerta) y el routing a Codex (M5). Quick wins: M1, M12, M4 (cap K=2). Roadmap M1–M12 en el doc.
+
 ## Orden recomendado
 
 1. **Tab Agents con sesiones hijas reales** — ejecutada; corrige el bug observado y valida la base de sub-agentes.

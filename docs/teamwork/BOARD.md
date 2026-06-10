@@ -16,7 +16,9 @@ Rendimiento de ejecutores y puntuación del usuario: [`SCOREBOARD.md`](./SCOREBO
 
 ## En curso
 
-_Sin tarea activa._
+_Sin tarea de ejecución activa._
+
+**Cola pendiente de aprobación (2026-06-10):** análisis del harness + revisión del fuente de Codex completados; ver [`docs/12-build-plan/harness-analysis-2026-06-10.md`](../12-build-plan/harness-analysis-2026-06-10.md) y las tareas H1–H6 en [`pending-implementation-tasks.md`](../12-build-plan/pending-implementation-tasks.md). El Planner no ejecuta hasta que el usuario apruebe qué tareas abrir. Quick wins listos para arrancar: H1 (fix headless Codex), H2 (CLAUDE.md §3), H3 (reporter de costo Codex).
 
 ## Última cerrada — ChatView live round 3: vivo post-restart, auto-scroll, fallback PTY, restart con continuidad, robustez SSE backend
 

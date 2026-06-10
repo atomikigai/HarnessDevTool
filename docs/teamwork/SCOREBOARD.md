@@ -48,7 +48,8 @@ Puntúa con un número 1–5 en la columna correspondiente. Justifica brevemente
 
 ## Notas operativas
 
-1. **Codex headless bloqueado:** `codex exec` sin terminal cuelga en stdin (exit 144). Workaround: usar subagentes nativos de Claude (Sonnet/Haiku) para tasks que se ejecuten en background desde el Planner.
+1. **Codex headless — causa raíz + fix (2026-06-10):** revisado el fuente de `openai/codex`, el cuelgue es `read_to_end()` de stdin no-TTY sin EOF cuando el prompt va por arg posicional (`exec/src/lib.rs:1858-1868`). **Fix:** `codex exec \"PROMPT\" --json --skip-git-repo-check -c sandbox_mode=workspace-write < /dev/null`. Codex headless es recuperable; la postura \"Sonnet como fallback por cuelgue\" deja de ser forzosa una vez aplicado `< /dev/null`. Detalle: [[build-plan/harness-analysis-2026-06-10]].
 2. **Subagentes nativos en paralelo:** Frontend y Backend pueden correr a la vez con write-scopes disjuntos, sin necesidad de serializar; mejora velocidad al mitigar cuelgues de CLI externos.
 3. **Duración aprox:** incluye lectura de brief, ejecución y handoff en el board; **no** incluye revisión/QA oficial (eso entra como tarea separada post-handoff).
 4. **Puntuación usuario:** decisión de producto, no técnica. Espera a que el usuario valore en vivo antes de ajustar roster/ejecución.
+5. **Costo de Codex medible (2026-06-10):** el reporter de costo de Codex (hoy stub $0) es implementable parseando `$CODEX_HOME/sessions/**/rollout-*.jsonl` (eventos `token_count` → `total_token_usage` acumulativo). Hasta implementarlo, las filas de Codex no tienen USD; con él, codex vs sonnet se vuelve comparable en costo.

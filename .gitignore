@@ -22,4 +22,7 @@ src-tauri/target/
 *.log
 .DS_Store
 
+# Dogfooding / QA output (generated screenshots + reports)
+dogfood-output/
+
 # Design reference folders are tracked (see DEVTOOL - GUI/).

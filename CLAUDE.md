@@ -76,10 +76,20 @@ Correr siempre desde la **raíz del repo**.
 
 ### Backend Rust (Codex)
 ```bash
-codex exec -s workspace-write "BRIEF Backend Rust: <objetivo>. Sigue AGENTS.md y docs/. \
-Alcance: backend/crates/<crate>. Criterio: <aceptación>. Si tocas un tipo #[derive(TS)], corre \
-just gen-types. No toques frontend/."
+codex exec -s workspace-write -c approval_policy=never --skip-git-repo-check \
+  "BRIEF Backend Rust: <objetivo>. Sigue AGENTS.md y docs/. Alcance: backend/crates/<crate>. \
+Criterio: <aceptación>. Si tocas un tipo #[derive(TS)], corre just gen-types. No toques frontend/." \
+  < /dev/null
 ```
+
+> **Headless (causa raíz verificada 2026-06-10):** el prompt **debe** ir como argumento posicional **y**
+> hay que redirigir **`< /dev/null`**. Sin eso, en background (stdin no-TTY sin EOF) `codex exec` se
+> cuelga en `read_to_end` de stdin imprimiendo *"Reading additional input from stdin…"* (exit 144). Con
+> `< /dev/null` el read retorna en EOF inmediato. `approval_policy=never` evita que un prompt de aprobación
+> bloquee sin TTY; `-s workspace-write` lo confina al repo. Útil además: `--json` (stream de eventos
+> parseable), `--output-last-message FILE`, `--ephemeral`. Validado: `HEADLESS_OK` en 4 s. Detalle y el
+> reporter de costo (lee `$CODEX_HOME/sessions/**/rollout-*.jsonl`) en
+> `docs/12-build-plan/harness-analysis-2026-06-10.md`.
 
 ### Frontend (Claude Sonnet 4.6 — subagente nativo)
 Se spawnea con la **Agent tool** nativa (`subagent_type: frontend`, def. en `.claude/agents/frontend.md`,

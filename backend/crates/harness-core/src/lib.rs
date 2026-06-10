@@ -12,6 +12,7 @@ pub mod pause;
 pub mod repos;
 pub mod roles;
 pub mod scheduler;
+pub mod skills;
 pub mod store;
 pub mod tasks;
 pub mod threads;
@@ -27,7 +28,8 @@ pub use docs::{infer_docs_backend, DocsBackend};
 pub use events::{Event, Item, TimelineEntity, TimelineItem, TimelineReport};
 pub use ids::{validate_path_id, validate_profile_id, validate_task_id, validate_thread_id};
 pub use knowledge::{
-    ingest_pdf, ingest_text, KnowledgeIngestRequest, KnowledgeIngestResult, KnowledgeShard,
+    ingest_office, ingest_pdf, ingest_text, KnowledgeIngestRequest, KnowledgeIngestResult,
+    KnowledgeShard,
 };
 pub use pause::PauseFlag;
 pub use repos::{
@@ -38,6 +40,10 @@ pub use roles::{Role, RolesRegistry};
 pub use scheduler::{
     run_budget_pass, BudgetWiring, NoopSpawner, Scheduler, SessionSpawner, SpawnRequest,
     SpawnResult, MAX_CONCURRENT_DEFAULT,
+};
+pub use skills::{
+    CuratorCandidate, CuratorReport, EvolutionObservation, EvolutionRunReport, SkillProposal,
+    SkillRecord, SkillSearchHit, SkillStatus, SkillStore, SkillUsage,
 };
 pub use store::{Store, StoreError};
 pub use tasks::{

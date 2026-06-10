@@ -1,3 +1,4 @@
+pub mod capabilities;
 pub mod db;
 pub mod docs;
 pub mod knowledge;
@@ -17,6 +18,49 @@ use crate::protocol::ToolDescriptor;
 pub fn list_descriptors() -> Vec<ToolDescriptor> {
     vec![
         ToolDescriptor {
+            name: "capability_list".into(),
+            description: "List short Harness capability categories with when-to-use cues and common mentions. Call this before scanning many individual tools."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {}
+            }),
+        },
+        ToolDescriptor {
+            name: "capability_describe".into(),
+            description: "Describe one Harness capability category, including concise use_when cues, mentions, status, relevant tools, and skills."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["id"],
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "description": "Capability category id from capability_list, for example repo, tasks, docs_web, db, ssh, data_loader, project_memory."
+                    }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "capability_request".into(),
+            description: "Request that one capability category be expanded in subsequent tools/list responses for this MCP session."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["id"],
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "description": "Capability category id from capability_list."
+                    },
+                    "reason": {
+                        "type": "string",
+                        "description": "Short reason this category is needed now."
+                    }
+                }
+            }),
+        },
+        ToolDescriptor {
             name: "knowledge_pdf_ingest".into(),
             description: "Extract a local technical PDF into compact Markdown shards under HARNESS_HOME/profiles/<profile>/knowledge/pdf/<document>. Returns index and shard paths for future agent sessions."
                 .into(),
@@ -27,6 +71,25 @@ pub fn list_descriptors() -> Vec<ToolDescriptor> {
                     "source_path": {
                         "type": "string",
                         "description": "Absolute or working-directory-relative path to a local .pdf file."
+                    },
+                    "title": {
+                        "type": "string",
+                        "description": "Optional human-readable document title used for the output folder."
+                    }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "knowledge_office_ingest".into(),
+            description: "Extract a local DOCX or PPTX into compact agent-readable Markdown shards under HARNESS_HOME/profiles/<profile>/knowledge/office/<document>. Returns index and shard paths for future sessions."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["source_path"],
+                "properties": {
+                    "source_path": {
+                        "type": "string",
+                        "description": "Absolute or working-directory-relative path to a local .docx or .pptx file."
                     },
                     "title": {
                         "type": "string",
@@ -842,13 +905,113 @@ pub fn list_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "skills_search".into(),
-            description: "Search skills (stub until F5 — currently returns []).".into(),
+            description: "Search active/proposed Harness skills learned for this profile. Use before inventing a workflow from scratch."
+                .into(),
             input_schema: json!({
                 "type": "object",
                 "required": ["query"],
                 "properties": {
                     "query": { "type": "string" },
                     "top_k": { "type": "integer", "minimum": 1 }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "skill_propose".into(),
+            description: "Create a proposed skill Markdown file from a repeated successful workflow or recovery pattern. This never activates the skill."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["title", "body", "reason"],
+                "properties": {
+                    "title": { "type": "string" },
+                    "body": { "type": "string", "description": "Markdown body for the proposed skill." },
+                    "tags": { "type": "array", "items": { "type": "string" } },
+                    "reason": { "type": "string" }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "skill_promote".into(),
+            description: "Promote a reviewed proposed skill to active. Creates a snapshot before changing files."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["id", "reason"],
+                "properties": {
+                    "id": { "type": "string" },
+                    "reason": { "type": "string" }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "skill_archive".into(),
+            description: "Archive an active or proposed skill without deleting it. Creates a snapshot before changing files."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["id", "reason"],
+                "properties": {
+                    "id": { "type": "string" },
+                    "reason": { "type": "string" }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "skill_record_usage".into(),
+            description: "Append usage telemetry for a loaded skill so curator can keep useful skills and flag unused ones."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["skill_id", "outcome"],
+                "properties": {
+                    "skill_id": { "type": "string" },
+                    "outcome": { "type": "string" },
+                    "session_id": { "type": "string" },
+                    "task_id": { "type": "string" },
+                    "loaded": { "type": "boolean" },
+                    "used": { "type": "boolean" },
+                    "duration_ms": { "type": "integer", "minimum": 0 }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "evolve_observe".into(),
+            description: "Append an evolution observation about repeated work, recovery, failed tools, or useful patterns. Observations are proposals input, not active behavior."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["kind", "summary"],
+                "properties": {
+                    "kind": { "type": "string" },
+                    "summary": { "type": "string" },
+                    "thread_id": { "type": "string" },
+                    "session_id": { "type": "string" },
+                    "task_id": { "type": "string" },
+                    "signals": { "type": "array", "items": { "type": "string" } },
+                    "evidence": { "type": "array", "items": { "type": "string" } }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "evolve_run".into(),
+            description: "Run the deterministic learner batch over recent observations and write proposed skills only."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 200 }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "curator_run".into(),
+            description: "Run deterministic skill corpus maintenance. Defaults to dry_run=true; non-dry-run archives unused active skills with snapshots."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "dry_run": { "type": "boolean" }
                 }
             }),
         },

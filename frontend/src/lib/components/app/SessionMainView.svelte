@@ -18,7 +18,7 @@
       reselect.
 -->
 <script lang="ts">
-  import { api, ApiError, type SessionMeta } from '$lib/api/client';
+  import { api, ApiError, type SessionMeta, type ZeusRoleSelection } from '$lib/api/client';
   import { Bot, MessageSquare, Paperclip, RotateCcw, Send, Terminal } from '$lib/icons';
   import { toast } from 'svelte-sonner';
   import TerminalView from './TerminalView.svelte';
@@ -52,13 +52,42 @@
     onSessionKilled
   }: Props = $props();
 
-  let mainTab = $state<'terminal' | 'chat'>('terminal');
+  let mainTab = $state<'terminal' | 'chat'>('chat');
   let input = $state('');
   let sending = $state(false);
   let stopping = $state(false);
   let restarting = $state(false);
   let attaching = $state(false);
   let fileInputEl: HTMLInputElement | null = $state(null);
+
+  // BUG D: old session ID passed to ChatView so it can show history above separator
+  let prevSidForChat = $state<string | null>(null);
+  // P1 fix: the session ID that the last restart created. Used to guard prevSidForChat:
+  // if session.id changes to something other than this, the user navigated away and we
+  // must clear prevSidForChat so the new session doesn't show A's history.
+  let expectedNewSid: string | null = null;
+
+  $effect(() => {
+    const sid = session?.id ?? null;
+    // Clear prevSidForChat when the selected session is NOT the one created by the
+    // last restart. The condition is intentionally guarded by prevSidForChat !== null
+    // so it's a no-op until a restart actually sets it.
+    //
+    // Root-cause fix (2026-06-10): after restart, `selectedSessionId` is set to the
+    // new session's ID but `allSessions` may not contain it yet (polling lag). While
+    // waiting, `selectedSession` is null → `sid = null`. Without the `sid !== null`
+    // guard, `null !== expectedNewSid` evaluates to TRUE and the condition fires,
+    // clearing prevSidForChat before the new ChatView even mounts. Adding the null
+    // guard ensures we only clear on an actual *different* session navigation.
+    if (prevSidForChat !== null && sid !== null && sid !== expectedNewSid && sid !== prevSidForChat) {
+      prevSidForChat = null;
+      expectedNewSid = null;
+    }
+  });
+
+  // BUG E: token totals received from ChatView via onTotalTokens callback
+  let chatInputTok = $state(0);
+  let chatOutputTok = $state(0);
 
   const encoder = new TextEncoder();
 
@@ -159,6 +188,23 @@
     if (!session || restarting) return;
     restarting = true;
     const { thread_id, kind, cwd, id: oldId } = session;
+    // BUG D: capture old SID before killing so ChatView can load history
+    prevSidForChat = oldId;
+    // BUG E: reset token counter when restarting
+    chatInputTok = 0;
+    chatOutputTok = 0;
+    // Fetch the zeus_roles matrix before killing so the Zeus profile survives
+    // the restart. The session prop comes from the list and won't carry
+    // zeus_roles, so we always do a GET here. Degrade to [] on any error.
+    let zeusRoles: ZeusRoleSelection[] = session.zeus_roles ?? [];
+    if (zeusRoles.length === 0) {
+      try {
+        const detail = await api.sessions.get(oldId);
+        zeusRoles = detail.data.zeus_roles ?? [];
+      } catch {
+        // degraded: keep []
+      }
+    }
     try {
       // Best-effort kill first — ignore errors (session may already be dead).
       try {
@@ -173,13 +219,19 @@
         cwd: cwd ?? undefined,
         include_project_context: true,
         capability_profile: 'auto',
-        zeus_roles: []
+        zeus_roles: zeusRoles
       });
+      // P1 fix: record the expected new session ID BEFORE notifying the parent so
+      // the $effect on session?.id won't clear prevSidForChat when the parent
+      // reselects the freshly-created session.
+      expectedNewSid = res.data.session_id;
       toast.success('Session restarted');
       onSessionReplaced?.(res.data.session_id);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       toast.error(`Restart failed: ${msg}`);
+      prevSidForChat = null; // clear on failure
+      expectedNewSid = null;
     } finally {
       restarting = false;
     }
@@ -250,7 +302,7 @@
       {/if}
       <div class="ml-auto flex shrink-0 items-center gap-3">
         <span class="font-mono text-[11px]" style="color: var(--fg-muted);">
-          {uptime(session.started_at)} · {tokensLabel(null)}
+          {uptime(session.started_at)} · {tokensLabel(chatInputTok + chatOutputTok)}
         </span>
         <div class="flex gap-1.5">
           <button
@@ -321,22 +373,22 @@
       </nav>
     {/if}
 
-    <!-- Window frame (macOS dots + cwd line + terminal) -->
+    <!-- Window frame (macOS dots + cwd line + terminal/chat) -->
     <div class="flex min-h-0 flex-1 flex-col p-3">
       <div
         class="flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border"
         style="
-          background: #0b1220;
+          background: {mainTab === 'terminal' ? '#0b1220' : 'var(--surface-canvas)'};
           border-color: var(--border-subtle);
           box-shadow: var(--shadow-card);
         "
       >
-        <!-- "Title bar" — purely decorative -->
+        <!-- "Title bar" — purely decorative; adapts to active tab -->
         <div
           class="flex h-8 shrink-0 items-center gap-2 border-b px-3"
           style="
-            background: rgba(0, 0, 0, 0.3);
-            border-color: rgba(255, 255, 255, 0.06);
+            background: {mainTab === 'terminal' ? 'rgba(0, 0, 0, 0.3)' : 'var(--surface-window)'};
+            border-color: {mainTab === 'terminal' ? 'rgba(255, 255, 255, 0.06)' : 'var(--border-subtle)'};
           "
         >
           <div class="flex gap-1.5">
@@ -346,29 +398,32 @@
           </div>
           <span
             class="ml-2 truncate font-mono text-[10.5px]"
-            style="color: #94a3b8;"
+            style="color: {mainTab === 'terminal' ? '#94a3b8' : 'var(--fg-muted)'};"
             title={session.cwd ?? ''}
           >
             {k?.label ?? session.kind} · {session.cwd ?? '(default cwd)'}
           </span>
-          <span class="ml-auto shrink-0 font-mono text-[10px]" style="color: #4a5568;">
-            {tokensLabel(null)}
+          <span class="ml-auto shrink-0 font-mono text-[10px]" style="color: {mainTab === 'terminal' ? '#4a5568' : 'var(--fg-muted)'};">
+            {tokensLabel(chatInputTok + chatOutputTok)}
           </span>
         </div>
 
-        <!-- Tab bar: Terminal | Chat -->
+        <!-- Tab bar: Chat | Terminal (chat is primary) -->
         <div
           class="flex shrink-0 border-b"
-          style="border-color: rgba(255, 255, 255, 0.06); background: rgba(0, 0, 0, 0.2);"
+          style="
+            border-color: {mainTab === 'terminal' ? 'rgba(255, 255, 255, 0.06)' : 'var(--border-subtle)'};
+            background: {mainTab === 'terminal' ? 'rgba(0, 0, 0, 0.2)' : 'var(--surface-window)'};
+          "
         >
-          {#each [{ id: 'terminal' as const, icon: Terminal, label: 'Terminal' }, { id: 'chat' as const, icon: MessageSquare, label: 'Chat' }] as t (t.id)}
+          {#each [{ id: 'chat' as const, icon: MessageSquare, label: 'Chat' }, { id: 'terminal' as const, icon: Terminal, label: 'Terminal' }] as t (t.id)}
             <button
               type="button"
               onclick={() => (mainTab = t.id)}
               class="flex items-center gap-1.5 px-4 py-2 text-xs font-medium border-b-2 transition-colors"
               style={mainTab === t.id
                 ? 'border-color: var(--accent); color: var(--accent);'
-                : 'border-color: transparent; color: #94a3b8;'}
+                : `border-color: transparent; color: ${mainTab === 'terminal' ? '#94a3b8' : 'var(--fg-muted)'};`}
             >
               <t.icon size={12} />
               {t.label}
@@ -377,15 +432,22 @@
         </div>
 
         <!-- Body. `{#key session.id}` forces remount when the selected session
-             changes, so its terminal + SSE are torn down and rebuilt. -->
-        <div class="min-h-0 flex-1 overflow-hidden">
+             changes, so its terminal + SSE are torn down and rebuilt.
+             LAYOUT: flex flex-col so h-full in ChatView propagates correctly. -->
+        <div class="min-h-0 flex-1 overflow-hidden flex flex-col">
           {#if mainTab === 'terminal'}
             {#key session.id}
               <TerminalView threadId={session.thread_id} sessionId={session.id} embedded />
             {/key}
           {:else}
             {#key session.id}
-              <ChatView {session} />
+              <ChatView
+                {session}
+                prevSid={prevSidForChat}
+                onSwitchToTerminal={() => (mainTab = 'terminal')}
+                {onRestart}
+                onTotalTokens={(inp, out) => { chatInputTok = inp; chatOutputTok = out; }}
+              />
             {/key}
           {/if}
         </div>

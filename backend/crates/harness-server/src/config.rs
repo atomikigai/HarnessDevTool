@@ -24,6 +24,31 @@ pub struct Config {
     /// Shared bearer token for mutating HTTP routes. Optional for loopback
     /// development, required when the backend listens on a non-loopback IP.
     pub api_token: Option<String>,
+    /// Daily background evolution scheduler. Disabled by default.
+    pub evolution: EvolutionConfig,
+}
+
+#[derive(Debug, Clone)]
+pub struct EvolutionConfig {
+    pub enabled: bool,
+    pub panama_hour: u32,
+    pub panama_minute: u32,
+    pub idle_only: bool,
+    pub observation_limit: usize,
+    pub curator_dry_run: bool,
+}
+
+impl Default for EvolutionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            panama_hour: 7,
+            panama_minute: 0,
+            idle_only: true,
+            observation_limit: 100,
+            curator_dry_run: true,
+        }
+    }
 }
 
 impl Config {
@@ -46,6 +71,7 @@ impl Config {
         let profile = resolve_profile(&home);
         let autonomy_profile = resolve_autonomy_profile();
         let api_token = resolve_api_token(bind)?;
+        let evolution = resolve_evolution_config()?;
 
         Ok(Self {
             bind,
@@ -54,6 +80,7 @@ impl Config {
             profile,
             autonomy_profile,
             api_token,
+            evolution,
         })
     }
 }
@@ -104,6 +131,54 @@ fn resolve_api_token(bind: SocketAddr) -> Result<Option<String>> {
     validate_api_token(bind, env::var("HARNESS_API_TOKEN").ok())
 }
 
+fn resolve_evolution_config() -> Result<EvolutionConfig> {
+    let (panama_hour, panama_minute) = parse_hhmm(
+        &env::var("HARNESS_EVOLVE_TIME_PANAMA").unwrap_or_else(|_| "07:00".to_string()),
+    )?;
+    Ok(EvolutionConfig {
+        enabled: env_bool("HARNESS_EVOLVE_ENABLED", true),
+        panama_hour,
+        panama_minute,
+        idle_only: env_bool("HARNESS_EVOLVE_IDLE_ONLY", true),
+        observation_limit: env_usize("HARNESS_EVOLVE_OBSERVATION_LIMIT", 100).clamp(1, 200),
+        curator_dry_run: env_bool("HARNESS_CURATOR_DRY_RUN", true),
+    })
+}
+
+fn env_bool(key: &str, default: bool) -> bool {
+    match env::var(key) {
+        Ok(value) => matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        ),
+        Err(_) => default,
+    }
+}
+
+fn env_usize(key: &str, default: usize) -> usize {
+    env::var(key)
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .unwrap_or(default)
+}
+
+fn parse_hhmm(raw: &str) -> Result<(u32, u32)> {
+    let (hour, minute) = raw
+        .trim()
+        .split_once(':')
+        .ok_or_else(|| anyhow::anyhow!("HARNESS_EVOLVE_TIME_PANAMA must be HH:MM"))?;
+    let hour = hour
+        .parse::<u32>()
+        .context("parsing HARNESS_EVOLVE_TIME_PANAMA hour")?;
+    let minute = minute
+        .parse::<u32>()
+        .context("parsing HARNESS_EVOLVE_TIME_PANAMA minute")?;
+    if hour > 23 || minute > 59 {
+        bail!("HARNESS_EVOLVE_TIME_PANAMA must be a valid HH:MM");
+    }
+    Ok((hour, minute))
+}
+
 fn validate_api_token(bind: SocketAddr, raw: Option<String>) -> Result<Option<String>> {
     let token = raw
         .map(|value| value.trim().to_string())
@@ -132,5 +207,13 @@ mod tests {
         let bind = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 7777);
 
         assert!(validate_api_token(bind, None).is_err());
+    }
+
+    #[test]
+    fn parse_hhmm_accepts_daily_schedule() {
+        assert_eq!(parse_hhmm("07:00").unwrap(), (7, 0));
+        assert_eq!(parse_hhmm("23:59").unwrap(), (23, 59));
+        assert!(parse_hhmm("24:00").is_err());
+        assert!(parse_hhmm("7am").is_err());
     }
 }

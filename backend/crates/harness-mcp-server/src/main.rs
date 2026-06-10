@@ -15,6 +15,7 @@ use serde_json::{json, Value};
 use tracing::{debug, error, info};
 
 mod dispatcher;
+mod gateway;
 mod protocol;
 mod tools;
 
@@ -118,6 +119,8 @@ struct CliArgs {
     task_id: Option<String>,
     /// Trusted resource scopes granted to this MCP instance.
     scopes: Vec<String>,
+    /// Optional gateway upstreams granted by the smart capability loader.
+    upstream_config: Option<PathBuf>,
 }
 
 fn parse_args() -> Result<CliArgs, String> {
@@ -137,6 +140,7 @@ fn parse_args_from(args: Vec<String>) -> Result<CliArgs, String> {
     let mut role: Option<String> = None;
     let mut task_id: Option<String> = None;
     let mut scopes: Vec<String> = Vec::new();
+    let mut upstream_config: Option<PathBuf> = None;
 
     let mut i = 0;
     while i < args.len() {
@@ -190,9 +194,13 @@ fn parse_args_from(args: Vec<String>) -> Result<CliArgs, String> {
                 scopes.push(next(i)?.clone());
                 i += 2;
             }
+            "--upstream-config" => {
+                upstream_config = Some(PathBuf::from(next(i)?));
+                i += 2;
+            }
             "-h" | "--help" => {
                 eprintln!(
-                    "usage: harness-mcp-server --thread <tid> --agent-id <aid> [--session-id <sid>] --harness-home <path> [--profile <profile>] [--server-url <url>] [--cwd <path>] [--api-token <token>] [--role <role>] [--task-id <task>] [--scope <scope>...]"
+                    "usage: harness-mcp-server --thread <tid> --agent-id <aid> [--session-id <sid>] --harness-home <path> [--profile <profile>] [--server-url <url>] [--cwd <path>] [--api-token <token>] [--role <role>] [--task-id <task>] [--scope <scope>...] [--upstream-config <path>]"
                 );
                 std::process::exit(0);
             }
@@ -211,6 +219,7 @@ fn parse_args_from(args: Vec<String>) -> Result<CliArgs, String> {
         role,
         task_id,
         scopes,
+        upstream_config,
     })
 }
 
@@ -251,6 +260,7 @@ fn main() -> ExitCode {
         args.role.clone(),
         args.task_id.clone(),
         args.scopes.clone(),
+        args.upstream_config.clone(),
     ) {
         Ok(d) => d,
         Err(e) => {
@@ -416,5 +426,25 @@ mod tests {
 
         assert_eq!(args.task_id.as_deref(), Some("T-0001"));
         assert_eq!(args.scopes, vec!["task:T-0001", "frontend"]);
+    }
+
+    #[test]
+    fn upstream_config_comes_from_trusted_cli_flag() {
+        let args = parse_args_from(vec![
+            "--thread".into(),
+            "thread-1".into(),
+            "--agent-id".into(),
+            "agent:codex-1".into(),
+            "--harness-home".into(),
+            "/tmp/harness".into(),
+            "--upstream-config".into(),
+            "/tmp/upstreams.json".into(),
+        ])
+        .unwrap();
+
+        assert_eq!(
+            args.upstream_config.as_deref(),
+            Some(std::path::Path::new("/tmp/upstreams.json"))
+        );
     }
 }

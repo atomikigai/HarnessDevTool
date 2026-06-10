@@ -845,6 +845,25 @@ fn reap_orphan_if_identity_matches(meta: &SessionMeta) {
     terminate_pid(pid);
 }
 
+/// True when the persisted session PID is alive **and** still the same
+/// process recorded in `meta` (start-time/cmdline identity guard against PID
+/// recycling — same check the orphan reaper uses). Metas without a recorded
+/// identity fall back to plain liveness.
+pub fn pid_alive_and_identity_matches(meta: &SessionMeta) -> bool {
+    if !pid_alive(meta.pid as i32) {
+        return false;
+    }
+    let Some(expected) = meta.process_identity.as_ref() else {
+        return true;
+    };
+    match process_identity(meta.pid) {
+        Some(actual) => process_identity_matches(expected, &actual),
+        // Identity was recorded but can no longer be read — conservatively
+        // treat the PID as recycled/dead.
+        None => false,
+    }
+}
+
 fn process_identity_matches(expected: &ProcessIdentity, actual: &ProcessIdentity) -> bool {
     if let Some(expected_start) = expected.linux_start_time_ticks {
         return actual.linux_start_time_ticks == Some(expected_start);

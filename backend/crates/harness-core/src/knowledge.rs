@@ -9,6 +9,7 @@ use chrono::{DateTime, Utc};
 use pdf_oxide::converters::ConversionOptions;
 use pdf_oxide::PdfDocument;
 use serde::{Deserialize, Serialize};
+use undoc::render::{CleanupOptions, RenderOptions, SectionMarkerStyle};
 
 use crate::Error;
 
@@ -39,6 +40,7 @@ pub struct KnowledgeShard {
     pub title: String,
     pub path: PathBuf,
     pub pages: Vec<usize>,
+    pub headings: Vec<String>,
     pub bytes: u64,
 }
 
@@ -46,6 +48,7 @@ pub struct KnowledgeShard {
 struct TextShard {
     title: String,
     pages: Vec<usize>,
+    headings: Vec<String>,
     content: String,
 }
 
@@ -56,7 +59,31 @@ pub fn ingest_pdf(
 ) -> Result<KnowledgeIngestResult, Error> {
     validate_pdf_path(&req.source_path)?;
     let text = extract_pdf_text(&req.source_path)?;
-    ingest_text(harness_home, profile, req.source_path, req.title, &text)
+    ingest_text_with_kind(
+        harness_home,
+        profile,
+        req.source_path,
+        req.title,
+        "pdf",
+        &text,
+    )
+}
+
+pub fn ingest_office(
+    harness_home: &Path,
+    profile: &str,
+    req: KnowledgeIngestRequest,
+) -> Result<KnowledgeIngestResult, Error> {
+    validate_office_path(&req.source_path)?;
+    let text = extract_office_markdown(&req.source_path)?;
+    ingest_text_with_kind(
+        harness_home,
+        profile,
+        req.source_path,
+        req.title,
+        "office",
+        &text,
+    )
 }
 
 pub fn ingest_text(
@@ -64,6 +91,17 @@ pub fn ingest_text(
     profile: &str,
     source_path: PathBuf,
     title: Option<String>,
+    text: &str,
+) -> Result<KnowledgeIngestResult, Error> {
+    ingest_text_with_kind(harness_home, profile, source_path, title, "pdf", text)
+}
+
+fn ingest_text_with_kind(
+    harness_home: &Path,
+    profile: &str,
+    source_path: PathBuf,
+    title: Option<String>,
+    kind: &str,
     text: &str,
 ) -> Result<KnowledgeIngestResult, Error> {
     let title = title
@@ -74,7 +112,7 @@ pub fn ingest_text(
         .join("profiles")
         .join(sanitize_segment(profile))
         .join("knowledge")
-        .join("pdf");
+        .join(sanitize_segment(kind));
     std::fs::create_dir_all(&root)?;
     let output_dir = unique_dir(&root, &slug)?;
     let shards_dir = output_dir.join("shards");
@@ -83,9 +121,9 @@ pub fn ingest_text(
     let generated_at = Utc::now();
     let normalized = normalize_text(text);
     if normalized.trim().is_empty() {
-        return Err(Error::Validation(
-            "pdf extraction produced no readable text".to_string(),
-        ));
+        return Err(Error::Validation(format!(
+            "{kind} extraction produced no readable text"
+        )));
     }
     let text_shards = shard_text(&normalized);
     let mut shards = Vec::with_capacity(text_shards.len());
@@ -100,6 +138,7 @@ pub fn ingest_text(
             title: shard.title.clone(),
             path: path.clone(),
             pages: shard.pages.clone(),
+            headings: shard.headings.clone(),
             bytes: content.len() as u64,
         });
     }
@@ -146,6 +185,25 @@ fn validate_pdf_path(path: &Path) -> Result<(), Error> {
     Ok(())
 }
 
+fn validate_office_path(path: &Path) -> Result<(), Error> {
+    let ext = path
+        .extension()
+        .and_then(OsStr::to_str)
+        .map(str::to_ascii_lowercase);
+    if !matches!(ext.as_deref(), Some("docx" | "pptx")) {
+        return Err(Error::Validation(
+            "source_path must end with .docx or .pptx".to_string(),
+        ));
+    }
+    if !path.is_file() {
+        return Err(Error::NotFound(format!(
+            "office document {}",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
 fn extract_pdf_text(path: &Path) -> Result<String, Error> {
     let doc = PdfDocument::open(path)
         .map_err(|e| Error::Validation(format!("failed to open PDF: {e}")))?;
@@ -164,6 +222,16 @@ fn extract_pdf_text(path: &Path) -> Result<String, Error> {
         pages.push(markdown);
     }
     Ok(pages.join("\u{c}"))
+}
+
+fn extract_office_markdown(path: &Path) -> Result<String, Error> {
+    let options = RenderOptions::default()
+        .with_cleanup_options(CleanupOptions::standard())
+        .with_max_heading(4);
+    let mut options = options;
+    options.section_markers = SectionMarkerStyle::Comment;
+    undoc::to_markdown_with_options(path, &options)
+        .map_err(|e| Error::Validation(format!("failed to extract Office document: {e}")))
 }
 
 fn normalize_text(text: &str) -> String {
@@ -199,6 +267,7 @@ fn shard_text(text: &str) -> Vec<TextShard> {
                 shards.push(TextShard {
                     title: current_title.clone(),
                     pages: current_pages.clone(),
+                    headings: extract_headings(&current),
                     content: current.trim().to_string(),
                 });
                 current.clear();
@@ -220,10 +289,26 @@ fn shard_text(text: &str) -> Vec<TextShard> {
         shards.push(TextShard {
             title: current_title,
             pages: current_pages,
+            headings: extract_headings(&current),
             content: current.trim().to_string(),
         });
     }
     shards
+}
+
+fn extract_headings(content: &str) -> Vec<String> {
+    let mut headings = Vec::new();
+    for block in content.split("\n\n") {
+        if let Some(title) = infer_title(block) {
+            if !headings.iter().any(|existing| existing == &title) {
+                headings.push(title);
+            }
+        }
+        if headings.len() >= 8 {
+            break;
+        }
+    }
+    headings
 }
 
 fn infer_title(block: &str) -> Option<String> {
@@ -260,36 +345,86 @@ fn render_index(
     out.push_str(&format!("# {title}\n\n"));
     out.push_str("## Uso para agentes\n\n");
     out.push_str(
-        "Leer este indice primero y abrir solo los shards relevantes. Cada shard es corto, estable e independiente.\n\n",
+        "Leer este indice primero. Usa el mapa rapido para elegir shards por tema/pagina y abre solo los shards relevantes. Cada shard es corto, estable e independiente.\n\n",
     );
     out.push_str("## Metadata\n\n");
     out.push_str(&format!("- Source: `{}`\n", source_path.display()));
     out.push_str(&format!("- Generated: `{}`\n", generated_at.to_rfc3339()));
     out.push_str(&format!("- Shards: `{}`\n\n", shards.len()));
+    out.push_str("## Mapa rapido\n\n");
+    out.push_str("| Shard | Pages | Bytes | Signals |\n");
+    out.push_str("|---|---:|---:|---|\n");
+    for shard in shards {
+        let pages = format_pages(&shard.pages);
+        let signals = shard
+            .headings
+            .iter()
+            .take(4)
+            .map(|heading| markdown_cell(heading))
+            .collect::<Vec<_>>()
+            .join("<br>");
+        out.push_str(&format!(
+            "| [{}](shards/{}) | {} | {} | {} |\n",
+            shard.id,
+            shard_rel_path(shard),
+            markdown_cell(&pages),
+            shard.bytes,
+            if signals.is_empty() {
+                markdown_cell(&shard.title)
+            } else {
+                signals
+            }
+        ));
+    }
+    out.push('\n');
     out.push_str("## Shards\n\n");
     for shard in shards {
-        let rel = shard
-            .path
-            .file_name()
-            .and_then(OsStr::to_str)
-            .unwrap_or_default();
         let pages = format_pages(&shard.pages);
         out.push_str(&format!(
-            "- [{} - {}](shards/{}) - pages {}\n",
-            shard.id, shard.title, rel, pages
+            "- [{} - {}](shards/{}) - pages {}; {} bytes",
+            shard.id,
+            shard.title,
+            shard_rel_path(shard),
+            pages,
+            shard.bytes
         ));
+        if !shard.headings.is_empty() {
+            out.push_str(&format!(
+                "; signals: {}",
+                shard
+                    .headings
+                    .iter()
+                    .take(3)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(" / ")
+            ));
+        }
+        out.push('\n');
     }
     out
 }
 
 fn render_shard(doc_title: &str, id: &str, shard: &TextShard) -> String {
+    let headings = if shard.headings.is_empty() {
+        "- No strong headings detected; scan the content headings and first paragraphs.\n"
+            .to_string()
+    } else {
+        shard
+            .headings
+            .iter()
+            .map(|heading| format!("- {heading}\n"))
+            .collect::<String>()
+    };
     format!(
-        "# {} - {}\n\n- Source document: `{}`\n- Shard: `{}`\n- Source pages: `{}`\n\n## Content\n\n{}\n",
+        "# {} - {}\n\n- Source document: `{}`\n- Shard: `{}`\n- Source pages: `{}`\n- Chars: `{}`\n\n## Quick map\n\n{}\n## Content\n\n{}\n",
         id,
         shard.title,
         doc_title,
         id,
         format_pages(&shard.pages),
+        shard.content.chars().count(),
+        headings,
         shard.content
     )
 }
@@ -298,11 +433,44 @@ fn format_pages(pages: &[usize]) -> String {
     if pages.is_empty() {
         return "unknown".to_string();
     }
-    pages
-        .iter()
-        .map(usize::to_string)
-        .collect::<Vec<_>>()
-        .join(", ")
+    let mut sorted = pages.to_vec();
+    sorted.sort_unstable();
+    sorted.dedup();
+    let mut ranges = Vec::new();
+    let mut start = sorted[0];
+    let mut prev = sorted[0];
+    for page in sorted.into_iter().skip(1) {
+        if page == prev + 1 {
+            prev = page;
+            continue;
+        }
+        ranges.push(format_page_range(start, prev));
+        start = page;
+        prev = page;
+    }
+    ranges.push(format_page_range(start, prev));
+    ranges.join(", ")
+}
+
+fn format_page_range(start: usize, end: usize) -> String {
+    if start == end {
+        start.to_string()
+    } else {
+        format!("{start}-{end}")
+    }
+}
+
+fn shard_rel_path(shard: &KnowledgeShard) -> String {
+    shard
+        .path
+        .file_name()
+        .and_then(OsStr::to_str)
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn markdown_cell(raw: &str) -> String {
+    raw.replace('|', "\\|").replace('\n', " ")
 }
 
 fn title_from_path(path: &Path) -> String {
@@ -400,10 +568,13 @@ mod tests {
             assert!(shard.path.is_file());
             let content = std::fs::read_to_string(&shard.path).unwrap();
             assert!(content.contains("## Content"));
+            assert!(content.contains("## Quick map"));
             assert!(content.len() <= MAX_SHARD_CHARS + 800);
         }
         let index = std::fs::read_to_string(&result.index_path).unwrap();
         assert!(index.contains("## Uso para agentes"));
+        assert!(index.contains("## Mapa rapido"));
+        assert!(index.contains("| Shard | Pages | Bytes | Signals |"));
         assert!(index.contains("shards/001-"));
     }
 

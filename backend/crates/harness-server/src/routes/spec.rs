@@ -446,6 +446,7 @@ mod tests {
                 profile: "default".to_string(),
                 autonomy_profile: harness_core::AutonomyProfile::Assisted,
                 api_token: None,
+                evolution: Default::default(),
             })
             .unwrap(),
         )

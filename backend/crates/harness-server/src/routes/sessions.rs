@@ -95,6 +95,22 @@ pub struct CreateSessionResponse {
     pub session_id: String,
 }
 
+/// `GET /api/sessions/:sid` response: the session metadata plus the Zeus role
+/// matrix persisted at spawn time. Composed at the route layer so the
+/// high-risk `harness-session` `SessionMeta` struct stays untouched.
+#[derive(Debug, Serialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export, export_to = "../../../bindings/"))]
+pub struct SessionDetailResponse {
+    #[serde(flatten)]
+    pub meta: SessionMeta,
+    /// Roles selected when the session was created (`kind=zeus` only).
+    /// Empty for non-Zeus sessions or when nothing was persisted. The
+    /// frontend re-sends this verbatim as `CreateSessionRequest.zeus_roles`
+    /// on Restart so the ZEUS profile survives recreation.
+    pub zeus_roles: Vec<ZeusRoleSelection>,
+}
+
 fn default_include_project_context() -> bool {
     true
 }
@@ -244,6 +260,7 @@ pub fn router() -> Router<Arc<AppState>> {
             "/api/sessions/:sid/attach",
             post(attach_files).get(list_attachments),
         )
+        .route("/api/sessions/:sid/attach/:name", get(get_attachment))
         .route(
             "/api/sessions/:sid/children",
             post(spawn_child_route).get(list_children_route),
@@ -800,6 +817,92 @@ pub async fn spawn_session_internal(
     Ok(meta.id)
 }
 
+/// Re-register transcript watchers after a server restart.
+///
+/// `create_session` is the only other place watcher slots are born, so after
+/// a restart (every rebuild in dev) rehydrated sessions would otherwise never
+/// stream live transcript again. Called once from `main` after `AppState` is
+/// built. Safe to re-run: sessions that already own a slot are skipped, and
+/// the watcher resumes from its persisted checkpoint
+/// (`watcher-checkpoint.json`) so no source event is ingested twice.
+///
+/// A session qualifies when its underlying CLI is claude/codex and either:
+/// - the manager holds a live handle for it, or
+/// - its recorded PID is still alive (CLI survived the restart), or
+/// - the persisted checkpoint shows un-ingested source data (catch up the
+///   tail written while the server was down, then idle).
+pub async fn rehydrate_transcript_watchers(state: &Arc<AppState>) {
+    for meta in state.manager.list_metas().await {
+        let underlying = meta.kind.underlying_cli();
+        if !matches!(underlying, AgentKind::Claude | AgentKind::Codex) {
+            continue;
+        }
+        if state.transcripts.contains_key(&meta.id) {
+            continue;
+        }
+        let reason = if state.manager.get(&meta.id).is_some() {
+            "live_session"
+        } else if harness_session::manager::pid_alive_and_identity_matches(&meta) {
+            "pid_alive"
+        } else if transcript_checkpoint_pending(state, &meta.id) {
+            "checkpoint_pending"
+        } else {
+            continue;
+        };
+
+        // `open_transcript_slot` (via `TranscriptStore::open` →
+        // `recover_last_seq`) reads the whole store JSONL synchronously, so
+        // keep it off the async runtime during startup rehydration.
+        let blocking_state = Arc::clone(state);
+        let blocking_meta = meta.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            let cwd = PathBuf::from(&blocking_meta.cwd);
+            match underlying {
+                AgentKind::Claude => {
+                    start_claude_transcript_watcher(&blocking_state, &blocking_meta.id, &cwd)
+                }
+                AgentKind::Codex => start_codex_transcript_watcher(
+                    &blocking_state,
+                    &blocking_meta.id,
+                    &cwd,
+                    blocking_meta.started_at,
+                    &blocking_meta.id,
+                ),
+                _ => Ok(()),
+            }
+        })
+        .await
+        .unwrap_or_else(|e| Err(format!("watcher rehydration task panicked: {e}")));
+        match result {
+            Ok(()) => tracing::info!(
+                session = %meta.id,
+                kind = %underlying,
+                reason,
+                "re-registered transcript watcher after restart"
+            ),
+            Err(e) => tracing::warn!(
+                session = %meta.id,
+                kind = %underlying,
+                reason,
+                error = %e,
+                "could not re-register transcript watcher after restart"
+            ),
+        }
+    }
+}
+
+/// True when the watcher checkpoint says the source JSONL grew past the last
+/// ingested offset — i.e. the CLI wrote events while the server was down.
+fn transcript_checkpoint_pending(state: &AppState, session_id: &str) -> bool {
+    let dir = session_transcript_dir(state, session_id);
+    let Some(cp) = crate::transcript::watcher::read_checkpoint(&dir) else {
+        return false;
+    };
+    std::fs::metadata(&cp.source_path)
+        .map(|m| m.len() > cp.offset)
+        .unwrap_or(false)
+}
+
 fn session_transcript_dir(state: &AppState, session_id: &str) -> PathBuf {
     state
         .harness_home
@@ -1066,6 +1169,21 @@ fn build_spawn_opts(
         cwd.display().to_string(),
     ];
     let mut mcp_args = mcp_args;
+    if load_crawl4ai {
+        let upstream_path = configs_dir.join(format!("{mcp_id}.upstreams.json"));
+        let crawl = crawl4ai_mcp_server();
+        let upstreams = json!([
+            {
+                "name": crawl.name,
+                "command": crawl.command,
+                "args": crawl.args,
+            }
+        ]);
+        write_private_json(&upstream_path, &upstreams)
+            .map_err(|e| ApiError::Internal(format!("write upstream MCP config: {e}")))?;
+        mcp_args.push("--upstream-config".to_string());
+        mcp_args.push(upstream_path.display().to_string());
+    }
     if let Some(role) = role {
         mcp_args.push("--role".to_string());
         mcp_args.push(role.to_string());
@@ -1092,19 +1210,7 @@ fn build_spawn_opts(
         }),
     );
 
-    let extra_mcp_servers = if load_crawl4ai {
-        let crawl = crawl4ai_mcp_server();
-        mcp_servers.insert(
-            crawl.name.clone(),
-            json!({
-                "command": crawl.command,
-                "args": crawl.args,
-            }),
-        );
-        vec![crawl4ai_mcp_server()]
-    } else {
-        Vec::new()
-    };
+    let extra_mcp_servers = Vec::new();
     let loaded_capabilities =
         loaded_mcp_capabilities_with_skills(load_crawl4ai, smart_skills, smart_tool_groups);
     let capability_intro = spawn_capability_intro(
@@ -1149,6 +1255,8 @@ fn build_spawn_opts(
 pub(crate) fn harness_mcp_intro() -> &'static str {
     "[harness] This session runs under the Harness supervisor. Tasks for this \
      thread live in Harness, not in your local todo list. Treat the MCP tools \
+     `capability_list` and `capability_describe` as the quick category map for \
+     choosing the right rails before scanning individual tools. Then use \
      `task_create`, `task_propose`, `task_list`, `task_get`, `task_claim`, `task_renew`, \
      `task_update`, `task_release`, `task_submit` as NATIVE operations — call \
      them immediately when the user asks to create, list, or track work, \
@@ -1584,8 +1692,10 @@ pub(crate) fn task_capability_text(task: &harness_core::Task) -> String {
 async fn get_session(
     State(state): State<Arc<AppState>>,
     Path(sid): Path<String>,
-) -> Result<Json<SessionMeta>, ApiError> {
-    Ok(Json(load_session_meta(&state, &sid).await?))
+) -> Result<Json<SessionDetailResponse>, ApiError> {
+    let meta = load_session_meta(&state, &sid).await?;
+    let zeus_roles = load_zeus_roles(&state, &sid)?;
+    Ok(Json(SessionDetailResponse { meta, zeus_roles }))
 }
 
 async fn get_session_metrics(
@@ -2464,14 +2574,123 @@ async fn list_attachments(
             .file_name()
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_default();
+        let mime = attachment_content_type(&name).to_string();
         out.push(AttachedFile {
             name,
             size: meta.len(),
-            mime: "application/octet-stream".into(),
+            mime,
             path: path.to_string_lossy().to_string(),
         });
     }
     Ok(Json(out))
+}
+
+// `GET /api/sessions/:sid/attach/:name` serves the raw bytes of a previously
+// uploaded attachment. Like `/metrics`, this route is deliberately reachable
+// without `Authorization` or `X-Protocol-Version`: the auth middleware only
+// guards mutating methods, and the browser loads these URLs via plain
+// `<img src>` tags which cannot attach custom headers. We compensate with
+// strict name validation (no traversal), a canonicalised confinement check,
+// and a `Content-Security-Policy: sandbox` header so a hostile attachment
+// (e.g. SVG) cannot script against the API origin when opened directly.
+async fn get_attachment(
+    State(state): State<Arc<AppState>>,
+    Path((sid, name)): Path<(String, String)>,
+) -> Result<axum::response::Response, ApiError> {
+    // Axum percent-decodes path params, so `..%2F` arrives as `../`. Validate
+    // both segments before they touch the filesystem.
+    if !is_safe_attachment_segment(&sid) {
+        return Err(ApiError::BadRequest(format!("invalid session id '{sid}'")));
+    }
+    if !is_safe_attachment_segment(&name) || sanitize_filename(&name) != name {
+        return Err(ApiError::BadRequest(format!(
+            "invalid attachment name '{name}'"
+        )));
+    }
+
+    let dir = state.harness_home.join(".runtime/attach").join(&sid);
+    serve_attachment(&dir, &name).await
+}
+
+/// Reads `<dir>/<name>` and builds the HTTP response. Split out from the
+/// handler so it can be exercised in tests without a full `AppState`.
+/// Expects `name` to be pre-validated by `is_safe_attachment_segment`.
+async fn serve_attachment(dir: &FsPath, name: &str) -> Result<axum::response::Response, ApiError> {
+    // Canonicalise both ends and require the file to stay confined to the
+    // attachment dir. canonicalize() fails for missing paths → 404, and
+    // resolves symlinks, so a link pointing outside the dir is rejected too.
+    let canon_dir = dir
+        .canonicalize()
+        .map_err(|_| ApiError::NotFound(format!("attachment {name}")))?;
+    let canon_file = dir
+        .join(name)
+        .canonicalize()
+        .map_err(|_| ApiError::NotFound(format!("attachment {name}")))?;
+    if !canon_file.starts_with(&canon_dir) || !canon_file.is_file() {
+        return Err(ApiError::BadRequest(format!(
+            "attachment '{name}' escapes the attachment directory"
+        )));
+    }
+
+    // Attachments are capped at MAX_ATTACHMENT_BYTES per upload, so reading
+    // them into memory is acceptable.
+    let bytes = tokio::fs::read(&canon_file)
+        .await
+        .map_err(|e| ApiError::Internal(format!("read attachment: {e}")))?;
+
+    // `name` passed the sanitiser round-trip, so it contains no quotes or
+    // control characters and is safe to embed in the header verbatim.
+    axum::response::Response::builder()
+        .status(StatusCode::OK)
+        .header(
+            axum::http::header::CONTENT_TYPE,
+            attachment_content_type(name),
+        )
+        .header(
+            axum::http::header::CONTENT_DISPOSITION,
+            format!("inline; filename=\"{name}\""),
+        )
+        .header(axum::http::header::CONTENT_SECURITY_POLICY, "sandbox")
+        .body(axum::body::Body::from(bytes))
+        .map_err(|e| ApiError::Internal(format!("build attachment response: {e}")))
+}
+
+/// Path-segment guard for the attachment route: no separators, no traversal.
+/// Stricter than `sanitize_filename` (which rewrites); this one rejects.
+fn is_safe_attachment_segment(segment: &str) -> bool {
+    !segment.is_empty()
+        && segment != "."
+        && !segment.contains("..")
+        && !segment.contains(['/', '\\'])
+}
+
+/// Content type by extension. No `mime_guess` in the dependency tree, and the
+/// upload-declared mime is not persisted, so a small manual map keeps it
+/// honest. `.html` is intentionally served as `text/plain` so an uploaded page
+/// can never render (and script) against the API origin; `.svg` keeps its real
+/// type (required for `<img>`) — scripts don't run in image context and the
+/// `Content-Security-Policy: sandbox` response header covers direct navigation.
+fn attachment_content_type(name: &str) -> &'static str {
+    let ext = name
+        .rsplit_once('.')
+        .map(|(_, ext)| ext.to_ascii_lowercase())
+        .unwrap_or_default();
+    match ext.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        "pdf" => "application/pdf",
+        "txt" => "text/plain; charset=utf-8",
+        "md" => "text/markdown; charset=utf-8",
+        "json" => "application/json",
+        "csv" => "text/csv; charset=utf-8",
+        // Never let an uploaded page execute in the API origin.
+        "html" | "htm" => "text/plain; charset=utf-8",
+        "excalidraw" => "application/json",
+        _ => "application/octet-stream",
+    }
 }
 
 fn zeus_roles_path(state: &AppState, sid: &str) -> PathBuf {
@@ -2895,6 +3114,80 @@ mod tests {
     use super::*;
     use crate::transcript::event::{TranscriptEvent, TranscriptKind, TranscriptSource};
 
+    fn test_state(home: &FsPath) -> Arc<AppState> {
+        Arc::new(
+            AppState::new(&crate::config::Config {
+                bind: "127.0.0.1:7777".parse().unwrap(),
+                home: home.to_path_buf(),
+                cors_origin: "http://localhost:8080".to_string(),
+                profile: "default".to_string(),
+                autonomy_profile: harness_core::AutonomyProfile::Assisted,
+                api_token: None,
+                evolution: Default::default(),
+            })
+            .unwrap(),
+        )
+    }
+
+    fn write_session_meta(home: &FsPath, sid: &str, kind: &str, pid: u32, status: &str) {
+        let dir = home.join("profiles/default/sessions").join(sid);
+        std::fs::create_dir_all(&dir).unwrap();
+        let meta = json!({
+            "id": sid,
+            "kind": kind,
+            "thread_id": "thread-1",
+            "cwd": home.display().to_string(),
+            "pid": pid,
+            "status": status,
+            "started_at": 1_700_000_000_000i64,
+            "root_session_id": sid,
+            "has_transcript": true,
+        });
+        std::fs::write(dir.join("meta.json"), meta.to_string()).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn rehydrate_reregisters_watcher_for_session_with_live_pid() {
+        let dir = tempfile::tempdir().unwrap();
+        let sid = "rehydrated-claude";
+        // The test process's own PID is guaranteed alive; meta has no
+        // process_identity so the manager's orphan reaper will not touch it.
+        write_session_meta(dir.path(), sid, "claude", std::process::id(), "running");
+
+        let state = test_state(dir.path());
+        assert!(
+            !state.transcripts.contains_key(sid),
+            "no slot should exist before rehydration"
+        );
+
+        rehydrate_transcript_watchers(&state).await;
+
+        assert!(
+            state.transcripts.contains_key(sid),
+            "watcher slot should be re-registered for a session whose CLI is still alive"
+        );
+        // Idempotent: a second pass must not panic or replace the slot.
+        rehydrate_transcript_watchers(&state).await;
+        assert!(state.transcripts.contains_key(sid));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn rehydrate_skips_dead_session_without_pending_checkpoint() {
+        let dir = tempfile::tempdir().unwrap();
+        let sid = "dead-claude";
+        // pid 0 is never alive per pid_alive_and_identity_matches(); no
+        // checkpoint exists either.
+        write_session_meta(dir.path(), sid, "claude", 0, "exited");
+
+        let state = test_state(dir.path());
+        rehydrate_transcript_watchers(&state).await;
+
+        assert!(
+            !state.transcripts.contains_key(sid),
+            "dead session with nothing to catch up must not get a watcher"
+        );
+    }
+
     #[test]
     fn zeus_briefing_includes_user_selected_role_matrix() {
         let briefing = zeus_orchestrator_briefing(&[ZeusRoleSelection {
@@ -2916,6 +3209,55 @@ mod tests {
         assert!(briefing.contains("not an Anthropic/Claude Code internal team"));
         assert!(briefing.contains("At roughly 40%"));
         assert!(briefing.contains("/clear"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn get_session_returns_persisted_zeus_roles() {
+        let dir = tempfile::tempdir().unwrap();
+        // pid 0 / exited → load_session_meta falls back to on-disk meta.
+        write_session_meta(dir.path(), "zeus-root", "zeus", 0, "exited");
+        let state = test_state(dir.path());
+
+        persist_zeus_roles(
+            &state,
+            "zeus-root",
+            &[ZeusRoleSelection {
+                role: "orchestrator".into(),
+                provider: AgentKind::Claude,
+                model: Some("opus".into()),
+                effort: Some("high".into()),
+            }],
+        )
+        .unwrap();
+
+        let Json(detail) = get_session(State(state), Path("zeus-root".into()))
+            .await
+            .unwrap();
+
+        assert_eq!(detail.zeus_roles.len(), 1);
+        assert_eq!(detail.zeus_roles[0].role, "orchestrator");
+        assert_eq!(detail.zeus_roles[0].model.as_deref(), Some("opus"));
+
+        // SessionMeta must stay flattened at the top level of the JSON body
+        // (the field is additive — existing consumers keep reading `id` etc.).
+        let body = serde_json::to_value(&detail).unwrap();
+        assert_eq!(body["id"], "zeus-root");
+        assert_eq!(body["zeus_roles"][0]["provider"], "claude");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn get_session_returns_empty_zeus_roles_for_plain_session() {
+        let dir = tempfile::tempdir().unwrap();
+        write_session_meta(dir.path(), "plain-claude", "claude", 0, "exited");
+        let state = test_state(dir.path());
+
+        let Json(detail) = get_session(State(state), Path("plain-claude".into()))
+            .await
+            .unwrap();
+
+        assert!(detail.zeus_roles.is_empty());
+        let body = serde_json::to_value(&detail).unwrap();
+        assert_eq!(body["zeus_roles"], json!([]));
     }
 
     #[test]
@@ -3279,6 +3621,94 @@ mod tests {
         assert_eq!(
             scopes,
             vec!["backend".to_string(), "task:T-0001".to_string()]
+        );
+    }
+
+    // ── GET attachment content ──────────────────────────────────────────────
+
+    /// Mirrors the validation order of `get_attachment` for a fixed dir, so
+    /// the route's 400/404/200 behaviour is testable without an `AppState`.
+    async fn serve_validated(
+        dir: &std::path::Path,
+        name: &str,
+    ) -> Result<axum::response::Response, ApiError> {
+        if !is_safe_attachment_segment(name) || sanitize_filename(name) != name {
+            return Err(ApiError::BadRequest(format!(
+                "invalid attachment name '{name}'"
+            )));
+        }
+        serve_attachment(dir, name).await
+    }
+
+    #[tokio::test]
+    async fn get_attachment_serves_png_with_inline_headers() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("shot.png"), b"\x89PNG\r\n\x1a\nfake").unwrap();
+
+        let resp = serve_validated(tmp.path(), "shot.png").await.unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let headers = resp.headers();
+        assert_eq!(
+            headers.get(axum::http::header::CONTENT_TYPE).unwrap(),
+            "image/png"
+        );
+        assert_eq!(
+            headers
+                .get(axum::http::header::CONTENT_DISPOSITION)
+                .unwrap(),
+            "inline; filename=\"shot.png\""
+        );
+        assert_eq!(
+            headers
+                .get(axum::http::header::CONTENT_SECURITY_POLICY)
+                .unwrap(),
+            "sandbox"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_attachment_missing_file_is_404() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        let err = serve_validated(tmp.path(), "nope.png").await.unwrap_err();
+
+        assert!(matches!(err, ApiError::NotFound(_)), "got {err:?}");
+    }
+
+    #[tokio::test]
+    async fn get_attachment_rejects_traversal_names() {
+        let tmp = tempfile::tempdir().unwrap();
+        // What `..%2Fsecret.png` decodes to by the time axum hands it over,
+        // plus raw separators and a bare parent reference.
+        for name in ["../secret.png", "sub/secret.png", "sub\\secret.png", ".."] {
+            let err = serve_validated(tmp.path(), name).await.unwrap_err();
+            assert!(
+                matches!(err, ApiError::BadRequest(_)),
+                "{name} should be a 400, got {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn attachment_content_type_maps_extensions() {
+        assert_eq!(attachment_content_type("a.PNG"), "image/png");
+        assert_eq!(attachment_content_type("a.jpeg"), "image/jpeg");
+        assert_eq!(attachment_content_type("a.svg"), "image/svg+xml");
+        // HTML must never render in the API origin.
+        assert_eq!(
+            attachment_content_type("a.html"),
+            "text/plain; charset=utf-8"
+        );
+        assert_eq!(attachment_content_type("a.excalidraw"), "application/json");
+        assert_eq!(attachment_content_type("noext"), "application/octet-stream");
+        // `list_attachments` infers each entry's mime from this same map, so a
+        // listed `.png` must report `image/png` (not a hardcoded octet-stream).
+        assert_eq!(attachment_content_type("screenshot.png"), "image/png");
+        // Parameterised types flow through verbatim.
+        assert_eq!(
+            attachment_content_type("notes.txt"),
+            "text/plain; charset=utf-8"
         );
     }
 }

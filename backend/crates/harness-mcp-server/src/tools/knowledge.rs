@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use harness_core::{ingest_pdf, KnowledgeIngestRequest};
+use harness_core::{ingest_office, ingest_pdf, KnowledgeIngestRequest};
 use serde_json::{json, Value};
 
 fn str_arg<'a>(args: &'a Value, key: &str) -> Result<&'a str, String> {
@@ -20,6 +20,25 @@ pub fn pdf_ingest(
         .and_then(|v| v.as_str())
         .map(str::to_string);
     let result = ingest_pdf(
+        harness_home,
+        profile,
+        KnowledgeIngestRequest { source_path, title },
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(json!(result))
+}
+
+pub fn office_ingest(
+    harness_home: &std::path::Path,
+    profile: &str,
+    args: &Value,
+) -> Result<Value, String> {
+    let source_path = PathBuf::from(str_arg(args, "source_path")?);
+    let title = args
+        .get("title")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let result = ingest_office(
         harness_home,
         profile,
         KnowledgeIngestRequest { source_path, title },

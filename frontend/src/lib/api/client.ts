@@ -14,6 +14,16 @@ export type { ZeusRoleSelection } from './types/ZeusRoleSelection';
 
 export const API_BASE: string = (import.meta.env.PUBLIC_API_BASE as string | undefined) ?? '/api';
 
+/**
+ * Constructs the absolute URL for a session attachment served by the backend.
+ * GET /api/sessions/:sid/attach/:name — no auth/X-Protocol-Version required
+ * (exception documented in board contract) so it can be used directly as <img src>.
+ */
+export function attachmentUrl(sessionId: string, name: string): string {
+  const base = API_BASE.endsWith('/') ? API_BASE.slice(0, -1) : API_BASE;
+  return `${base}/sessions/${encodeURIComponent(sessionId)}/attach/${encodeURIComponent(name)}`;
+}
+
 export const PROTOCOL_VERSION_HEADER = 'X-Protocol-Version';
 export const PROTOCOL_VERSION = '1.0';
 export const DEFAULT_API_TIMEOUT_MS = 30_000;
@@ -319,6 +329,13 @@ export interface SessionMeta {
   detected_state?: AgentState | null;
   /** Whether the harness is tailing a structured JSONL transcript for this session. */
   has_transcript?: boolean;
+  /**
+   * Zeus role matrix persisted at spawn time. Present only in the detailed
+   * `GET /api/sessions/:sid` response; absent from list responses. Empty
+   * array for non-Zeus sessions. Re-send verbatim as
+   * `CreateSessionRequest.zeus_roles` on Restart.
+   */
+  zeus_roles?: ZeusRoleSelection[];
 }
 
 export interface SessionMetrics {

@@ -56,6 +56,13 @@ impl TranscriptStore {
     pub fn dir(&self) -> &Path {
         &self.dir
     }
+
+    /// Highest `seq` persisted so far (0 for a fresh store). Used by the
+    /// watcher to decide whether re-ingesting source history could create
+    /// duplicates after a server restart.
+    pub fn last_seq(&self) -> u64 {
+        self.seq.load(Ordering::SeqCst)
+    }
 }
 
 /// Replay every persisted event with `seq > since` from disk.

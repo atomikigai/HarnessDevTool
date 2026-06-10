@@ -7,6 +7,7 @@ mod context_governor;
 mod context_index;
 mod data;
 mod error;
+mod evolution;
 mod metrics;
 mod routes;
 mod sse;
@@ -55,10 +56,17 @@ async fn main() -> anyhow::Result<()> {
         );
 
         let state = Arc::new(AppState::new(&cfg).context("initializing app state")?);
+
+        // Re-attach transcript watchers for sessions that survived the
+        // restart; without this, rehydrated sessions never stream live
+        // transcript again (slots are otherwise only created at spawn).
+        routes::sessions::rehydrate_transcript_watchers(&state).await;
+
         let router = app::build_router(state.clone(), &cfg);
 
         // Kick off the periodic tick broadcaster.
         let ticker = sse::hub::spawn_ticker(state.clone());
+        let evolution = evolution::spawn_daily_evolution(state.clone(), cfg.evolution.clone());
 
         let listener = TcpListener::bind(cfg.bind)
             .await
@@ -86,6 +94,7 @@ async fn main() -> anyhow::Result<()> {
             .await?;
 
         ticker.stop();
+        evolution.stop();
 
         // Kill all live sessions before tearing down state. This explicit
         // path is the lifecycle owner for subprocess shutdown; dropping

@@ -338,6 +338,7 @@ mod tests {
                 profile: "default".to_string(),
                 autonomy_profile: harness_core::AutonomyProfile::Assisted,
                 api_token: Some("secret".to_string()),
+                evolution: Default::default(),
             })
             .unwrap(),
         )
@@ -355,6 +356,7 @@ mod tests {
             profile: "default".to_string(),
             autonomy_profile: harness_core::AutonomyProfile::Assisted,
             api_token: Some("secret".to_string()),
+            evolution: Default::default(),
         };
         let app = app::build_router(state, &cfg);
 

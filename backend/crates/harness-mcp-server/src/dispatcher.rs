@@ -1,18 +1,22 @@
 //! Maps incoming JSON-RPC requests to handlers.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
+use std::sync::Mutex;
 use std::time::Duration;
 
 use serde_json::{json, Value};
 use tracing::warn;
 
+use crate::gateway::Gateway;
 use crate::protocol::{
     error_response, error_response_with, result_response, Request, RpcError, PROTOCOL_VERSION,
     SERVER_NAME, SERVER_VERSION,
 };
 use crate::tools::{
-    self, db as db_tools, docs as docs_tools, knowledge as knowledge_tools, repo,
-    session as session_tools, skills, spec, ssh as ssh_tools, tasks, wrap_error, wrap_text,
+    self, capabilities as capability_tools, db as db_tools, docs as docs_tools,
+    knowledge as knowledge_tools, repo, session as session_tools, skills, spec, ssh as ssh_tools,
+    tasks, wrap_error, wrap_text,
 };
 use harness_core::TaskStore;
 use harness_policy::{capability_default, is_sensitive_tool, Decision, PolicyEngine};
@@ -43,6 +47,8 @@ pub struct Dispatcher {
     server_url: Option<String>,
     api_token: Option<String>,
     cwd: PathBuf,
+    gateway: Gateway,
+    requested_capabilities: Mutex<HashSet<String>>,
 }
 
 impl Dispatcher {
@@ -60,6 +66,7 @@ impl Dispatcher {
             None,
             None,
             Vec::new(),
+            None,
         )
     }
 
@@ -76,6 +83,7 @@ impl Dispatcher {
         role: Option<String>,
         task_id: Option<String>,
         scopes: Vec<String>,
+        upstream_config: Option<PathBuf>,
     ) -> Result<Self, String> {
         let store = TaskStore::with_profile(&harness_home, &profile).map_err(|e| e.to_string())?;
         let db = DbManager::new(&harness_home, &profile).map_err(|e| e.to_string())?;
@@ -91,6 +99,10 @@ impl Dispatcher {
                 warn!(error = %msg, "failed to load local MCP policy");
                 (None, Some(msg))
             }
+        };
+        let gateway = match upstream_config.as_deref() {
+            Some(path) => Gateway::from_config_path(path)?,
+            None => Gateway::default(),
         };
 
         Ok(Self {
@@ -110,6 +122,8 @@ impl Dispatcher {
             server_url,
             api_token,
             cwd,
+            gateway,
+            requested_capabilities: Mutex::new(HashSet::new()),
         })
     }
 
@@ -135,7 +149,7 @@ impl Dispatcher {
             "ping" => Some(result_response(id, json!({}))),
             "tools/list" => Some(result_response(
                 id,
-                json!({ "tools": tools::list_descriptors() }),
+                json!({ "tools": self.list_tool_descriptors() }),
             )),
             "tools/call" => {
                 if is_notification {
@@ -170,7 +184,32 @@ impl Dispatcher {
             return result_response(id, wrap_error(&msg));
         }
 
+        if self.gateway.prefixed_tool(&name).is_some() {
+            return match self.gateway.call(&name, args) {
+                Ok(result) => result_response(id, result),
+                Err(msg) => result_response(id, wrap_error(&msg)),
+            };
+        }
+
         let outcome: Result<Value, String> = match name.as_str() {
+            "capability_list" => Ok(capability_tools::list(self.capability_runtime())),
+            "capability_describe" => capability_tools::describe(self.capability_runtime(), &args),
+            "capability_request" => {
+                match capability_tools::request(self.capability_runtime(), &args) {
+                    Ok(id) => {
+                        self.requested_capabilities
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .insert(id.clone());
+                        Ok(json!({
+                            "id": id,
+                            "status": "loaded",
+                            "message": "Capability tools will be included in subsequent tools/list responses for this MCP session."
+                        }))
+                    }
+                    Err(e) => Err(e),
+                }
+            }
             "task_create" => tasks::create(
                 &self.store,
                 &self.thread_id,
@@ -210,7 +249,17 @@ impl Dispatcher {
             "knowledge_pdf_ingest" => {
                 knowledge_tools::pdf_ingest(&self.harness_home, &self.profile, &args)
             }
-            "skills_search" => skills::search(&args),
+            "knowledge_office_ingest" => {
+                knowledge_tools::office_ingest(&self.harness_home, &self.profile, &args)
+            }
+            "skills_search" => skills::search(&self.harness_home, &self.profile, &args),
+            "skill_propose" => skills::propose(&self.harness_home, &self.profile, &args),
+            "skill_promote" => skills::promote(&self.harness_home, &self.profile, &args),
+            "skill_archive" => skills::archive(&self.harness_home, &self.profile, &args),
+            "skill_record_usage" => skills::record_usage(&self.harness_home, &self.profile, &args),
+            "evolve_observe" => skills::observe(&self.harness_home, &self.profile, &args),
+            "evolve_run" => skills::evolve_run(&self.harness_home, &self.profile, &args),
+            "curator_run" => skills::curator_run(&self.harness_home, &self.profile, &args),
             "repo_analyze" => repo::analyze(&self.cwd, &args),
             "repo_scan" => repo::scan(&self.cwd, &args),
             "repo_find" => repo::find(&self.cwd, &args),
@@ -336,6 +385,90 @@ impl Dispatcher {
                 result_response(id, wrap_error(&msg))
             }
         }
+    }
+
+    fn list_tool_descriptors(&self) -> Vec<crate::protocol::ToolDescriptor> {
+        let requested = self.requested_capability_snapshot();
+        let mut descriptors: Vec<_> = tools::list_descriptors()
+            .into_iter()
+            .filter(|descriptor| self.tool_visible(&descriptor.name, &requested))
+            .collect();
+        if self.gateway.has_upstream("crawl4ai") {
+            descriptors.extend(self.gateway.list_descriptors());
+        }
+        descriptors
+    }
+
+    fn capability_runtime(&self) -> capability_tools::CapabilityRuntime {
+        capability_tools::CapabilityRuntime {
+            docs_web_loaded: self.gateway.has_upstream("crawl4ai"),
+            requested: self.requested_capability_snapshot().into_iter().collect(),
+        }
+    }
+
+    fn requested_capability_snapshot(&self) -> HashSet<String> {
+        self.requested_capabilities
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    fn tool_visible(&self, tool_name: &str, requested: &HashSet<String>) -> bool {
+        if matches!(
+            tool_name,
+            "capability_list" | "capability_describe" | "capability_request"
+        ) {
+            return true;
+        }
+        if tool_name.starts_with("task_") {
+            return true;
+        }
+        if matches!(
+            tool_name,
+            "repo_analyze"
+                | "repo_scan"
+                | "repo_find"
+                | "repo_read_file"
+                | "repo_git_status"
+                | "repo_git_log"
+                | "repo_git_diff"
+                | "skills_search"
+                | "skill_propose"
+                | "skill_promote"
+                | "skill_archive"
+                | "skill_record_usage"
+                | "evolve_observe"
+                | "evolve_run"
+                | "curator_run"
+                | "spec_read"
+        ) {
+            return true;
+        }
+        if matches!(tool_name, "repo_codebase_memory_status") {
+            return requested.contains("project_memory");
+        }
+        if tool_name.starts_with("repo_") {
+            return requested.contains("repo_write") || requested.contains("repo");
+        }
+        if tool_name.starts_with("db_") {
+            return requested.contains("db");
+        }
+        if tool_name.starts_with("ssh_") || tool_name.starts_with("sftp_") {
+            return requested.contains("ssh");
+        }
+        if matches!(tool_name, "docs_build") {
+            return requested.contains("docs_build");
+        }
+        if matches!(
+            tool_name,
+            "knowledge_pdf_ingest" | "knowledge_office_ingest"
+        ) {
+            return requested.contains("document_extract") || requested.contains("project_memory");
+        }
+        if tool_name.starts_with("session_") {
+            return requested.contains("sessions");
+        }
+        false
     }
 
     fn check_tool_policy(&self, tool_name: &str, tool_args: &Value) -> Option<String> {
@@ -502,6 +635,7 @@ mod tests {
             None,
             None,
             Vec::new(),
+            None,
         )
         .unwrap();
         (d, home)
@@ -521,6 +655,7 @@ mod tests {
             role.map(String::from),
             None,
             Vec::new(),
+            None,
         )
         .unwrap();
         (d, home)
@@ -548,6 +683,7 @@ mod tests {
             role.map(String::from),
             None,
             Vec::new(),
+            None,
         )
         .unwrap();
         (d, home)
@@ -573,6 +709,7 @@ mod tests {
             Some("generator".into()),
             Some("T-0001".into()),
             vec!["task:T-0001".into()],
+            None,
         )
         .unwrap();
         d.store
@@ -608,7 +745,13 @@ mod tests {
         let resp = d.handle(req).unwrap();
         let tools = resp["result"]["tools"].as_array().unwrap();
         let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
+        assert_eq!(names[0], "capability_list");
+        assert_eq!(names[1], "capability_describe");
+        assert_eq!(names[2], "capability_request");
         for expected in [
+            "capability_list",
+            "capability_describe",
+            "capability_request",
             "task_create",
             "task_propose",
             "task_list",
@@ -619,16 +762,91 @@ mod tests {
             "task_release",
             "task_submit",
             "spec_read",
-            "spec_write",
-            "knowledge_pdf_ingest",
-            "docs_build",
-            "db_performance_audit",
-            "db_memory_read",
-            "db_memory_write",
             "skills_search",
         ] {
             assert!(names.contains(&expected), "missing tool: {expected}");
         }
+        for hidden in [
+            "spec_write",
+            "knowledge_pdf_ingest",
+            "knowledge_office_ingest",
+            "docs_build",
+            "db_query",
+            "db_performance_audit",
+            "ssh_exec",
+            "session_spawn_child",
+        ] {
+            assert!(!names.contains(&hidden), "tool should be hidden: {hidden}");
+        }
+    }
+
+    #[test]
+    fn capability_describe_returns_category_selection_cues() {
+        let (d, _) = mk("t1", "agent:1");
+        let line = r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"capability_describe","arguments":{"id":"docs_web"}}}"#;
+        let resp = d.handle(parse_request(line).unwrap()).unwrap();
+        let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+        let value: serde_json::Value = serde_json::from_str(text).unwrap();
+
+        assert_eq!(value["id"], "docs_web");
+        assert_eq!(value["status"], "available_on_request");
+        assert!(value["mentions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|mention| mention == "docs"));
+        assert!(value["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|tool| tool == "crawl4ai__*"));
+    }
+
+    #[test]
+    fn capability_request_expands_tools_list_for_category() {
+        let (d, _) = mk("t1", "agent:1");
+        let request = r#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"capability_request","arguments":{"id":"db","reason":"Need schema inspection"}}}"#;
+        let resp = d.handle(parse_request(request).unwrap()).unwrap();
+        let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+        let value: serde_json::Value = serde_json::from_str(text).unwrap();
+        assert_eq!(value["id"], "db");
+        assert_eq!(value["status"], "loaded");
+
+        let list_line = r#"{"jsonrpc":"2.0","id":6,"method":"tools/list"}"#;
+        let resp = d.handle(parse_request(list_line).unwrap()).unwrap();
+        let tools = resp["result"]["tools"].as_array().unwrap();
+        let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
+        assert!(names.contains(&"db_query"));
+        assert!(names.contains(&"db_schema"));
+        assert!(!names.contains(&"ssh_exec"));
+    }
+
+    #[test]
+    fn capability_request_expands_document_extract_tools() {
+        let (d, _) = mk("t1", "agent:1");
+        let request = r#"{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"capability_request","arguments":{"id":"document_extract","reason":"Need to ingest a DOCX"}}}"#;
+        let resp = d.handle(parse_request(request).unwrap()).unwrap();
+        let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+        let value: serde_json::Value = serde_json::from_str(text).unwrap();
+        assert_eq!(value["id"], "document_extract");
+
+        let list_line = r#"{"jsonrpc":"2.0","id":9,"method":"tools/list"}"#;
+        let resp = d.handle(parse_request(list_line).unwrap()).unwrap();
+        let tools = resp["result"]["tools"].as_array().unwrap();
+        let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
+        assert!(names.contains(&"knowledge_pdf_ingest"));
+        assert!(names.contains(&"knowledge_office_ingest"));
+    }
+
+    #[test]
+    fn capability_request_docs_web_requires_smart_loaded_upstream() {
+        let (d, _) = mk("t1", "agent:1");
+        let request = r#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"capability_request","arguments":{"id":"docs_web","reason":"Need external docs"}}}"#;
+        let resp = d.handle(parse_request(request).unwrap()).unwrap();
+
+        assert_eq!(resp["result"]["isError"], true);
+        let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("docs_web is not hot-loaded"));
     }
 
     #[test]

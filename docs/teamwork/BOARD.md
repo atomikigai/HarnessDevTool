@@ -3,6 +3,7 @@
 Canal común entre Planner (Claude), Backend Rust (Codex), Frontend (Cursor) y los evaluadores
 (Sonnet). Plantilla **estricta por campos**, no prosa libre. Ver `CLAUDE.md` §4.
 Modelo operativo: ver [`docs/teamwork/OPERATING_MODEL.md`](./OPERATING_MODEL.md).
+Rendimiento de ejecutores y puntuación del usuario: [`SCOREBOARD.md`](./SCOREBOARD.md).
 
 > **Límite conocido:** una sola tarea "En curso" a la vez, sin locking real. El Planner es el único
 > que abre/cierra; los ejecutores anotan en su bloque de Handoff. Revisor/QA reportan por la Agent
@@ -17,7 +18,117 @@ Modelo operativo: ver [`docs/teamwork/OPERATING_MODEL.md`](./OPERATING_MODEL.md)
 
 _Sin tarea activa._
 
-## Última cerrada — Production grade Wave 3
+## Última cerrada — ChatView live round 3: vivo post-restart, auto-scroll, fallback PTY, restart con continuidad, robustez SSE backend
+
+| Campo | Valor |
+|---|---|
+| **Tarea** | Cerrar los fallos detectados con verificación en navegador real (agent-browser sobre `just dev-tauri`): (a) tras Restart el chat queda congelado en el blob PTY y los turnos parseados nunca aparecen aunque el backend SSE sí los entrega; (b) cero auto-scroll (scrollTop=0 siempre, en mount y con mensajes nuevos); (c) el fallback PTY pinta el banner TUI crudo (ANSI sucio) como burbuja "claude output"; (d) Restart pierde historial visible y perfil (manda `zeus_roles: []`); (e) backend: SSE de transcript devuelve `stream::empty()` si el slot no existe y el cliente no reconecta; los watchers no se re-registran al rehidratar tras restart del server; ventana de pérdida entre replay y subscribe; (f) menores: tokens "0 tok" en header/sidebar, badge `working` que no vuelve a idle, input disabled sin CTA. |
+| **Estado** | ✅ DONE — cerrada 2026-06-10. Review backend 0 P0/0 P1/5 P2 (fix round cerrado); review frontend 1 P1/2 P2 (fix round cerrado) + 2 micro-fixes con verificación en navegador. QA PASS en todos los criterios automatizables (`just test`: 393 cargo verdes + svelte-check 0/0; slot-wait, rehidratación, zeus_roles con curl real). VERIFY del Planner en navegador (stack aislado con binario nuevo): vivo limpio ✅; vivo post-Restart ≤4s con limpieza de turnos PTY ✅; fallback PTY colapsado con link a Terminal ✅; reload rehidrata y monta al fondo ✅; píldora "1 new message" (click→fondo) ✅; stick-to-bottom ✅; historial previo (2 `.prev-turn`) + separador "session restarted" tras Restart ✅ (causa raíz final: `selectedSession` derivado devuelve null por lag del poller y limpiaba `prevSidForChat`; fix con guard `sid !== null`); tokens reales en header ✅. **Pendientes** (ver bloque al final). |
+| **Evidencia/repro** | Repro determinista (agent-browser): abrir app → click Restart → enviar mensaje → turnos parseados no aparecen nunca (innerText congelado en blob PTY); `curl -N /api/sessions/<sid>/transcript?since=0` del MISMO sid entrega los 6 eventos (replay+live OK). En estado limpio (reload de página) el vivo SÍ funciona. Auto-scroll: `.chat-scroll` scrollTop=0 con scrollHeight 752–1361 en todos los estados. Sesiones de prueba: 1e520d9b (vivo OK tras reload), 695f1289 (post-restart KO). |
+| **Alcance / archivos** | Backend: `backend/crates/harness-server/src/routes/transcript.rs` (espera de slot + subscribe-antes-de-replay con dedup por seq), `backend/crates/harness-server/src/routes/sessions.rs` o módulo de rehidratación (re-registro de watchers al arrancar para sesiones vivas claude/codex). Frontend: `frontend/src/lib/components/app/ChatView.svelte`, `SessionMainView.svelte`, `client.ts` si hace falta helper. NO tocar `frontend/src/lib/api/types/` (no cambian tipos ts-rs: el shape de `TranscriptEvent` y el evento SSE `transcript`/`lagged` quedan igual). |
+| **Responsables** | Planner: Claude. Backend: subagente nativo (codex exec headless roto — feedback 2026-06). Frontend: subagente `frontend`. Revisor/QA al final. |
+| **Criterio de aceptación** | (1) Tras Restart, sin tocar tabs: el primer turno user/assistant aparece en vivo ≤2s después de que el backend lo ingiera; el blob PTY desaparece al llegar el transcript. (2) Si el SSE se cierra o llega `lagged`, el cliente reconecta con `since=<últimoSeq>` y backoff; cero pérdida visible. (3) Auto-scroll: al montar con historial el chat queda en el fondo; con mensajes nuevos sigue el fondo si el usuario estaba al fondo; si scrolleó arriba, píldora "↓ último mensaje" en vez de salto forzado. (4) Fallback PTY: ANSI-stripped, colapsado como "Vista de terminal (esperando transcript…)" con link al tab Terminal; nunca burbuja de agente con banner crudo. (5) Restart preserva `zeus_roles`/perfil de la sesión anterior y muestra separador "— sesión reiniciada —"; el historial de la sesión anterior del mismo thread se muestra atenuado encima (replay del sid viejo, que el cliente conoce). (6) Backend: SSE con slot ausente espera la aparición del slot (≥30s) en vez de cerrar tras replay vacío; tras restart del harness-server, sesiones vivas rehidratadas recuperan watcher (verificable: matar server, relanzar, transcript en vivo sigue); sin gap replay→live (subscribe antes de leer replay, dedup por seq). (7) Tokens del header/sidebar reflejan el usage agregado de los turnos; badge vuelve a idle al terminar el turno; input disabled ofrece CTA Restart. (8) `cargo test -p harness-server`, `pnpm --dir frontend check` y `just test` verdes + VERIFY del Planner con agent-browser repitiendo el repro. |
+| **Checks obligatorios** | `cargo test -p harness-server`; `pnpm --dir frontend check`; repro agent-browser post-restart y post-reload; `just test` al cierre. |
+
+### Contrato — stream de transcript (sin cambios de tipos)
+
+- `GET /api/sessions/:sid/transcript?since=<seq>` (SSE, sin auth en GET): replay de eventos `seq > since` + live tail. **Garantía nueva**: si el slot no existe aún, el stream espera su aparición (poll interno, ≥30s) en vez de cerrar; sin gap entre replay y live (dedup por `seq`, el cliente puede recibir duplicados y debe dedupear por `seq` también).
+- Evento `lagged` (ya existente): el cliente DEBE reconectar con `since=<último seq visto>`.
+- `TranscriptEvent` no cambia. Ningún tipo `#[derive(TS)]` se toca → no corre `just gen-types`.
+- Restart (frontend): reusar `zeus_roles` y kind/cwd de la sesión vieja al crear la nueva; el cliente conserva `oldSid` para replay del historial previo.
+
+### Handoff Backend — subagente nativo 2026-06-10
+
+- `routes/transcript.rs` (reescrito ~360 líneas): stream testeable `transcript_item_stream()`; subscribe-antes-de-replay con descarte `seq <= last` (sin gap ni duplicados); slot ausente → replay inmediato desde disco + poll 250ms hasta 30s con `tokio::time`, re-replay `since=last` al aparecer el slot; corta con tombstone `.deleted`. Shape SSE `transcript`/`lagged` intacto.
+- `transcript/watcher.rs`: `WatcherCheckpoint {source_path, offset}` en `<session dir>/watcher-checkpoint.json` (tmp+rename) — evita que un watcher re-registrado duplique el store append-only; sesiones pre-checkpoint con historia arrancan en EOF (live-only). Codex: checkpoint válido salta re-discovery.
+- `transcript/store.rs`: `last_seq()`. `main.rs`: llama `rehydrate_transcript_watchers` tras construir AppState (también en reload de profile).
+- `routes/sessions.rs`: `rehydrate_transcript_watchers()` re-lanza watchers para sesiones claude/codex sin slot cuando: handle vivo, PID vivo (/proc, Linux-only) o checkpoint con cola sin ingerir. `tracing::info` con `reason`.
+- Tests: 7 nuevos (slot tardío, no-gap/no-dup, tombstone, rehidratación con PID vivo, skip sesión muerta, resume desde checkpoint sin duplicados, pre-checkpoint → EOF). `cargo test -p harness-server` 110 pass; `cargo fmt --check` limpio.
+- Decisiones a validar en review: checkpoint añadido más allá del brief (necesario para no duplicar transcript); criterio de "viva" = PID-alive + checkpoint-pending (el Manager hoy reconcilia Running→Exited al boot); watchers catch-up quedan en idle-poll 500ms hasta el próximo boot (auto-limitante).
+- Review backend: 0 P0 / 0 P1 / 5 P2 (línea parcial en checkpoint, blocking I/O en rehydrate y stream, PID reciclado, fs síncrono en write_checkpoint). Fix round en curso con los 5.
+
+### Handoff Frontend — subagente Sonnet 2026-06-10 (round 3)
+
+- **BUG A (causa raíz)**: `subscribeSSE` con `reconnect: true` reconectaba siempre a la MISMA URL (`since=0`) sin tracking de seq, y con slot tardío el stream cerraba al instante → el timer PTY de 900ms ganaba y los turnos PTY nunca se limpiaban. Fix: `openTranscriptSSE` manual con `since=${lastSeq}`, `onError`/`onLagged` → reconexión con backoff 500ms→5s, dedup `seq <= lastSeq`, y al primer evento real se eliminan los turnos `source === 'pty'`.
+- **BUG B**: `forceNextScroll` salta el gate de 120px en el primer RAF tras conectar; después stick-to-bottom solo si `atBottom`; píldora "↓" si hay mensajes con el usuario scrolleado arriba (`onscroll` en `.chat-scroll`).
+- **BUG C**: fallback PTY pasa de `<pre>` suelto a `<details>` colapsado "Terminal output (waiting for transcript…)" con link al tab Terminal; desaparece al llegar transcript.
+- **BUG D**: prop `prevSid` (SessionMainView lo setea en onRestart antes del kill) → fetch one-shot del transcript viejo vía SSE (idle 600ms, cap 5s) → turnos atenuados sobre separador "— session restarted —". **Pendiente backend**: `SessionMeta` no expone `zeus_roles` → restart sigue mandando `[]`; recomienda añadir campo a `SessionMeta` (tipo TS → gen-types).
+- **BUG E**: tokens derivados de `turns.reduce` sobre usage → callback `onTotalTokens` → header/título muestran totales reales; CTA Restart inline cuando `stopped`. Badge "working" pegado: depende del state detector backend, no tocado.
+- **LAYOUT**: wrapper `flex flex-col`, textarea `rows=1` con max 6 líneas (144px).
+- `pnpm --dir frontend check` 0 errores / 0 warnings. ⚠️ No corrió el repro agent-browser (sin browser en su contexto) — queda para QA/VERIFY del Planner.
+
+### Pendientes al cierre — 2026-06-10 (round 3)
+
+1. **Posible leak de EventSource al sid viejo tras Restart** (P2, sin confirmar): en el último network log 2 EventSources al sid anterior aparecían sin status (¿abiertos o lag del log?). El fetch histórico debería cerrarse a 600ms de idle / cap 5s. Verificar con `agent-browser network requests` minutos después de un Restart; si persiste, cerrar el handle en el teardown del instance viejo.
+2. **Vivo post-Restart re-verificado solo en la sesión b63933ad** ("42" en ≤4s ✅); el último Restart (f04775c2) cerró el VERIFY antes de re-testear el mensaje en vivo. Riesgo bajo (mismo código), pero repetir el check al retomar.
+3. **Sidebar sigue mostrando "0 tok"** (P2): solo se cablearon header y title bar (`onTotalTokens`); la card del SessionsColumn no.
+4. **Badge `working` pegado** (P2): depende del state detector backend → Task 35 (liveness watchdog) en el backlog.
+5. **zeus_roles en Restart**: verificado por QA a nivel API (GET devuelve roles persistidos; payload se reenvía); falta E2E con una sesión Zeus real en navegador.
+6. **Cuelgue puntual de POST /input vía proxy vite** observado una sola vez durante el VERIFY (curl directo al backend respondió 204 en 1ms); no reproducido después. Vigilar; si reaparece, mirar el proxy de vite, no el handler.
+7. **just dev-tauri se cayó** durante la sesión (vite desapareció de 43178) — causa sin investigar; el VERIFY se hizo en stack aislado (`just dev-raw`, HARNESS_HOME temporal, ya apagado). Relanzar `just dev-tauri` y validar los fixes ahí (requiere `just build-sidecar` para que el sidecar tauri tome el binario backend nuevo).
+8. **Puntuación del usuario pendiente** en `SCOREBOARD.md` para los slices de esta tarea (sonnet-4.6 backend ×2, frontend ×1 + 3 fix/micro-rounds).
+
+## Última cerrada — ChatView fix round 2: parpadeo, thinking vivo, markdown y turn_duration
+
+| Campo | Valor |
+|---|---|
+| **Tarea** | Fix de parpadeo del ChatView (flash de terminal cada poll), thinking en vivo, render markdown confiable del último turno y métrica `turn_duration` sutil bajo las respuestas. |
+| **Estado** | ✅ DONE — cerrada 2026-06-10. Revisor encontró P0 (guard auto-destruido por teardown de Svelte 5) + 2 P1; corregidos y verificados por el Planner. `pnpm check` 0 errores. |
+| **Objetivo** | (1) El chat no debe reabrir su SSE ni vaciar turnos en cada tick del poller (causa raíz: `selectedSession` es `$derived` del poller → referencia nueva cada ~1.5s → `$effect` de ChatView re-corre `openSSE`, limpia turnos y rearma el fallback PTY de 900ms → flash de terminal). (2) Mostrar que el agente está pensando y qué piensa, en vivo. (3) El markdown del turno final debe renderizarse aunque `detected_state` siga `working` (debounce por inactividad). (4) `turn_duration` (system_note de Claude con content null) deja de ser pill suelto y pasa a métrica sutil bajo el turno del asistente. |
+| **Alcance / archivos** | Solo frontend: `frontend/src/lib/components/app/ChatView.svelte` (principal), `frontend/src/routes/+page.svelte` solo si hace falta estabilizar el prop. NO tocar tipos generados ni backend. |
+| **Responsables** | Planner: Claude. Frontend: subagente `frontend`. Revisor/QA al final. |
+| **Criterio de aceptación** | (1) Con el chat abierto, la suscripción SSE de transcript persiste a través de ticks del poller: cero reaperturas, cero parpadeo, cero flash de fallback PTY. (2) Mientras el agente piensa se ve un bloque "Thinking" vivo (texto streameando, indicador animado); al completarse colapsa a resumen expandible. (3) El último turno renderiza markdown (sin `**` visibles) a más tardar ~1.5s después de quedar inactivo el stream, sin parsear markdown por chunk durante streaming activo. (4) `turn_duration` se muestra como métrica discreta bajo la respuesta (formato "N.Ns"); ningún system_note sin contenido legible se pinta como pill de palabra suelta. (5) `pnpm --dir frontend check` verde. |
+| **Checks obligatorios** | `pnpm --dir frontend check`; revisión del Revisor sobre el delta. |
+
+### Handoff Frontend + review + fix round — 2026-06-10
+- Solo `ChatView.svelte`. (1) Parpadeo: causa raíz `selectedSession` `$derived` del poller → referencia nueva por tick → `$effect` reabría SSE. Fix final (tras P0 del Revisor: el teardown del effect reseteaba el guard sincrónicamente en cada re-run): effect de teardown separado sin lecturas reactivas (cleanup solo al desmontar: timers + SSE + PTY) y effect de sesión con guard `openedSid` permanente y SIN cleanup — tick del poller = early return sin efectos; sid→null limpia turns/attachments.
+- (2) Thinking vivo: mientras streamea sin content, header "Thinking…" animado + tail de últimas 10 líneas con auto-scroll interno (action propia, desacoplada del scroll del chat); al completar colapsa a "Thought (N.Ns)" expandible.
+- (3) Markdown confiable: flag `settled` por turno con debounce 1200ms de inactividad (timers en Map limpiados en openSSE y unmount) + settle inmediato en eventos frontera; render gate pasa a `(!isStreaming || settled)`; invalidación robusta con `staleRenders` Set — chunks que llegan durante un render en vuelo descartan el HTML viejo en el `.then()` (single y batch). Tipografía `.chat-prose` pulida (strong, hr, li).
+- (4) `turn_duration`: system_note de Claude con content null y `raw.durationMs` (+ fallbacks duration_ms/duration) → se asigna al último turno assistant y se muestra como chip discreto "⏱ N.Ns" (>60s → "Nm Ns") bajo la respuesta; system_notes sin contenido legible ya no se pintan como pill.
+- Review: P0 (guard auto-destruido) + P1 (race render en vuelo → HTML truncado permanente) + P1 (timers huérfanos) — todos corregidos en fix round; VERIFY del Planner sobre el código final del effect. `pnpm --dir frontend check` 0 errores / 0 warnings.
+
+## Última cerrada — Rich ChatView como centro de Agents
+
+| Campo | Valor |
+|---|---|
+| **Tarea** | ChatView pasa a ser la vista principal de Agents (terminal secundaria) + renderizado rico: imágenes, documentos/attachments, escenas Excalidraw y código resaltado. |
+| **Estado** | ✅ DONE — cerrada 2026-06-10. QA PASS en los 8 criterios; `just test` verde (383 tests, 0 fallos; svelte-check 0 errores). |
+| **Objetivo** | El chat es el centro de la experiencia Agents: tab por defecto, y capaz de mostrar contenido visual — imágenes inline (markdown/URLs/data-URIs/base64 en tool results), tarjetas de documentos con preview/descarga, escenas `.excalidraw` renderizadas como gráfico, y code blocks con syntax highlighting — sin degradar el path de streaming. |
+| **Alcance / archivos** | Backend (slice chico): `backend/crates/harness-server/src/routes/sessions.rs` — ruta nueva `GET /api/sessions/:sid/attach/:name` (solo aditivo; el archivo tiene cambios sin commitear de otra wave, no revertir nada). Frontend: `frontend/src/lib/components/app/{ChatView,SessionMainView}.svelte`, `frontend/src/lib/api/client.ts` (helper URL de attachment), deps nuevas en `frontend/package.json` si hacen falta (dynamic import). NO tocar `frontend/src/lib/api/types/` (generado). |
+| **Responsables** | Planner: Claude. Backend: subagente nativo (codex exec headless roto — ver feedback 2026-06). Frontend: subagente `frontend`. Revisor/QA al final. |
+| **Criterio de aceptación** | (1) Agents abre en tab Chat por defecto; Terminal sigue accesible como tab secundario. (2) Imágenes de markdown, URLs de imagen y base64/data-URI en tool results se muestran inline (click → tamaño completo). (3) El clip del composer del chat sube archivos vía `POST /attach`; los attachments de la sesión se muestran como tarjetas (imagen → preview inline; documento → nombre/tamaño/descarga vía la ruta nueva). (4) Escenas Excalidraw (fence ```excalidraw o JSON con `"type":"excalidraw"`) se renderizan como gráfico SVG con fallback a JSON colapsable. (5) Code fences con syntax highlighting. (6) El path de streaming sigue sin parsear markdown por chunk (render pesado solo en turnos completados, deps por dynamic import). (7) Backend: ruta de contenido con protección path-traversal, 404 si no existe, Content-Type por extensión, con tests. (8) `cargo test -p harness-server` y `pnpm --dir frontend check` verdes; `just test` al cierre. |
+| **Checks obligatorios** | `cargo test -p harness-server`, `pnpm --dir frontend check`, smoke manual del endpoint de attachment, `just test` al cierre. |
+
+### Contrato — GET attachment content
+
+- **Ruta**: `GET /api/sessions/:sid/attach/:name` → bytes del archivo guardado en `$HARNESS_HOME/.runtime/attach/<sid>/<name>`.
+- **Headers**: GET no requiere `Authorization` (middleware solo cubre métodos mutantes) ni `X-Protocol-Version` — necesario para que `<img src>` funcione directo desde el navegador. Documentar la excepción.
+- **Respuestas**: `200` con `Content-Type` inferido por extensión (fallback `application/octet-stream`) y `Content-Disposition: inline`; `404` si no existe; `400` si `name` contiene separadores de path o intenta traversal (validar contra el nombre saneado, sin escapar del dir).
+- **Tipos `ts-rs`**: ninguno cambia (respuesta binaria). Frontend agrega solo un helper `attachmentUrl(sid, name)` en `client.ts`.
+- Write-scopes disjuntos: backend solo `routes/sessions.rs`; frontend solo `frontend/**` (sin tocar tipos generados).
+
+### Handoff Backend — subagente nativo 2026-06-10
+- `routes/sessions.rs` (aditivo): ruta `GET /api/sessions/:sid/attach/:name` (L247) + handler `get_attachment`, helper testeable `serve_attachment`, `is_safe_attachment_segment`, `attachment_content_type` (L2483–2596).
+- Validación en capas: 400 si `sid`/`name` traen `/`, `\`, `..`, vacío o no son round-trip de `sanitize_filename`; confinamiento por `canonicalize` + `starts_with` (atrapa symlinks); canonicalize fallido → 404.
+- MIME por extensión manual (sin mime_guess): png/jpg/gif/webp/svg/pdf/txt/md/json/csv/excalidraw; `html→text/plain` anti-XSS; svg como `image/svg+xml` + `CSP: sandbox` en todas las 200; `Content-Disposition: inline`.
+- GET sin token/protocol-version (documentado estilo /metrics). No exige sesión viva (attachments de sesiones terminadas siguen servibles — decisión discrecional).
+- Tests: 4 nuevos (200 png con headers, 404, traversal 400 × variantes, mapa de MIME). `cargo test -p harness-server`: 100 pass. rustfmt check limpio.
+
+### Handoff Frontend — subagente Sonnet 2026-06-10
+- `SessionMainView.svelte`: Chat tab por defecto y primero; frame oscuro solo en tab Terminal (chat usa superficies del tema); footer prompt solo terminal.
+- `ChatView.svelte` (reescrito): path de streaming intacto (render rico solo en turnos completados). Imágenes markdown/URLs sueltas/data-URIs/tool-results (formatos Anthropic, OpenAI, flat base64) inline con lightbox (overlay, Escape). DOMPurify con `ALLOWED_URI_REGEXP` extendido solo a `data:image/*;base64`.
+- Excalidraw: fences ```excalidraw y JSON `"type":"excalidraw"` en tool results → SVG vía `@excalidraw/utils` 0.1.3-test32 (dynamic import, cacheado); fallback a JSON colapsable si falla import/parse. ⚠️ versión pre-release — validar runtime en QA.
+- Highlighting: `highlight.js` 11.11.1 core + 9 lenguajes por dynamic import, aplicado vía action sobre `pre code` (sirve para marked y pulldown-cmark/Tauri).
+- Attachments: Paperclip del chat activo (`api.sessions.attach`), barra de tarjetas sobre el composer (imagen→thumb+lightbox; doc→icono/nombre/tamaño/descarga) vía helper nuevo `attachmentUrl` en `client.ts`.
+- `pnpm --dir frontend check`: 0 errores / 0 warnings.
+
+### Review, fix round y QA — 2026-06-10
+- Revisor: 1 P0 (SVG de excalidraw insertado vía `{@html}` sin sanitizar) + 3 P1 (MIME hardcodeado en `list_attachments` rompía thumbnails; paths Tauri de markdown sin DOMPurify; `@excalidraw/utils` pre-release) + 3 P2.
+- Fix round: SVG sanitizado con `DOMPurify.sanitize(..., {USE_PROFILES:{svg:true,svgFilters:true}})`; ambos paths Tauri (single y batch) sanitizados con `PURIFY_CFG`; `list_attachments` infiere MIME con `attachment_content_type` (test ampliado); `@excalidraw/utils` queda en `0.1.3-test32` pin exacto (no existe release estable en npm — fallback a JSON colapsable documentado); `session!.id` reemplazado por guard + `@const`.
+- P2 anotados para wave futura: test de symlink en confinamiento de attachments; comparación de token no constant-time en `auth.rs` (pre-existente).
+- QA: PASS en los 8 criterios con smoke real del endpoint (200 png con CSP sandbox, 404, traversal 400, lista con MIME inferido) sobre backend vivo en HARNESS_HOME temporal; `cargo test -p harness-server` 103 verdes; `pnpm check` 0 errores; `just test` 383 pass / 1 skipped.
+
+## Cerrada — Production grade Wave 3
 
 | Campo | Valor |
 |---|---|

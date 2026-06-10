@@ -247,6 +247,18 @@ impl AppState {
                     );
                 }
             }
+            if let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) {
+                let upstream_path = path.with_file_name(format!("{stem}.upstreams.json"));
+                if upstream_path.exists() {
+                    if let Err(e) = std::fs::remove_file(&upstream_path) {
+                        tracing::warn!(
+                            path = %upstream_path.display(),
+                            error = %e,
+                            "could not remove upstream mcp config"
+                        );
+                    }
+                }
+            }
         }
         let attach_dir = self.harness_home.join(".runtime/attach").join(sid);
         if attach_dir.exists() {
@@ -677,6 +689,24 @@ impl SessionSpawner for ManagerSpawner {
                     "--cwd".to_string(),
                     cwd.display().to_string(),
                 ];
+                if load_crawl4ai {
+                    let upstream_path = configs_dir.join(format!("{mcp_id}.upstreams.json"));
+                    let crawl = crate::routes::sessions::crawl4ai_mcp_server();
+                    let upstreams = json!([
+                        {
+                            "name": crawl.name,
+                            "command": crawl.command,
+                            "args": crawl.args,
+                        }
+                    ]);
+                    if let Err(e) =
+                        crate::routes::sessions::write_private_json(&upstream_path, &upstreams)
+                    {
+                        return SpawnResult::Failed(format!("write upstream MCP config: {e}"));
+                    }
+                    mcp_args.push("--upstream-config".to_string());
+                    mcp_args.push(upstream_path.display().to_string());
+                }
                 mcp_args.push("--role".to_string());
                 mcp_args.push(req.role.clone());
                 if let Some(task_id) = req.task_id.as_deref() {
@@ -699,16 +729,6 @@ impl SessionSpawner for ManagerSpawner {
                         "args": mcp_args.clone()
                     }),
                 );
-                if load_crawl4ai {
-                    let crawl = crate::routes::sessions::crawl4ai_mcp_server();
-                    mcp_servers.insert(
-                        crawl.name,
-                        json!({
-                            "command": crawl.command,
-                            "args": crawl.args,
-                        }),
-                    );
-                }
                 let loaded_capabilities =
                     crate::routes::sessions::loaded_mcp_capabilities_with_skills(
                         load_crawl4ai,
@@ -729,10 +749,6 @@ impl SessionSpawner for ManagerSpawner {
                 opts.mcp_server_args = mcp_args;
                 opts.loaded_capabilities = loaded_capabilities;
                 opts.auto_intro = Some(capability_intro);
-                if load_crawl4ai {
-                    opts.extra_mcp_servers
-                        .push(crate::routes::sessions::crawl4ai_mcp_server());
-                }
                 config_path = Some(path);
             }
         }

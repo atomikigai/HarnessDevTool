@@ -6,6 +6,7 @@
 export {
   MessageSquare,
   Bot,
+  Image,
   Settings,
   Activity,
   CircleAlert,

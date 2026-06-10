@@ -1326,3 +1326,146 @@ proyecto, muestra la continuidad relevante y permite reanudar o arrancar fresco
 con contexto sin depender de memoria del modelo.
 
 Estado: base ejecutada 2026-06-08.
+
+## Task 35: Agent liveness & health watchdog (anti-cuelgue, ocio y cortes de red)
+
+Objetivo:
+Medir y visualizar el estado de liveness de agentes en vivo, distinguir entre
+cuelgue real, inactividad normal e interrupción transitoria de red, sin perder
+trazabilidad de lo que cada agente estaba haciendo.
+
+Contexto:
+Cuando el harness lanza agentes (o un agente lanza subagentes en F4), no hay
+forma de saber si están colgados, si están ociosos esperando task, o si es un
+corte de red momentáneo. El usuario ve tareas `in_progress` sin progreso aparente
+sin poder diagnosticar la causa. Los agentes del árbol pueden quedar huérfanos sin
+feedback visual sobre su estado real.
+
+Tarea:
+1. Exponer señales de actividad por sesión en `SessionMeta`: `last_output_at`
+   (PTY), `last_transcript_event_at`, `process_identity` con PID vivo,
+   `start_time_ticks`, delta de CPU del proceso (via /proc/<pid>/stat o
+   process stats).
+2. Implementar detección de cuelgue: state machine con `working` → `stalled` si
+   no hay output/eventos por > umbral configurable (default 60s); `tool_call`
+   sin result por > umbral → `stalled` con razón "sin actividad desde NN min".
+   Badge distintivo en UI/SessionRightPanel.
+3. Medir ocio: prompt en reposo sin task pendiente → estado `idle` con
+   `idle_since`; dashboard agrega contadores `N_idle / N_stalled` (hoy binario
+   active/idle). Mostrar en tab Agents/metrics.
+4. Resiliencia a cortes de red: reconexión SSE con `since` offset y backoff
+   exponencial ya implementada para transcript (round 3, 2026-06-10); extender
+   a `/api/sessions/:id/events` si falta. Banner "desconectado" en UI cuando
+   SSE fall-off. El state detector debe reconocer patrones CLI (`API Error`,
+   `Connection lost`, etc.) en tail ANSI → estado `blocked(network)` visible
+   en vez de parecer cuelgue. El harness no mata sesión, solo señala.
+5. Roll-up por árbol de subagentes: sesión raíz muestra el peor estado de sus
+   hijos (parent_session_id/root_session_id ya en meta); child `stalled` →
+   parent indica `child_stalled`. Indicador visual abierto/cerrado en árbol
+   Agents.
+
+Dependencias:
+- Agent state detector (heurística por CLI tail ANSI para detectar state fino)
+  es prerequisito para los estados `stalled` y `blocked(network)`; las señales
+  del punto 1 no dependen y pueden ir primero.
+- Eventos append-only de transición de state (punto 2) reutilizan el envelope
+  de Task 15 (Eventos append-only unificados).
+
+Reglas:
+- No romper sesiones existentes sin state detector; hacer state opcional si es
+  necesario (degradación).
+- Cambios mínimos en dispatcher/routes; state es aditivo.
+- SSE y metrics deben quedar consistentes.
+- Agregar test de state transitions y cortes de red simulados.
+
+Resultado esperado:
+En Agents, cada sesión/subagente muestra badge `working`, `idle`, `stalled`
+o `blocked(network)` con timestamp y razón. El usuario puede diagnosticar
+si un agente está cuelgado (sin actividad 60s+), ocioso (esperando task) o
+desconectado (error de red). El árbol de sesiones muestra roll-up del peor
+estado de hijos. El harness no mata sesiones huérfanas, pero las señala
+visiblemente para recuperación manual o automática.
+
+## Task 36: Zeus: fallbacks configurables por rol (modelo/proveedor de respaldo)
+
+Objetivo:
+Permitir que cada rol en el modo Zeus declare proveedores/modelos de respaldo
+ordenados, de forma que cuando el primario falla (proceso muere, cuelgue,
+rate limit), el harness intente automáticamente con el siguiente de la lista,
+manteniendo trazabilidad completa y telemetría para ajustar la selección de
+primarios.
+
+Contexto:
+Hoy el modo Zeus configura roles con `ZeusRoleSelection { role, provider,
+model?, effort? }` (ts-rs, usado en `CreateSessionRequest.zeus_roles` y
+expuesto en `GET /api/sessions/:sid`). No hay forma de declarar qué pasa si
+el primario falla: CLIs que se cuelgan (ej. codex exec headless, feedback
+2026-06), APIs caídas, rate limits o crashes. El fallback hoy es manual o
+requiere intervención externa. La detección de cuelgue es prerequisito de
+Task 35 (watchdog); la V1 razonable puede cubrir fallos de arranque (exit ≠ 0)
+y reintentos exhaustos.
+
+Diseño propuesto:
+1. Extender tipo Rust `ZeusRoleSelection` con campo `fallbacks?: Vec<ZeusRoleTarget>`
+   donde `ZeusRoleTarget { provider, model?, effort? }` — lista ordenada de
+   alternativas. Nuevo tipo ts-rs: correr `just gen-types` tras cambio de tipos.
+2. UI (frontend, pantalla de configuración de roles Zeus): para cada rol,
+   además del selector primario, agregar lista ordenable de fallbacks
+   (añadir/quitar/reordenar via drag-drop o botones +/−).
+3. Runtime (backend spawner): cuando el spawner de un rol detecta fallo del
+   primario (proceso exit != 0 al arrancar, cuelgue por > umbral de Task 35,
+   o N reintentos fallidos), recrea la sesión del rol con el siguiente target
+   de la lista `fallbacks`. Anota el evento append-only en el transcript/board
+   de la sesión: `system_note "role X fell back to provider/model Y, reason Z"`.
+4. Persistencia: los fallbacks viajan en `zeus_roles` (ya persistidos vía
+   `persist_zeus_roles`); se preservan en Restart (round 3 reenvía `zeus_roles`
+   verbatim).
+5. Telemetría: cada activación de fallback registra (contador por
+   proveedor/modelo, razón, timestamp) → alimenta `docs/teamwork/SCOREBOARD.md`
+   para decidir primarios con datos reales de fallos.
+
+Tarea:
+1. Auditar `ZeusRoleSelection` en `harness-core/src/` y en el contrato
+   `CreateSessionRequest` (ts-rs, `POST /api/threads/:tid/sessions`).
+2. Extender `ZeusRoleSelection` con `fallbacks: Option<Vec<ZeusRoleTarget>>`.
+   Definir `ZeusRoleTarget { provider: String, model: Option<String>,
+   effort: Option<String> }`. Ambos deben derivar `#[derive(TS)]`.
+3. Ejecutar `just gen-types` y verificar que frontend/src/lib/api/types/ incluya
+   los nuevos tipos.
+4. Actualizar UI del formulario de creación/edición de sesión Zeus en
+   `frontend/src/lib/components/` para exponer lista de fallbacks por rol
+   con interfaz ordenable.
+5. En backend spawner (probablemente en `harness-mcp-server/src/dispatcher.rs`
+   o `harness-server/src/routes/sessions.rs`), detección de fallo primario e
+   iteración sobre fallbacks.
+6. Al cambiar a un fallback, emitir evento append-only con razón clara
+   (`exit_code`, `timeout`, `max_retries_exceeded`, etc.).
+7. Acumular telemetría por rol/proveedor/modelo de fallback activaciones →
+   guardar snapshot en `~/.harness/profiles/<p>/telemetry/fallback-activations.jsonl`.
+8. Agregar tests: crear sesión Zeus con fallbacks, simular fallo primario y
+   verificar que el segundo se intenta; verificar evento append-only y
+   telemetría grabada.
+
+Reglas:
+- No romper sesiones Zeus sin fallbacks; campo `fallbacks` es opcional.
+- V1 no requiere Task 35 (watchdog); solo cubre exit != 0 al arrancar y
+  reintentos exhaustos. Fallback por cuelgue (stalled > threshold) llega
+  cuando Task 35 esté listo.
+- Cambios mínimos en contratos existentes.
+- Mantener append-only en eventos de fallback.
+- Agregar test.
+
+Resultado esperado:
+Al crear una sesión Zeus, el usuario puede declarar para cada rol un primario
+y una lista de fallbacks. Si el primario falla al arrancar o tras N reintentos,
+el harness intenta automáticamente con el siguiente de la lista, anota el
+evento en el transcript y registra telemetría. La trazabilidad es completa
+(quién/cuándo/por qué se activó el fallback) y reutilizable para decisiones
+de selección de primarios.
+
+Dependencias:
+- Task 35 (watchdog) proporciona detección fina de cuelgue; sin ella, V1 cubre
+  solo fallos de arranque (exit != 0) y reintentos exhaustos.
+- Tipos `ts-rs` generados (gate: `just gen-types` debe correr tras cambios).
+- Tests: `cargo test -p harness-server -p harness-mcp-server` y
+  `pnpm check` deben pasar.

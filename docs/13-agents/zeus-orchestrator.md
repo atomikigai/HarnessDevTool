@@ -22,37 +22,49 @@ Cada CLI tiene fortalezas distintas. Forzar a uno solo (Claude) a hacer todo es 
 
 Zeus elige por componente y deja a Claude como **fallback uniforme** cuando un CLI hijo se queda sin cuota o falla.
 
-## Matriz rol → CLI
+## Matriz rol → CLI y Pipeline de calidad (2026-06-10)
 
-| Componente                  | Mejor opción            | Rol                                                                              |
-| --------------------------- | ----------------------- | -------------------------------------------------------------------------------- |
-| Orquestador central         | **Claude**              | Planifica, delega, valida, coordina handoffs.                                    |
-| IDE / humano en loop        | **Cursor**              | Revisión, edición, reglas del proyecto, control manual.                          |
-| Backend worker              | Claude o Codex          | Claude para arquitectura; Codex para implementación.                             |
-| Frontend visual worker      | **Cursor**              | Pantallas, CSS, layout, componentes visuales, responsive y polish.               |
-| Frontend logic worker       | Codex / Claude          | Stores, API client, validación, routing y cambios mecánicos rápidos.             |
-| DB worker                   | **Claude**              | Migraciones, impacto, consistencia, reasoning.                                   |
-| QA worker                   | Codex o Claude          | Codex para tests; Claude para escenarios y criterios.                            |
-| PR / refactor worker        | **Codex**               | Cambios de código, tests, reviews, releases.                                     |
-| Cloud / context / search    | **Antigravity**         | Google Cloud, Workspace, contexto externo (binario `agy`).                       |
+**Roster de Zeus:**
 
-## Política de fallback
+| Rol                     | Quién                | Responsabilidad                                                    |
+| ----------------------- | -------------------- | ------------------------------------------------------------------ |
+| **Orquestador**         | **Opus 4.8**         | Planifica, delega tareas, verifica criterio de aceptación, cierra. |
+| **Codificador**         | **Codex gpt-5.5**    | Backend Rust + Frontend (SvelteKit/Tailwind/shadcn).              |
+| **Revisor de código**   | **Sonnet 4.6**       | Valida correctitud, regresiones, arquitectura. No parchea.        |
+| **UI designer**         | **Sonnet 4.6**       | Revisa visual frontend: CSS, responsive, a11y, diseño.            |
+| **QA funcional**        | **Codex gpt-5.5**    | Browser testing con agent-browser; flujos e-2-e.                 |
 
-**Claude es el destino de fallback universal.** Si el CLI primario para un rol está sin cuota / errored / no instalado, Zeus reintenta con Claude. Esto se basa en que Claude tiene cuota más generosa en el setup actual del usuario y reasoning aceptable en todos los roles.
+**Pipeline de ejecución:**
+```
+Opus (PLAN)
+  └─ Codex (CODIFY: backend + frontend)
+       └─ Sonnet (REVIEW: código + UI)
+            └─ Codex (INCORPORATE: ajusta por feedback)
+                 └─ Codex (QA: agent-browser)
+                      └─ Opus (VERIFY: cierra)
+```
+
+**Cambio respecto a roster previo (2026-06-03):** antes Frontend era Sonnet (coder), Codex solo backend, QA era Sonnet. Ahora Codex codifica backend+frontend; Sonnet es revisor de código + UI designer; QA funcional la hace Codex con agent-browser. Justificación: Codex es generador rápido y robusto headless (fix de `< /dev/null` validado); Sonnet es revisor minucioso y mejor en diseño visual.
+
+## Política de fallback y cross-model
+
+**Fallback uniforme a Opus:** si el CLI primario de un rol falla (sin cuota, errored, no instalado), Zeus reintenta con Opus. Esto aplica porque Opus tiene cuota generosa y reasoning aceptable en todos los roles.
 
 Orden de selección por rol:
-1. Frontend visual (`*.svelte`, `app.css`, layout, responsive, a11y visual, shadcn): `Cursor -> Codex -> Claude`.
-2. Frontend logic (stores, API client, validators, data flow): `Codex -> Claude -> Cursor`.
-3. Backend/refactor/tests: `Codex` o `Claude` según arquitectura vs implementación.
-4. DB/arquitectura: `Claude`.
-
-Regla especial de Zeus: cuando el trabajo sea construir o pulir pantallas,
-componentes visuales, CSS, responsive, densidad de UI, estados hover/focus o
-consistencia de diseño, Zeus debe preferir `Cursor` aunque el dominio sea
-`frontend` genérico. Codex queda como secundario para cambios rápidos y Claude
-como fallback estructural.
+1. **Codificador** (backend + frontend): `Codex -> Opus`.
+2. **Revisor de código**: `Sonnet -> Opus`.
+3. **UI designer**: `Sonnet -> Opus`.
+4. **QA funcional**: `Codex -> Opus`.
 
 El fallback dispara una entrada en el audit log con `reason: quota_exceeded | binary_missing | runtime_error`.
+
+**Regla universal de calidad (cap=1, cross-model):** toda tarea no trivial sigue el ciclo:
+1. **Generador** codifica.
+2. **Revisor** (modelo distinto) valida en **una sola ronda** — aconseja, no parchea.
+3. **Generador** incorpora feedback y decide. Responsable del código final.
+4. **Compuerta objetiva** (tests verdes, fmt, criterio de aceptación) decide aprobación, no opinión del revisor.
+
+**Principio cross-model:** nunca el mismo modelo revisándose a sí mismo. En Zeus, el revisor es de distinto CLI (Sonnet vs Codex). En agentes normales, el revisor es un sub-modelo distinto spawneable vía `session_spawn_child` con override de modelo.
 
 ## Spawn semántico
 

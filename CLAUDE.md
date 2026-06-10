@@ -13,59 +13,66 @@ Antes de escribir código, todo agente lee también `AGENTS.md` y `docs/ARCHITEC
 
 ---
 
-## 1. Roster y roles
+## 1. Roster y roles (2026-06-10)
 
 | Rol (runtime) | Quién | Cómo se invoca | Scope de escritura |
 |---|---|---|---|
 | **Planner / Orquestador** (`planner`) | Claude Opus (loop principal) | nativo | ❌ no edita código; orquesta y verifica |
-| **Backend Rust** (`generator`) | **Codex CLI** | `codex exec` vía Bash (§3) | `backend/crates/**` |
-| **Frontend** (`generator`) | **Claude Sonnet 4.6** (subagente `frontend`) | **Agent tool** nativa (§3) | `frontend/**` |
-| **Doc-agent** (`generator`) | **Claude Haiku 4.5** (subagente `doc-agent`) | **Agent tool** nativa (§3) | `docs/**` |
-| **Revisor de bugs** (`evaluator`) | Claude Sonnet (subagente) | **Agent tool** nativa | ❌ solo reporta |
-| **QA** (`evaluator`) | Claude Sonnet (subagente) | **Agent tool** nativa | ❌ solo reporta |
+| **Codificador** (`generator`) | **Codex gpt-5.5** | `codex exec` vía Bash (§3) | `backend/crates/**` + `frontend/**` |
+| **Revisor de código** (`evaluator`) | **Claude Sonnet 4.6** (subagente) | **Agent tool** nativa + sub-modelo | ❌ aconseja en 1 ronda; no parchea |
+| **UI designer** (`evaluator`) | **Claude Sonnet 4.6** (subagente) | **Agent tool** nativa + sub-modelo | ❌ revisa visual (CSS, responsive, a11y) |
+| **Doc-agent** (`generator`) | **Claude Haiku 4.5** (subagente) | **Agent tool** nativa (§3) | `docs/**` |
+| **QA funcional** (`evaluator`) | **Codex gpt-5.5** (agent-browser) | `codex exec` vía Bash (§3) | ❌ tests con browser; solo reporta |
 
 Reglas de rol:
 
 - El **Planner no edita código**: descompone, redacta el brief, delega, y verifica que se cumplió el
   objetivo. Es el hub de comunicación.
-- **Backend Rust (Codex)** cubre todo el workspace `backend/crates/**`. Aquí el backend es **Rust de
-  sistemas** (PTY, MCP, scheduler, policy), no CRUD. No se parte en "logic/UI".
+- **Codificador (Codex gpt-5.5)** cubre `backend/crates/**` + `frontend/**`. Genera código para ambos
+  dominios. Aquí el backend es **Rust de sistemas** (PTY, MCP, scheduler, policy), no CRUD. No se parte
+  en "logic/UI".
 - **Crates de alto riesgo** — `harness-session` (PTY), `harness-policy`, `harness-mcp-server`: el
-  Planner los revisa de cerca o los hace con par-revisión de Sonnet. **No** se delegan a Codex a
-  ciegas. `cargo check` verde ≠ correcto en código de sistemas.
-- **Frontend (Claude Sonnet 4.6)** cubre `frontend/**` (SvelteKit/Tailwind/shadcn). Subagente nativo
-  `frontend` (`.claude/agents/frontend.md`) que **sí edita** su dominio. Un solo rol frontend.
-- **Frontend, Doc-agent, Revisor y QA son subagentes Claude nativos** (Agent tool). Frontend edita
-  `frontend/**` y Doc-agent edita `docs/**`; Revisor y QA solo reportan. Todos devuelven su resultado
-  como tool result al Planner.
-- **Codex (backend) es el único CLI externo**: el Planner lo lanza por `Bash`. La Agent tool nativa
-  spawnea Claude (frontend/doc-agent/revisor/qa), no Codex. No confundir los dos mecanismos.
+  Planner los revisa de cerca o delega con validación de Sonnet revisor. **No** acepta cambios sin
+  1 ronda de revisión. `cargo check` verde ≠ correcto en código de sistemas.
+- **Revisor de código (Sonnet 4.6)** valida correctitud, regresiones y arquitectura en **1 sola ronda**.
+  Aconseja, no parchea. El generador (Codex) es dueño del código final e incorpora feedback.
+- **UI designer (Sonnet 4.6)** revisa frontend visual (`*.svelte`, CSS, responsive, a11y, shadcn consistency)
+  en **1 sola ronda**. Genera feedback, el codificador incorpora.
+- **Doc-agent (Haiku 4.5)** edita `docs/**` (documentación, changelogs, backlog).
+- **QA funcional (Codex gpt-5.5)** corre tests con agent-browser e-2-e; solo reporta.
+- **Regla universal cross-model (cap=1):** revision nunca por el mismo modelo que generó. Revisor y
+  generador son de distinto CLI (Codex vs Sonnet aquí). Solo para trabajo no trivial. Compuerta objetiva:
+  tests/fmt verdes + criterio de aceptación, no opinión del revisor.
 - Cualquier ejecutor con una duda la escribe en el board (§4) y espera al Planner; no asume.
 
 ---
 
-## 2. Ciclo de vida de una tarea
+## 2. Ciclo de vida de una tarea (cap=1 ronda, cross-model)
 
 ```
 PLAN (Planner)
   └─ brief + contrato en docs/teamwork/BOARD.md
-        └─ EXECUTE paralelo (Backend Rust / Frontend según alcance, write scopes separados)
-        └─ REVIEW de bugs (Sonnet)  →  QA (Sonnet)  →  VERIFY objetivo (Planner)
-              └─ si falla cualquiera: vuelve a EXECUTE con notas. Si pasa: cerrar en el board.
+        └─ CODIFY (Codex backend+frontend, write scopes separados si aplica)
+              └─ REVIEW (Sonnet revisor código + Sonnet UI designer, 1 sola ronda)
+                    └─ INCORPORATE (Codex ajusta por feedback, dueño de código final)
+                          └─ QA (Codex agent-browser)  →  VERIFY objetivo (Planner)
+                                └─ si falla QA: vuelve a CODIFY con notas. Si pasa: cerrar en el board.
 ```
 
 - **PLAN**: el Planner escribe en el board objetivo, alcance, archivos probables, criterio de
   aceptación, responsables y **contrato** front/back si aplica.
-- **CONTRATO**: antes de ejecutar en paralelo, Backend publica rutas, métodos, payloads, respuestas,
-  errores **y los tipos `ts-rs` afectados**. Frontend implementa contra ese contrato. Si cambia,
-  Backend actualiza el board.
-- **EXECUTE paralelo**: Backend y Frontend trabajan a la vez con write scopes separados. Si necesitan
-  el mismo archivo, el Planner serializa esa parte.
-- **HANDOFF**: cada ejecutor anota en el board "listo para consumo" con endpoints, tipos, archivos
-  tocados y comandos corridos.
-- **REVIEW**: Sonnet busca bugs (correctitud, regresiones, contrato API/tipos, append-only,
-  permisos).
-- **QA**: Sonnet valida contra el criterio de aceptación, corriendo `just test` y/o el endpoint.
+- **CONTRATO**: antes de ejecutar, Codex publica rutas, métodos, payloads, respuestas, errores
+  **y los tipos `ts-rs` afectados**. Aplica a cambios de API o tipos. Si cambia, Codex actualiza
+  el board.
+- **CODIFY**: Codex codifica backend + frontend con write scopes separados. Si necesitan el mismo
+  archivo, el Planner serializa esa parte.
+- **HANDOFF**: Codex anota en el board "listo para review" con archivos tocados, comandos y comprobaciones
+  locales.
+- **REVIEW**: Sonnet revisor valida correctitud, regresiones, arquitectura (1 ronda). Sonnet UI designer
+  revisa visual frontend (1 ronda). Ambos aconsejan, no parchean. El generador (Codex) es dueño.
+- **INCORPORATE**: Codex ajusta por feedback (cap=1 ronda). Compuerta objetiva: tests/fmt verdes
+  + criterio de aceptación, no opinión del revisor.
+- **QA**: Codex corre agent-browser (tests e-2-e) contra criterio de aceptación.
 - **VERIFY**: el Planner confirma objetivo cumplido y la puerta de calidad de §5 verde.
 
 ---
@@ -74,28 +81,32 @@ PLAN (Planner)
 
 Correr siempre desde la **raíz del repo**.
 
-### Backend Rust (Codex)
+### Codificador (Codex gpt-5.5)
 ```bash
 codex exec -s workspace-write -c approval_policy=never --skip-git-repo-check \
-  "BRIEF Backend Rust: <objetivo>. Sigue AGENTS.md y docs/. Alcance: backend/crates/<crate>. \
-Criterio: <aceptación>. Si tocas un tipo #[derive(TS)], corre just gen-types. No toques frontend/." \
+  "BRIEF Codex: <objetivo>. Sigue AGENTS.md y docs/. Alcance: backend/crates/<crate> y/o frontend/. \
+Criterio: <aceptación>. Si tocas un tipo #[derive(TS)], corre just gen-types. Contrato: [detalle \
+API/tipos en BOARD.md]." \
   < /dev/null
 ```
 
-> **Headless (causa raíz verificada 2026-06-10):** el prompt **debe** ir como argumento posicional **y**
-> hay que redirigir **`< /dev/null`**. Sin eso, en background (stdin no-TTY sin EOF) `codex exec` se
-> cuelga en `read_to_end` de stdin imprimiendo *"Reading additional input from stdin…"* (exit 144). Con
-> `< /dev/null` el read retorna en EOF inmediato. `approval_policy=never` evita que un prompt de aprobación
-> bloquee sin TTY; `-s workspace-write` lo confina al repo. Útil además: `--json` (stream de eventos
-> parseable), `--output-last-message FILE`, `--ephemeral`. Validado: `HEADLESS_OK` en 4 s. Detalle y el
-> reporter de costo (lee `$CODEX_HOME/sessions/**/rollout-*.jsonl`) en
-> `docs/12-build-plan/harness-analysis-2026-06-10.md`.
+Codex codifica **backend + frontend** (ambos dominios). El prompt **debe** ir como argumento posicional
+y hay que redirigir **`< /dev/null`** (fix headless 2026-06-10 validado). `approval_policy=never` evita
+prompt de aprobación sin TTY; `-s workspace-write` confina al repo. Opciones útiles: `--json` (stream
+de eventos), `--output-last-message FILE`, `--ephemeral`.
 
-### Frontend (Claude Sonnet 4.6 — subagente nativo)
-Se spawnea con la **Agent tool** nativa (`subagent_type: frontend`, def. en `.claude/agents/frontend.md`,
-modelo Sonnet 4.6), **no** por CLI. El brief va en el prompt; el contrato vive en el board. El subagente
-edita `frontend/**`, corre `pnpm check`, y devuelve su handoff como tool result (no escribe el board;
-el Planner registra el handoff y dispara Revisor/QA).
+Tras codificar, Codex anota el handoff en el board (archivos, comandos locales, comprobaciones).
+
+### Revisor de código (Claude Sonnet 4.6 — subagente nativo)
+Se spawnea con la **Agent tool** nativa (`subagent_type: reviewer`, modelo Sonnet 4.6 como sub-modelo
+de Opus), **no** por CLI. Lee el handoff de Codex en el board. Valida en **1 sola ronda**: correctitud,
+regresiones, arquitectura, contrato API/tipos. Aconseja, no parchea. Devuelve su análisis como tool result
+(el Planner lo registra en el board).
+
+### UI Designer (Claude Sonnet 4.6 — subagente nativo)
+Se spawnea con la **Agent tool** nativa (`subagent_type: ui-designer`, modelo Sonnet 4.6 como sub-modelo),
+**no** por CLI. Si Codex tocó `frontend/`, Sonnet revisa en **1 sola ronda**: CSS, responsive, a11y,
+shadcn consistency, densidad visual. Aconseja, no edita. Devuelve feedback como tool result.
 
 ### Doc-agent (Claude Haiku 4.5 — subagente nativo, rápido)
 Se spawnea con la **Agent tool** nativa (`subagent_type: doc-agent`, def. en `.claude/agents/doc-agent.md`,
@@ -103,13 +114,24 @@ modelo Haiku 4.5 por velocidad/costo). Edita **`docs/**`** (y, si se le pide, `R
 doc): actualizar docs, changelogs, notas de tareas, sincronizar el estado del backlog. No toca código
 de `backend/**` ni `frontend/**`. Devuelve handoff como tool result.
 
-### Revisor de bugs y QA (Claude Sonnet)
-Se spawnean con la **Agent tool** nativa (subagentes `reviewer` y `qa` en `.claude/agents/`), no por
-CLI. El resultado del subagente vuelve como tool result, estructurado — no se pisa el board.
+### QA funcional (Codex gpt-5.5 — agent-browser)
+```bash
+codex exec -s workspace-write -c approval_policy=never --skip-git-repo-check \
+  "BRIEF QA Codex: corre agent-browser contra criterio de aceptación en BOARD.md. \
+Valida: [flujos e-2-e listados]. Reporta resultados, screenshares, logs. No edites código." \
+  < /dev/null
+```
 
-Notas: Codex usa sandbox `workspace-write` (escribe solo en el repo). El Frontend ya **no** usa Cursor:
-es un subagente Claude nativo (Sonnet 4.6) vía Agent tool. **Codex (backend) es el único CLI externo**
-del equipo; Frontend, Doc-agent, Revisor y QA son subagentes Claude nativos.
+Codex con agent-browser corre tests e-2-e. El Planner o Sonnet revisor pueden también hacer QA
+funcional observacional, pero Codex es más rápido con el browser.
+
+**Notas integrales:**
+- **Codex (gpt-5.5)**: CLI externo para Backend + Frontend + QA (agent-browser). Se invoca por `codex exec`
+  vía Bash con `< /dev/null`.
+- **Sonnet 4.6**: Revisor de código + UI designer, subagentes Claude nativos (Agent tool).
+- **Haiku 4.5**: Doc-agent, subagente nativo (Agent tool).
+- **Dueño de código:** Codex. Revisor aconseja (cap=1), Codex incorpora feedback.
+- **Cross-model:** Revisor (Sonnet) ≠ Generador (Codex), nunca el mismo modelo revisándose a sí mismo.
 
 ---
 

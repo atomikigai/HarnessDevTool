@@ -69,17 +69,18 @@ revisar, aprobar y ejecutar sin mezclar scopes.
 ## Tareas abiertas 2026-06-10 (post-revisión de Codex)
 
 > Fuente: [[build-plan/harness-analysis-2026-06-10]] (análisis + revisión del fuente de `openai/codex`).
-> La revisión del fuente desbloqueó el reporter de costo de Codex y el cuelgue headless. Awaiting
-> aprobación del usuario para ejecutar. Secuencia recomendada: H1 → H2 → H3 → H4 → H5 → seguridad → bugs P1 → perf.
+> **Estado 2026-06-10:** H1+H2 ✅ hechos (commit `13ae622`); **H3 ❌ descartado** (el usuario usa Codex Pro,
+> costo plano — **no se mide USD**, ver SCOREBOARD nota 5); **primer bug P1 (gateway timeout) ✅ cerrado** por
+> el head-to-head codex-vs-sonnet. Resto awaiting aprobación. Secuencia restante: H4 → H5 → H6 → seguridad → resto bugs P1 → perf.
 
-- **H1: Fix invocación headless de Codex** — pasar el prompt como arg posicional y `< /dev/null` (con `--json`/`--ephemeral`). Causa raíz verificada: `read_to_end()` de stdin no-TTY sin EOF (`../codex-upstream/codex-rs/exec/src/lib.rs:1858-1868`). Esfuerzo XS. Reactiva Codex headless.
-- **H2: Corregir receta de Codex en CLAUDE.md §3** — reemplazar `codex exec -s workspace-write "..."` por `codex exec "PROMPT" --json --skip-git-repo-check -c sandbox_mode=workspace-write < /dev/null`. Doc-only (raíz/infra, no `docs/**`: lo aprueba el usuario). Esfuerzo XS.
-- **H3: Reporter de costo de Codex** — reemplazar el stub $0 (`harness-core/src/budget/reporter.rs:143-157`) por un parser del rollout JSONL de Codex (`$CODEX_HOME/sessions/**/rollout-*.jsonl`): tomar el último evento `token_count` → `total_token_usage` (acumulativo) × pricing; agregar pricing de `gpt-5.5` al `model_price()`. Esfuerzo S.
-- **H4: `SessionResult` por sesión** — `{ success, quality_score, turns, wall_seconds }` persistido; `wall_seconds` de started_at→exit; `turns`/tool-calls del `--json` de Codex y del transcript de Claude. Esfuerzo S/M.
+- **H1: Fix invocación headless de Codex** — ✅ HECHO (validado en vivo, `HEADLESS_OK` en 4 s; commit `13ae622`): prompt posicional + `< /dev/null` (+ `--json`/`--ephemeral`). Causa raíz: `read_to_end()` de stdin no-TTY sin EOF (`codex-rs/exec/src/lib.rs:1858-1868`).
+- **H2: Corregir receta de Codex en CLAUDE.md §3** — ✅ HECHO (commit `13ae622`): `codex exec "PROMPT" --json --skip-git-repo-check -c sandbox_mode=workspace-write < /dev/null`.
+- **H3: ~~Reporter de costo de Codex~~** — ❌ DESCARTADO. El usuario usa el CLI de Codex con suscripción Pro (costo plano); no interesa medir USD. El rollout JSONL de Codex se reutiliza para señales de **performance** (turnos/tool-calls/duración), no dólares.
+- **H4: `SessionResult` por sesión** — `{ success, quality_score, turns, wall_seconds }` persistido (**sin** `cost_usd`). `wall_seconds` de started_at→exit; `turns`/tool-calls del `--json` de Codex y del transcript de Claude. Esfuerzo S/M.
 - **H5: Evaluador post-sesión** — subagente Sonnet-juez con rúbrica que puntúa éxito/calidad post-sesión y persiste en `SessionResult`. Esfuerzo M.
-- **H6: Harness de experimento + análisis estadístico** — matriz modelo×profile×tarea (ver [[build-plan/harness-analysis-2026-06-10]] §6), ≥3-5 runs/celda, con CI/p-value/effect-size. Habilita "codex vs sonnet" y "configs Zeus" con datos reales.
+- **H6: Harness de head-to-head** — misma tarea por dos ejecutores en worktrees aislados + mismo revisor/QA + fila al SCOREBOARD (como el de gateway-timeout, ya registrado). Acumular muestras para decidir roster por calidad/perf.
 - **Seguridad de delegación (M1/M2/M3) y normalización (M5/M11–M17)**: ver [[build-plan/planning-codex-delegation-2026-06-10]].
-- **Bugs P1 verificados**: gateway MCP sin timeout (`harness-mcp-server/gateway.rs:174-190`); policy-check 120s→5-10s (`dispatcher.rs:486`); fuga `drop_lease_async` (`module-db/lease.rs:217-226`); `ensure_thread` con mutex (`harness-core/tasks/store.rs:92-144`).
+- **Bugs P1 verificados**: ✅ gateway MCP sin timeout — **cerrado 2026-06-10** (head-to-head; merge de la impl de Sonnet + el assert de reaping de Codex en `gateway.rs`, 69 tests). Pendientes: policy-check 120s→5-10s (`dispatcher.rs:486`); fuga `drop_lease_async` (`module-db/lease.rs:217-226`); `ensure_thread` con mutex (`harness-core/tasks/store.rs:92-144`).
 - **Perf quick wins**: consolidar polling frontend (`+page.svelte` + `IconRail.svelte`); `mem::take()` en `flush_chunk` (`harness-session/session.rs:665-682`).
 
 ## Experimentos activos

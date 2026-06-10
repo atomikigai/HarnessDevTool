@@ -104,6 +104,12 @@ dura). Roadmap completo en [[build-plan/planning-codex-delegation-2026-06-10]] (
 
 ## 6. Medición codex vs sonnet + configs de Zeus
 
+> **Corrección 2026-06-10 (aclaración del usuario):** usa Codex Pro (costo plano) → **no se mide USD**; el
+> reporter de costo (1a/§7) queda **descartado**. Las menciones a "USD"/"reporter de costo" abajo quedan
+> superseded: se mide **calidad + performance de codificación** (ver SCOREBOARD). Primer head-to-head
+> (gateway-timeout) ya ejecutado y registrado: empate técnico, Sonnet con mejor cobertura de test, Codex más
+> rápido codificando → se mergeó Sonnet + el assert de reaping de Codex.
+
 **Existe:** cost tracking de Claude, `SessionMeta` + `loaded_capabilities`, transcript watcher, budget API,
 endpoint Prometheus, scripts A/B (Task 31), `SCOREBOARD.md` manual (n=6, sesgado a Sonnet por el cuelgue
 de Codex). **Falta:** reporter de costo de Codex (desbloqueado, §2), fix headless (desbloqueado, §2),

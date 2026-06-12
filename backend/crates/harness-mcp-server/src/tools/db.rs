@@ -199,16 +199,111 @@ fn table_metadata(
         .ok_or_else(|| format!("table not found: {table}"))
 }
 
-const READ_ONLY_KEYWORDS: &[&str] = &["SELECT", "EXPLAIN", "SHOW", "DESCRIBE", "DESC"];
+const READ_ONLY_KEYWORDS: &[&str] = &["SELECT", "WITH", "EXPLAIN", "SHOW", "DESCRIBE", "DESC"];
+const MUTATING_CTE_KEYWORDS: &[&str] = &["DELETE", "UPDATE", "INSERT", "MERGE", "REPLACE"];
 
 fn is_read_only(sql: &str) -> bool {
     if has_multiple_statements(sql) {
         return false;
     }
     let kw = module_db::__leading_keyword(sql);
+    if kw.eq_ignore_ascii_case("WITH") && contains_sql_keyword(sql, MUTATING_CTE_KEYWORDS) {
+        return false;
+    }
     READ_ONLY_KEYWORDS
         .iter()
         .any(|w| kw.eq_ignore_ascii_case(w))
+}
+
+fn contains_sql_keyword(sql: &str, keywords: &[&str]) -> bool {
+    let mut chars = sql.chars().peekable();
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut in_line_comment = false;
+    let mut in_block_comment = false;
+    let mut word = String::new();
+
+    while let Some(ch) = chars.next() {
+        if in_line_comment {
+            if ch == '\n' {
+                in_line_comment = false;
+            }
+            continue;
+        }
+        if in_block_comment {
+            if ch == '*' && chars.peek() == Some(&'/') {
+                chars.next();
+                in_block_comment = false;
+            }
+            continue;
+        }
+        if in_single {
+            if ch == '\'' {
+                if chars.peek() == Some(&'\'') {
+                    chars.next();
+                } else {
+                    in_single = false;
+                }
+            }
+            continue;
+        }
+        if in_double {
+            if ch == '"' {
+                if chars.peek() == Some(&'"') {
+                    chars.next();
+                } else {
+                    in_double = false;
+                }
+            }
+            continue;
+        }
+
+        match ch {
+            '\'' => {
+                if keyword_matches(&word, keywords) {
+                    return true;
+                }
+                word.clear();
+                in_single = true;
+            }
+            '"' => {
+                if keyword_matches(&word, keywords) {
+                    return true;
+                }
+                word.clear();
+                in_double = true;
+            }
+            '-' if chars.peek() == Some(&'-') => {
+                if keyword_matches(&word, keywords) {
+                    return true;
+                }
+                word.clear();
+                chars.next();
+                in_line_comment = true;
+            }
+            '/' if chars.peek() == Some(&'*') => {
+                if keyword_matches(&word, keywords) {
+                    return true;
+                }
+                word.clear();
+                chars.next();
+                in_block_comment = true;
+            }
+            ch if ch == '_' || ch.is_ascii_alphanumeric() => word.push(ch),
+            _ => {
+                if keyword_matches(&word, keywords) {
+                    return true;
+                }
+                word.clear();
+            }
+        }
+    }
+
+    keyword_matches(&word, keywords)
+}
+
+fn keyword_matches(word: &str, keywords: &[&str]) -> bool {
+    !word.is_empty() && keywords.iter().any(|kw| word.eq_ignore_ascii_case(kw))
 }
 
 fn has_multiple_statements(sql: &str) -> bool {
@@ -287,10 +382,33 @@ pub fn query(mgr: &Manager, args: &Value) -> Result<Value, String> {
             "leading_keyword": module_db::__leading_keyword(sql),
         }));
     }
-    let result = runtime()
-        .block_on(mgr.query_run(connection_id, database, sql, None, limit, 0))
-        .map_err(|e| e.to_string())?;
+    let result = if approved {
+        runtime()
+            .block_on(mgr.query_run(connection_id, database, sql, None, limit, 0))
+            .map_err(|e| e.to_string())?
+    } else {
+        runtime()
+            .block_on(mgr.query_run_read_only(connection_id, database, sql, None, limit, 0))
+            .map_err(|e| e.to_string())?
+    };
     Ok(json!(result))
+}
+
+pub fn context_refresh(mgr: &Manager, args: &Value) -> Result<Value, String> {
+    let connection_id = str_arg(args, "connection_id").or_else(|_| str_arg(args, "connection"))?;
+    let brief = runtime()
+        .block_on(mgr.context_refresh(connection_id))
+        .map_err(|e| e.to_string())?;
+    Ok(Value::String(brief))
+}
+
+pub fn context(mgr: &Manager, args: &Value) -> Result<Value, String> {
+    let connection_id = str_arg(args, "connection_id").or_else(|_| str_arg(args, "connection"))?;
+    let max_age_hours = args.get("max_age_hours").and_then(|value| value.as_u64());
+    let brief = runtime()
+        .block_on(mgr.context(connection_id, max_age_hours))
+        .map_err(|e| e.to_string())?;
+    Ok(Value::String(brief))
 }
 
 pub fn select(mgr: &Manager, args: &Value) -> Result<Value, String> {
@@ -1281,7 +1399,14 @@ pub fn export_table(mgr: &Manager, harness_home: &Path, args: &Value) -> Result<
             };
             let sql = format!("SELECT {select_list} FROM {qualified} LIMIT {limit}");
             let result = runtime()
-                .block_on(mgr.query_run(connection_id, database.as_deref(), &sql, None, limit, 0))
+                .block_on(mgr.query_run_read_only(
+                    connection_id,
+                    database.as_deref(),
+                    &sql,
+                    None,
+                    limit,
+                    0,
+                ))
                 .map_err(|e| e.to_string())?;
             let base = format!(
                 "{}.{}.{}",
@@ -1328,7 +1453,7 @@ pub fn export_query(mgr: &Manager, harness_home: &Path, args: &Value) -> Result<
         }));
     }
     let result = runtime()
-        .block_on(mgr.query_run(connection_id, database, sql, None, limit, 0))
+        .block_on(mgr.query_run_read_only(connection_id, database, sql, None, limit, 0))
         .map_err(|e| e.to_string())?;
     let (ext, content_type, body) = match format {
         "json" => (
@@ -1467,6 +1592,7 @@ pub fn drop_table(mgr: &Manager, args: &Value) -> Result<Value, String> {
     let result = runtime()
         .block_on(mgr.query_run(connection_id, database, &sql, None, 1, 0))
         .map_err(|e| e.to_string())?;
+    mgr.invalidate_schema_cache(connection_id);
     Ok(json!({ "ok": true, "sql": sql, "result": result }))
 }
 
@@ -1498,6 +1624,7 @@ pub fn drop_schema(mgr: &Manager, args: &Value) -> Result<Value, String> {
     let result = runtime()
         .block_on(mgr.query_run(connection_id, database, &sql, None, 1, 0))
         .map_err(|e| e.to_string())?;
+    mgr.invalidate_schema_cache(connection_id);
     Ok(json!({ "ok": true, "sql": sql, "result": result }))
 }
 
@@ -2378,6 +2505,18 @@ mod tests {
         .unwrap();
         assert_eq!(raw["ok"], false);
         assert_eq!(raw["multiple_statements"], true);
+
+        let mutating_cte = validate_query(
+            &mgr,
+            &json!({
+                "connection": conn.id,
+                "sql": "WITH cte AS (DELETE FROM users RETURNING *) SELECT * FROM cte"
+            }),
+        )
+        .unwrap();
+        assert_eq!(mutating_cte["ok"], false);
+        assert_eq!(mutating_cte["read_only"], false);
+        assert_eq!(mutating_cte["leading_keyword"], "WITH");
     }
 
     #[test]
@@ -2533,6 +2672,18 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("DROP VIEW"));
+
+        let mutating_cte_view = generate_view_sql(
+            &mgr,
+            &json!({
+                "connection": conn.id,
+                "view": "vw_deleted_users",
+                "sql": "WITH cte AS (DELETE FROM users RETURNING *) SELECT * FROM cte"
+            }),
+        );
+        assert!(mutating_cte_view
+            .unwrap_err()
+            .contains("single read-only SELECT-like"));
     }
 
     #[test]
@@ -2650,6 +2801,46 @@ mod tests {
         )
         .unwrap();
         assert_eq!(drop_blocked["requires_approval"], true);
+
+        let before_drop = schema(
+            &mgr,
+            &json!({
+                "connection": conn.id,
+                "schema": "main",
+            }),
+        )
+        .unwrap();
+        assert!(before_drop["schemas"][0]["tables"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|table| table["name"] == "users"));
+
+        let drop_result = drop_table(
+            &mgr,
+            &json!({
+                "connection": conn.id,
+                "schema": "main",
+                "table": "users",
+                "approved": true
+            }),
+        )
+        .unwrap();
+        assert_eq!(drop_result["ok"], true);
+
+        let after_drop = schema(
+            &mgr,
+            &json!({
+                "connection": conn.id,
+                "schema": "main",
+            }),
+        )
+        .unwrap();
+        assert!(!after_drop["schemas"][0]["tables"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|table| table["name"] == "users"));
     }
 
     #[test]
@@ -2675,10 +2866,13 @@ mod tests {
     }
 
     #[test]
-    fn read_only_gate_rejects_ctes_and_stacked_statements() {
+    fn read_only_gate_allows_read_cte_but_rejects_mutating_cte_and_stacked_statements() {
         assert!(is_read_only("SELECT * FROM users"));
         assert!(is_read_only("SELECT ';' AS semi"));
         assert!(is_read_only("SELECT 1;   "));
+        assert!(is_read_only(
+            "WITH x AS (SELECT * FROM users) SELECT * FROM x"
+        ));
         assert!(!is_read_only(
             "WITH x AS (DELETE FROM users RETURNING *) SELECT * FROM x"
         ));

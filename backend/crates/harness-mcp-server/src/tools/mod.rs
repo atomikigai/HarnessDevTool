@@ -8,6 +8,7 @@ pub mod skills;
 pub mod spec;
 pub mod ssh;
 pub mod tasks;
+pub mod toolsets;
 
 use serde_json::{json, Value};
 
@@ -17,6 +18,49 @@ use crate::protocol::ToolDescriptor;
 /// `[a-zA-Z0-9_-]+`); the brief's `task.list` is the conceptual name.
 pub fn list_descriptors() -> Vec<ToolDescriptor> {
     vec![
+        ToolDescriptor {
+            name: "tools_search".into(),
+            description: "Search available Harness MCP tools and tool groups. Returns matching tools, their groups, and currently active groups."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["query"],
+                "properties": {
+                    "query": { "type": "string", "description": "Natural-language or tool-name query." }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "tools_load".into(),
+            description: "Load one or more Harness MCP tool groups for this session, then refresh tools/list."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["groups"],
+                "properties": {
+                    "groups": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Tool groups to load, for example repo, knowledge, db, ssh, skills, docs."
+                    }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "tools_unload".into(),
+            description: "Unload one or more non-core Harness MCP tool groups for this session, then refresh tools/list."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["groups"],
+                "properties": {
+                    "groups": {
+                        "type": "array",
+                        "items": { "type": "string" }
+                    }
+                }
+            }),
+        },
         ToolDescriptor {
             name: "capability_list".into(),
             description: "List short Harness capability categories with when-to-use cues and common mentions. Call this before scanning many individual tools."
@@ -94,6 +138,46 @@ pub fn list_descriptors() -> Vec<ToolDescriptor> {
                     "title": {
                         "type": "string",
                         "description": "Optional human-readable document title used for the output folder."
+                    }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "knowledge_data_ingest".into(),
+            description: "Extract a local CSV/TSV/XLSX workbook into compact Markdown knowledge shards with column schema, inferred types, and sample rows."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["source_path"],
+                "properties": {
+                    "source_path": {
+                        "type": "string",
+                        "description": "Absolute or working-directory-relative path to a local .csv, .tsv, .xlsx, .xlsm, .xlsb, or .xls file."
+                    },
+                    "title": {
+                        "type": "string",
+                        "description": "Optional human-readable dataset title used for the output folder."
+                    }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "knowledge_search".into(),
+            description: "Search ingested knowledge shards using the profile FTS index. Returns top matching shards with source, heading, snippet, score, and path."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["query"],
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Plain text search query. Special FTS syntax is treated safely as text."
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 50,
+                        "description": "Maximum results to return. Defaults to 5."
                     }
                 }
             }),
@@ -453,6 +537,31 @@ pub fn list_descriptors() -> Vec<ToolDescriptor> {
                     "sql":        { "type": "string", "description": "single SQL statement; use exact schema/table filters and avoid broad scans for exploration" },
                     "limit":      { "type": "integer", "minimum": 1, "description": "maximum rows returned; use 20 for exploratory samples unless more is requested" },
                     "approved":   { "type": "boolean" }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "db_context_refresh".into(),
+            description: "Regenerate and cache the markdown database context pack for a saved connection: schemas, tables, columns, primary keys, foreign keys, relationships, row counts, and views."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["connection_id"],
+                "properties": {
+                    "connection_id": { "type": "string", "description": "saved DB connection id" }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "db_context".into(),
+            description: "Read the cached database context pack for a saved connection, refreshing it when missing or stale."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["connection_id"],
+                "properties": {
+                    "connection_id": { "type": "string", "description": "saved DB connection id" },
+                    "max_age_hours": { "type": "integer", "minimum": 0, "description": "freshness threshold; default 24" }
                 }
             }),
         },
@@ -1242,6 +1351,35 @@ pub fn list_descriptors() -> Vec<ToolDescriptor> {
             }),
         },
         ToolDescriptor {
+            name: "ssh_context_refresh".into(),
+            description: "Refresh the cached read-only remote context brief for a saved SSH host and return it as markdown."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["host_id"],
+                "properties": {
+                    "host_id": { "type": "string", "description": "saved SSH host id" }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "ssh_context".into(),
+            description: "Return the cached read-only remote context brief for a saved SSH host, refreshing when missing or stale."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["host_id"],
+                "properties": {
+                    "host_id": { "type": "string", "description": "saved SSH host id" },
+                    "max_age_hours": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "Maximum cache age before refresh. Defaults to 24."
+                    }
+                }
+            }),
+        },
+        ToolDescriptor {
             name: "sftp_list".into(),
             description: "List a remote directory on a saved SSH host.".into(),
             input_schema: json!({
@@ -1470,7 +1608,10 @@ pub fn list_descriptors() -> Vec<ToolDescriptor> {
 /// Wrap a JSON value into the MCP `tools/call` result envelope.
 /// MCP expects: `{ content: [{ type: "text", text: "..." }] }`.
 pub fn wrap_text(payload: &Value) -> Value {
-    let text = serde_json::to_string(payload).unwrap_or_else(|_| "null".to_string());
+    let text = payload
+        .as_str()
+        .map(str::to_string)
+        .unwrap_or_else(|| serde_json::to_string(payload).unwrap_or_else(|_| "null".to_string()));
     json!({
         "content": [ { "type": "text", "text": text } ]
     })

@@ -299,7 +299,7 @@ async fn render_table_json(
     }
     obj.insert("columns".to_string(), json!(columns_meta));
     if matches!(scope, ExportScope::SchemaAndData | ExportScope::DataOnly) {
-        let (rows, truncated) = fetch_all_rows(pool, engine, schema, &table.name, selected).await?;
+        let (rows, truncated) = fetch_all_rows(pool, engine, schema, table, selected).await?;
         let row_vals: Vec<_> = rows
             .into_iter()
             .map(|r| serde_json::Value::Array(r.into_iter().map(|v| v.into()).collect()))
@@ -328,7 +328,7 @@ async fn render_table_sql(
         out.push('\n');
     }
     if matches!(scope, ExportScope::SchemaAndData | ExportScope::DataOnly) {
-        let (rows, truncated) = fetch_all_rows(pool, engine, schema, &table.name, selected).await?;
+        let (rows, truncated) = fetch_all_rows(pool, engine, schema, table, selected).await?;
         render_inserts_into(&mut out, engine, schema, &table.name, selected, &rows);
         if truncated {
             out.push_str(&format!("-- truncated at {ROW_LIMIT} rows\n"));
@@ -349,7 +349,7 @@ async fn render_table_csv(
     let header: Vec<String> = selected.iter().map(|c| csv_field(&c.name)).collect();
     out.push_str(&header.join(","));
     out.push_str("\r\n");
-    let (rows, truncated) = fetch_all_rows(pool, engine, schema, &table.name, selected).await?;
+    let (rows, truncated) = fetch_all_rows(pool, engine, schema, table, selected).await?;
     for row in rows {
         let fields: Vec<String> = row.iter().map(value_to_csv_field).collect();
         out.push_str(&fields.join(","));
@@ -384,7 +384,7 @@ async fn render_schema_json(
         obj.insert("columns".to_string(), json!(columns_meta));
         if matches!(scope, ExportScope::SchemaAndData | ExportScope::DataOnly) {
             let (rows, truncated) =
-                fetch_all_rows(pool, engine, Some(schema), &t.name, &selected).await?;
+                fetch_all_rows(pool, engine, Some(schema), t, &selected).await?;
             let row_vals: Vec<_> = rows
                 .into_iter()
                 .map(|r| serde_json::Value::Array(r.into_iter().map(|v| v.into()).collect()))
@@ -418,7 +418,7 @@ async fn render_schema_sql(
         }
         if matches!(scope, ExportScope::SchemaAndData | ExportScope::DataOnly) {
             let (rows, truncated) =
-                fetch_all_rows(pool, engine, Some(schema), &t.name, &selected).await?;
+                fetch_all_rows(pool, engine, Some(schema), t, &selected).await?;
             render_inserts_into(&mut out, engine, Some(schema), &t.name, &selected, &rows);
             if truncated {
                 out.push_str(&format!("-- truncated at {ROW_LIMIT} rows\n"));
@@ -566,17 +566,19 @@ async fn fetch_all_rows(
     pool: &DbPool,
     engine: Engine,
     schema: Option<&str>,
-    table: &str,
+    table: &Table,
     selected: &[&Column],
 ) -> DbResult<(Vec<Vec<Value>>, bool)> {
-    let qtable = qualify(engine, schema, table);
+    let qtable = qualify(engine, schema, &table.name);
     let col_list = selected
         .iter()
         .map(|c| quote_ident(engine, &c.name))
         .collect::<Vec<_>>()
         .join(", ");
+    let keyset = keyset_plan(engine, schema, table, selected);
     let mut out: Vec<Vec<Value>> = Vec::new();
     let mut offset: usize = 0;
+    let mut last_pk: Option<Value> = None;
     let mut truncated = false;
     loop {
         if out.len() >= ROW_LIMIT {
@@ -585,7 +587,24 @@ async fn fetch_all_rows(
         }
         let remaining = ROW_LIMIT - out.len();
         let limit = CHUNK_SIZE.min(remaining + 1); // +1 to detect overflow next loop
-        let sql = format!("SELECT {col_list} FROM {qtable} LIMIT {limit} OFFSET {offset}");
+        let sql = match (&keyset, &last_pk) {
+            (Some(plan), Some(value)) => format!(
+                "SELECT {col_list} FROM {qtable} WHERE {} > {} ORDER BY {} ASC LIMIT {limit}",
+                plan.pk_ident,
+                sql_literal(engine, value),
+                plan.pk_ident
+            ),
+            (Some(plan), None) => format!(
+                "SELECT {col_list} FROM {qtable} ORDER BY {} ASC LIMIT {limit}",
+                plan.pk_ident
+            ),
+            (None, _) => {
+                // Fallback for tables without a simple orderable primary key:
+                // OFFSET is slower on large tables but preserves deterministic
+                // chunking without inventing an unstable ordering.
+                format!("SELECT {col_list} FROM {qtable} LIMIT {limit} OFFSET {offset}")
+            }
+        };
         let fetched: Vec<Vec<Value>> = match pool {
             DbPool::Sqlite(p) => {
                 let rows = sqlx::query(&sql).fetch_all(p).await?;
@@ -604,14 +623,19 @@ async fn fetch_all_rows(
         if got == 0 {
             break;
         }
+        if let Some(plan) = &keyset {
+            last_pk = fetched
+                .last()
+                .and_then(|row| row.get(plan.selected_idx))
+                .cloned();
+        }
         out.extend(fetched);
         if got < limit {
             break;
         }
-        offset += got;
-        let _ = engine; // engine carried only for clarity
-        let _ = pool.engine();
-        let _ = engine;
+        if keyset.is_none() {
+            offset += got;
+        }
         // Continue the loop.
         if out.len() > ROW_LIMIT {
             out.truncate(ROW_LIMIT);
@@ -620,6 +644,77 @@ async fn fetch_all_rows(
         }
     }
     Ok((out, truncated))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeysetPlan {
+    pub pk_ident: String,
+    pub selected_idx: usize,
+}
+
+pub fn keyset_plan(
+    engine: Engine,
+    schema: Option<&str>,
+    table: &Table,
+    selected: &[&Column],
+) -> Option<KeysetPlan> {
+    let pk_cols = table
+        .columns
+        .iter()
+        .filter(|column| column.pk)
+        .collect::<Vec<_>>();
+    let [pk] = pk_cols.as_slice() else {
+        return None;
+    };
+    if !is_orderable_pk_type(&pk.r#type) {
+        return None;
+    }
+    let selected_idx = selected.iter().position(|column| column.name == pk.name)?;
+    let _ = schema;
+    Some(KeysetPlan {
+        pk_ident: quote_ident(engine, &pk.name),
+        selected_idx,
+    })
+}
+
+pub fn export_page_sql_for_test(
+    engine: Engine,
+    schema: Option<&str>,
+    table: &Table,
+    selected: &[&Column],
+    last_pk: Option<&Value>,
+    limit: usize,
+    offset: usize,
+) -> String {
+    let qtable = qualify(engine, schema, &table.name);
+    let col_list = selected
+        .iter()
+        .map(|c| quote_ident(engine, &c.name))
+        .collect::<Vec<_>>()
+        .join(", ");
+    match (keyset_plan(engine, schema, table, selected), last_pk) {
+        (Some(plan), Some(value)) => format!(
+            "SELECT {col_list} FROM {qtable} WHERE {} > {} ORDER BY {} ASC LIMIT {limit}",
+            plan.pk_ident,
+            sql_literal(engine, value),
+            plan.pk_ident
+        ),
+        (Some(plan), None) => {
+            format!(
+                "SELECT {col_list} FROM {qtable} ORDER BY {} ASC LIMIT {limit}",
+                plan.pk_ident
+            )
+        }
+        (None, _) => format!("SELECT {col_list} FROM {qtable} LIMIT {limit} OFFSET {offset}"),
+    }
+}
+
+fn is_orderable_pk_type(column_type: &str) -> bool {
+    let lower = column_type.to_ascii_lowercase();
+    !(lower.contains("blob")
+        || lower.contains("json")
+        || lower.contains("bytea")
+        || lower.contains("binary"))
 }
 
 // ============================================================================

@@ -25,6 +25,17 @@ pub fn exec(manager: &Manager, args: &Value) -> Result<Value, String> {
     block_on_json(manager.exec(host, cmd))
 }
 
+pub fn context_refresh(manager: &Manager, args: &Value) -> Result<Value, String> {
+    let host = str_arg(args, "host_id")?;
+    block_on_markdown(manager.context_refresh(host))
+}
+
+pub fn context(manager: &Manager, args: &Value) -> Result<Value, String> {
+    let host = str_arg(args, "host_id")?;
+    let max_age_hours = args.get("max_age_hours").and_then(|v| v.as_u64());
+    block_on_markdown(manager.context(host, max_age_hours))
+}
+
 pub fn sftp_list(manager: &Manager, args: &Value) -> Result<Value, String> {
     let host = str_arg(args, "host")?;
     let path = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
@@ -81,4 +92,17 @@ where
         .map_err(|e| e.to_string())?;
     let result = rt.block_on(future).map_err(|e| e.to_string())?;
     serde_json::to_value(result).map_err(|e| e.to_string())
+}
+
+fn block_on_markdown<F>(future: F) -> Result<Value, String>
+where
+    F: std::future::Future<Output = Result<String, module_ssh::SshError>>,
+{
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| e.to_string())?;
+    Ok(Value::String(
+        rt.block_on(future).map_err(|e| e.to_string())?,
+    ))
 }

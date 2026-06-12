@@ -20,6 +20,7 @@ tracing = { workspace = true }
 dashmap = { workspace = true }
 ts-rs = { workspace = true, optional = true }
 rusqlite = { workspace = true }
+sha2 = { workspace = true }
 harness-sandbox = { path = "../harness-sandbox" }
 
 [dev-dependencies]

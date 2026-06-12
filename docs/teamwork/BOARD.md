@@ -16,7 +16,187 @@ Rendimiento de ejecutores y puntuación del usuario: [`SCOREBOARD.md`](./SCOREBO
 
 ## En curso
 
-_Sin tarea de ejecución activa._ (Sesión cerrada por time-box 2026-06-10; handoff abajo.)
+_Sin tarea de ejecución activa._ (Plan "Super-harness 2026-06" W1–W5 completado y pusheado el 2026-06-12; ver cierres abajo. Siguiente en cola: Pipeline Zeus sobre ChatView, handoff 2026-06-10.)
+
+## Última cerrada — Super-harness W5: residuales de perf + deudas de los slices
+
+| Campo | Valor |
+|---|---|
+| **Tarea** | Slice final del plan "Super-harness 2026-06": cerrar los residuales P1 del improvement-plan que siguen abiertos + las deudas anotadas en los reviews de W1–W4. |
+| **Estado** | ✅ DONE — cerrada 2026-06-12. Implementado: policy-check 120s→8s fail-closed con tests; `ensure_thread` con lock de init por thread (sin mutex global a través de I/O) + revalidación de waiters tras fallo de rebuild; confinamiento `HARNESS_DATA_ROOT` para `knowledge_pdf_ingest`/`office_ingest` con error guiado + `.env.example`. Hallados ya-resueltos (improvement-plan stale): `X-Protocol-Version` ya se envía vía `apiHeaders()`; polling ya consolidado en Waves 1–2. Review: 0 P0 / 0 P1 / 4 P2, todos corregidos en fix round (waiters huérfanos en error path, error UX del root, tests con set_var paralelo, margen del test de timeout). VERIFY del Planner: `just test` 450/450 + svelte-check 0/0. Pendiente: doc-agent debe marcar en improvement-plan.md los P1 cerrados; puntuación del usuario en SCOREBOARD. |
+| **Objetivo** | (1) **Policy-check timeout** (`harness-mcp-server/src/dispatcher.rs` ~486): el check HTTP de policy espera hasta 120s; bajarlo a 8s con error claro (el agente no debe colgarse 2 min si el server no responde). (2) **`ensure_thread` mutex across I/O** (`harness-core/src/tasks/store.rs` ~92-144): no mantener el mutex del store a través de I/O de disco; reducir la sección crítica. (3) **`X-Protocol-Version` nunca se envía** (improvement-plan P1): el cliente frontend (`frontend/src/lib/api/client.ts`) debe mandar el header en los requests que el backend versiona; mismatch → error explícito ya implementado server-side. (4) **Confinamiento de `knowledge_pdf_ingest`/`knowledge_office_ingest`** (deuda W4): mismo confinamiento `HARNESS_DATA_ROOT` que ya tiene `knowledge_data_ingest`. (5) **Polling frontend residual** del improvement-plan (si sigue vigente tras Waves 1–2: consolidación/race de aborts donde quede). Revisar `docs/12-build-plan/improvement-plan.md` y marcar allí lo cerrado. |
+| **Alcance / archivos** | Backend: `harness-mcp-server/src/{dispatcher.rs,tools/knowledge.rs}`, `harness-core/src/tasks/store.rs`. Frontend: `frontend/src/lib/api/client.ts` (+ donde el polling residual aplique). Docs: el doc-agent actualiza improvement-plan al cierre. Sin tipos ts-rs previstos. |
+| **Responsables** | Planner: Claude (Opus). Codificador: Codex gpt-5.5. Revisor: Sonnet 4.6 (`reviewer`, 1 ronda). QA: subagente `qa`. |
+| **Criterio de aceptación** | (1) Policy check con server caído falla en ≤10s con mensaje claro (test con endpoint que no responde). (2) `ensure_thread` sin lock a través de I/O, con test de no-regresión de concurrencia. (3) Requests mutantes del frontend llevan `X-Protocol-Version` (verificable en `pnpm check` + grep/test; smoke curl opcional). (4) `knowledge_pdf_ingest` con path fuera del root → rechazado (test). (5) `cargo test` de crates tocados, `pnpm --dir frontend check` y `just test` verdes. |
+| **Checks obligatorios** | `cargo test -p harness-core -p harness-mcp-server`, `pnpm --dir frontend check`, `cargo fmt --check`, `just test` al cierre. |
+
+## Última cerrada — Super-harness W4-S1: Context engine v2 (retrieval de knowledge, ingesta de datos, resúmenes estructurados, truncación dual)
+
+| Campo | Valor |
+|---|---|
+| **Tarea** | Cuarto slice del plan "Super-harness 2026-06": el contexto deja de ser "volcado" y pasa a ser "recuperado". Patrones de referencia: pi (formato de resumen estructurado + truncación dual líneas/bytes UTF-8 safe) y hermes (retrieval FTS5 just-in-time). |
+| **Estado** | ✅ DONE — cerrada 2026-06-12. Review 2 P1 (truncación corrompía JSON >50KB; re-ingesta duplicaba filas FTS) + 5 P2, todos corregidos en fix round. QA PASS en los 6 criterios (`just test` 446/446 + svelte-check 0/0; smoke real: ingesta CSV con BOM, re-ingesta sin duplicados, confinamiento de root, query FTS maliciosa inocua, JSON estructurado íntegro vs texto libre truncado; prompt del governor estructurado con umbrales intactos). VERIFY del Planner OK. Pendiente: puntuación del usuario en SCOREBOARD. |
+| **Objetivo** | (1) **`knowledge_search`**: tool MCP (grupo `knowledge`) con FTS5 sobre los shards de knowledge ya ingestados (PDF/DOCX/PPTX/texto); índice SQLite construido/actualizado al ingestar (y reconstruible lazy si falta); devuelve top-N shards con fuente, heading y snippet — el agente recupera lo relevante en vez de leer el doc entero. (2) **Ingesta de datos a knowledge**: `knowledge_data_ingest` para CSV/XLSX (reusar el parsing del data loader existente si aplica): resumen de columnas/tipos + muestras como shards markdown buscables. (3) **Checkpoint estructurado del governor**: el prompt de checkpoint de `context_governor.rs` pide el formato de pi — Goal / Constraints / Progress (Done · In Progress · Blocked) / Key Decisions / Next Steps / Critical Context + Files read/modified. (4) **Truncación dual en el MCP server**: tool results acotados por líneas (2000) Y bytes (50KB) independientes, head-truncation para lecturas y tail-truncation para ejecuciones (`ssh_exec`, comandos), UTF-8 safe, con sufijo de metadata `[truncated: N lines / M bytes omitted]`; aplicada en el dispatcher como capa genérica con overrides por tool. |
+| **Alcance / archivos** | Backend: `backend/crates/harness-core/src/knowledge.rs` (+ índice FTS5 y data ingest), `backend/crates/harness-mcp-server/src/{dispatcher.rs,tools/knowledge.rs,tools/toolsets.rs}` (tools nuevas + truncación), `backend/crates/harness-server/src/context_governor.rs` (prompt estructurado). Sin tipos ts-rs previstos; si cambian → `just gen-types`. Sin UI nueva. |
+| **Responsables** | Planner: Claude (Opus). Codificador: Codex gpt-5.5 (`codex exec`). Revisor: Sonnet 4.6 (subagente `reviewer`, 1 ronda). QA: subagente `qa`. |
+| **Criterio de aceptación** | (1) Ingestar un doc de prueba y `knowledge_search("término del doc")` devuelve el shard correcto con fuente/heading/snippet; búsqueda sobre knowledge sin índice previo lo reconstruye (test). (2) `knowledge_data_ingest` con un CSV y un XLSX de prueba genera shards con schema de columnas + filas de muestra, y son buscables (tests). (3) El prompt de checkpoint del governor contiene las secciones estructuradas (test de contenido del prompt); el resto del flujo del governor no cambia. (4) Truncación dual: tests de límite por líneas, por bytes, multibyte UTF-8 en el borde, head vs tail según tool, y metadata correcta; los tool results del dispatcher pasan por la capa (test de integración con un output sintético grande). (5) FTS5: query con sintaxis maliciosa/operadores raros no rompe (sanitización o match query escapado, test). (6) `cargo test -p harness-core -p harness-mcp-server -p harness-server`, `cargo fmt --check` y `just test` verdes. |
+| **Checks obligatorios** | `cargo test -p harness-core -p harness-mcp-server -p harness-server`, `cargo fmt --check`, `just test` al cierre, `just gen-types` solo si cambia un tipo TS. |
+
+### Contrato — W4-S1
+
+- `knowledge_search` input `{query: string, limit?: number}` → top-N shards (fuente, heading, snippet, score). `knowledge_data_ingest` input `{source_path: string, title?: string}` (CSV/XLSX por extensión). Ambas en grupo `knowledge`.
+- Índice FTS5 en `$HARNESS_HOME/profiles/<p>/knowledge/index.sqlite`; append al ingestar; reconstrucción completa si falta o esquema viejo. El layout de shards en disco NO cambia (compat con lo ya ingestado).
+- La truncación dual es capa del dispatcher sobre el `content` textual de los tool results; tools pueden declarar override (modo head/tail y límites). Los resultados de gateway upstream también pasan por la capa.
+- Governor: solo cambia el TEXTO del prompt de checkpoint; umbrales y mecánica intactos.
+
+### Handoff Implementación W4-S1 — Codex 2026-06-12 (registrado por el Planner)
+
+**Archivos:** `harness-core/src/knowledge.rs` (índice FTS5 en `profiles/<p>/knowledge/index.sqlite`, rebuild lazy, indexado al ingestar, phrase-query segura, `knowledge_search`, `knowledge_data_ingest` CSV/XLSX), `harness-mcp-server/src/{tools/knowledge.rs,tools/mod.rs,tools/toolsets.rs,tools/capabilities.rs,dispatcher.rs}` (tools nuevas en grupo `knowledge`; truncación dual genérica de resultados — 2000 líneas/50KB, head para lecturas, tail para `ssh_exec`/`repo_git_*`, UTF-8 safe, sufijo de metadata, gateway incluido), `harness-server/src/context_governor.rs` (prompt de checkpoint estructurado: Goal/Constraints/Progress Done·In Progress·Blocked/Key Decisions/Next Steps/Critical Context/Files read-modified; umbrales intactos).
+
+**Tests nuevos:** search devuelve shard ingestado; rebuild lazy del índice; operadores FTS raros no rompen; CSV y XLSX generan shards de schema/muestras buscables; prompt del governor con secciones; truncación por líneas/bytes/borde multibyte/head-vs-tail/sufijo; truncación a nivel dispatcher con resultado sintético grande.
+
+**Checks:** core 114/114 ✅, MCP 82/82 ✅, server 121/122 (solo la falla ambiental conocida del sandbox) ✅, `cargo fmt --check` ✅. Sin tipos ts-rs tocados. `just test` en sandbox paró en la falla ambiental — re-verificar fuera.
+
+### Review + fix round W4-S1 — 2026-06-12
+
+- Revisor (Sonnet 4.6, 1 ronda): 2 P1 (truncación por bytes corrompía JSON estructurado >50KB — regresión para `db_schema` grande; re-ingesta del mismo doc duplicaba filas FTS porque el DELETE por shard-path nunca matcheaba los slugs viejos) + 5 P2 (SQLite sin WAL/busy_timeout/transacción; aviso de truncado al final en modo tail; rebuild abortaba en el primer shard corrupto; `knowledge_data_ingest` sin confinamiento de root; BOM UTF-8 en headers CSV). Validó como correcto: escaping FTS5, shape isError + auto-load note a través de la capa, prompt del governor con compat hacia atrás, lógica UTF-8 de truncación, registro en grupo knowledge.
+- Fix round (Codex, registrado por el Planner): los 7 corregidos — JSON estructurado excluido de la truncación por bytes (test: sigue parseando; texto libre sí trunca); DELETE por source en re-ingesta (test: sin duplicados); WAL + busy_timeout 1s + transacción; aviso como prefijo en tail; rebuild tolera shards rotos con warning; `knowledge_data_ingest` confinado a `HARNESS_DATA_ROOT` (symlinks que escapan rechazados, test); BOM stripped. **Deuda anotada**: `knowledge_pdf_ingest`/`knowledge_office_ingest` sin confinamiento de root (pre-existente) → W5.
+- Checks: core+MCP ✅; harness-server solo la falla ambiental del sandbox; `cargo fmt --check` ✅.
+
+## Última cerrada — Super-harness W3-S1: DB context pack + caché de introspección + perf
+
+| Campo | Valor |
+|---|---|
+| **Tarea** | Tercer slice del plan "Super-harness 2026-06": espejo del W2 para el módulo DB — los agentes operan sobre conexiones de BD abiertas **con contexto del schema montado**, más las deudas de perf del improvement-plan (N+1 de introspección, paginación OFFSET, read-only por keywords). |
+| **Estado** | ✅ DONE — cerrada 2026-06-12. Review 0 P0 / 2 P1 / 4 P2; los 2 P1 + 3 P2 corregidos en fix round (collation exótica en keyset TEXT PK queda como edge anotado; falta test de regresión dedicado del timeout de row counts — anotado por QA). QA PASS en los 7 criterios con smoke real SQLite de punta a punta (`just test` 429/429 + svelte-check 0/0; brief con tablas/FK/row counts; CTE mutante rechazada por motor y por validate_query; keyset sin OFFSET; drop invalida caché; `db_connection_id` generado por gen-types). VERIFY del Planner OK. Pendiente: puntuación del usuario en SCOREBOARD. |
+| **Objetivo** | (1) **DB context pack**: tools `db_context_refresh(connection_id)` y `db_context(connection_id, max_age_hours?)` — del árbol de introspección existente genera un brief markdown (tablas con columnas/PK/FK, relaciones, row counts aproximados, vistas) cacheado en `$HARNESS_HOME/profiles/<p>/modules/db/context/<connection_id>.md`; staleness como en W2. Reusar el patrón de sanitización del W2 (identificadores/comentarios con backticks no rompen fences) + cap global 12KB. (2) **Caché de introspección** (P1 del improvement-plan): el schema tree se cachea por conexión con TTL + invalidación explícita; una segunda `db_schema` no re-ejecuta el N+1 completo. (3) **Keyset pagination** en `db_export_table`/`db_export_query` (reemplaza OFFSET O(n²) cuando hay PK ordenable; fallback documentado si no). (4) **Read-only transaccional**: las operaciones read-only corren dentro de transacción read-only del motor (SQLite `PRAGMA query_only`, Postgres/MySQL `... READ ONLY`) como capa adicional al gate por keywords (que se mantiene como defensa rápida); el bypass conocido `WITH … DELETE` queda bloqueado por el motor. (5) **Agente sobre conexión**: `CreateSessionRequest.db_connection_id` opcional → precarga grupo `db` en tool_groups e inyecta el brief (o instrucción de `db_context_refresh`) en `auto_intro`, espejo exacto del `ssh_host_id` de W2. |
+| **Alcance / archivos** | Backend: `backend/crates/module-db/**`, `backend/crates/harness-mcp-server/src/tools/db.rs` + `tools/toolsets.rs` (tools nuevas al grupo `db`), `backend/crates/harness-server/src/routes/sessions.rs` (campo + inyección, junto al path de ssh_host_id). `CreateSessionRequest` cambia → `just gen-types`; NO editar a mano `frontend/src/lib/api/types/`. Sin UI nueva. |
+| **Responsables** | Planner: Claude (Opus). Codificador: Codex gpt-5.5 (`codex exec`). Revisor: Sonnet 4.6 (subagente `reviewer`, 1 ronda). QA: subagente `qa`. |
+| **Criterio de aceptación** | (1) `db_context_refresh` genera el brief con tablas/relaciones/row counts desde una BD SQLite de test y `db_context` sirve del caché respetando staleness (tests). (2) Brief sanitizado contra fence-escape + cap 12KB (tests, mismo patrón W2). (3) Caché de introspección: segunda llamada no repite el fan-out de queries (test con contador de queries o equivalente); invalidación explícita disponible. (4) Export grande sin OFFSET creciente: asserts sobre las queries generadas (keyset por PK) y resultado idéntico al export actual en una tabla de test. (5) `WITH cte AS (DELETE FROM t RETURNING *) SELECT * FROM cte` por la ruta read-only es rechazada por el motor en SQLite (test real con `query_only`); para pg/mysql, asserts del SQL/flags de transacción generados (sin requerir servicio vivo). (6) Spawn con `db_connection_id`: `tool_groups` incluye `db` y `auto_intro` lleva el brief o la instrucción (tests); `gen-types` corrido. (7) `cargo test -p module-db -p harness-mcp-server -p harness-server`, `cargo fmt --check` y `just test` verdes. |
+| **Checks obligatorios** | `cargo test -p module-db -p harness-mcp-server -p harness-server`, `cargo fmt --check`, `just gen-types`, `just test` al cierre. |
+
+### Contrato — W3-S1
+
+- `db_context_refresh` input `{connection_id: string}`; `db_context` input `{connection_id: string, max_age_hours?: number}` → markdown del brief. Errores: connection not found → error MCP claro, sin panic.
+- `CreateSessionRequest.db_connection_id?: string` (ts-rs → `just gen-types`). Convive con `ssh_host_id` (ambos opcionales, pueden coexistir).
+- El gate por keywords NO se elimina; el modo read-only del motor es capa adicional. Ninguna operación de escritura existente (`db_row_insert`, etc.) cambia de semántica.
+- Caché de introspección y de context pack viven en module-db; el MCP server solo consume.
+
+### Handoff Implementación W3-S1 — Codex 2026-06-12 (registrado por el Planner)
+
+**Archivos:** `module-db/{Cargo.toml,src/manager.rs,src/query.rs,src/export.rs,src/storage.rs,tests/sqlite_export.rs}`, `harness-mcp-server/src/{dispatcher.rs,tools/db.rs,tools/mod.rs,tools/toolsets.rs}`, `harness-server/src/routes/{sessions.rs,db.rs}`, `CreateSessionRequest` regenerado (gen-types; `db_connection_id?: string | null`).
+
+**Implementado / decisiones:**
+- Context pack DB: caché en `profiles/<p>/modules/db/context/<connection_id-hash>.md`, tmp+rename, dir 0700, sanitización de fences + cap 12KB (patrón W2); `db_context_refresh` / `db_context(max_age_hours?)` como tools del grupo `db`.
+- Schema tree cacheado por conexión/database con TTL 5 min + `Manager::invalidate_schema_cache`.
+- Export con keyset pagination si hay PK simple ordenable; fallback OFFSET documentado sin PK.
+- Read-only real en `query_run_read_only`: SQLite `PRAGMA query_only`, PG `BEGIN READ ONLY`, MySQL `START TRANSACTION READ ONLY`. ⚠️ Decisión a validar en review: el gate por keywords ahora DEJA PASAR `WITH` y delega los CTE mutantes al motor.
+- `CreateSessionRequest.db_connection_id` precarga grupo `db` + brief/instrucción en auto_intro, convive con `ssh_host_id`; `start_db_agent` también lo marca.
+
+**Checks:** `cargo test -p module-db` ✅; `-p harness-mcp-server` 78/78 ✅; `harness-server` 118/118 (skip del test ambiental, pasa fuera del sandbox) ✅; `cargo fmt --check` ✅; gen-types corrido (vía workspace ts-export + copia de bindings). `just test` en sandbox paró en la falla ambiental conocida — re-verificar fuera.
+
+### Review + fix round W3-S1 — 2026-06-12
+
+- Revisor (Sonnet 4.6, 1 ronda): 0 P0; 2 P1 (`validate_query` clasificaba CTEs mutantes como read-only tras agregar WITH a READ_ONLY_KEYWORDS — el motor sí bloqueaba, pero el tool advisory mentía; `db_drop_table/schema` no invalidaban el schema_cache → briefs/schema stale) + 4 P2 (`generate_view_sql` aceptaba CTE con DML; COUNT(*) sin timeout en SQLite podía colgar `db_context_refresh`; collation exótica en keyset TEXT PK — edge anotado, no corregido; doble contexto sin cap en auto_intro de `start_db_agent`). Validó como NO-bug: aislamiento del PRAGMA query_only en pool efímero separado, ROLLBACK en error, rutas constructoras de SQL no afectadas.
+- Fix round (Codex, registrado por el Planner): P1-A detección de DML dentro del WITH en `validate_query` (test del caso exacto); P1-B invalidación de schema_cache tras drop_table/drop_schema; P2-A `generate_view_sql` rechaza CTEs mutantes de nuevo; P2-B timeout 2s por tabla en row counts SQLite (best-effort, `row_estimate=None`); P2-D sin duplicado del intro DB para la misma conexión + cap global 24KB del auto_intro con nota de truncado.
+- Checks: `cargo test -p module-db` ✅; harness-mcp-server ✅; harness-server solo la falla ambiental del sandbox; `cargo fmt --check` ✅.
+
+## Última cerrada — Super-harness W2-S1: SSH conexiones persistentes + remote context pack
+
+| Campo | Valor |
+|---|---|
+| **Tarea** | Segundo slice del plan "Super-harness 2026-06": completar el módulo SSH para que los agentes operen sobre conexiones abiertas **con contexto de lo que hay montado en el host**. Patrón de referencia: hermes-agent (`tools/environments/ssh.py`: ControlMaster con ControlPersist, socket dedup por hash corto). |
+| **Estado** | ✅ DONE — cerrada 2026-06-12. Review 1 P1 (fence-escape → auto_intro) + 5 P2, todos corregidos en fix round. QA PASS en los 6 criterios (`just test` 418/418 + svelte-check 0/0; smoke MCP stdio: grupo `ssh` lazy con `ssh_context`/`ssh_context_refresh`, error limpio con host inexistente sin tumbar el server; ControlMaster/close/staleness/fence-escape/cap-12KB asserteados por tests; `CreateSessionRequest.ssh_host_id` generado por gen-types). VERIFY del Planner OK. Sin smoke contra sshd real (no había sshd local). Pendiente: puntuación del usuario en SCOREBOARD. |
+| **Objetivo** | (1) **Reuso de conexión**: module-ssh gestiona ControlMaster/ControlPersist de openssh (socket en dir runtime con hash corto del host para no exceder el límite de `sun_path`); `ssh_exec`/`sftp_*` reutilizan la conexión viva en vez de handshake por llamada; cierre explícito + expiración. (2) **Remote context pack**: tools `ssh_context_refresh(host_id)` y `ssh_context(host_id)` — introspección read-only y best-effort del host (uname/os-release, hostname, uptime, interfaces, servicios systemd corriendo si hay systemd, `docker ps` si hay docker, package manager detectado, dirs relevantes existentes: `$HOME`, `/var/www`, `/opt`, `/srv`, top procesos) con timeout por comando (≤5s) → brief markdown cacheado en `$HARNESS_HOME/profiles/<p>/modules/ssh/context/<host_id>.md` con timestamp; `ssh_context` sirve del caché y refresca si falta o está stale (>24h). (3) Ambas tools entran al grupo `ssh` del registry W1. (4) **Agente sobre conexión**: `CreateSessionRequest` acepta `ssh_host_id` opcional; al spawnear, el grupo `ssh` va en `tool_groups` y el `auto_intro` incluye el brief del context pack (si existe; si no, instrucción de correr `ssh_context_refresh`). |
+| **Alcance / archivos** | Backend: `backend/crates/module-ssh/**` (manager de conexiones + introspección + caché), `backend/crates/harness-mcp-server/src/tools/ssh.rs` + `tools/toolsets.rs` (tools nuevas al grupo `ssh`), `backend/crates/harness-server/src/routes/sessions.rs` (campo `ssh_host_id` + inyección del brief + grupo precargado). `CreateSessionRequest` es `#[derive(TS)]` → **correr `just gen-types`**; NO editar a mano `frontend/src/lib/api/types/`. Sin UI nueva en este slice. |
+| **Responsables** | Planner: Claude (Opus). Codificador: Codex gpt-5.5 (`codex exec`). Revisor: Sonnet 4.6 (subagente `reviewer`, 1 ronda). QA: subagente `qa`. |
+| **Criterio de aceptación** | (1) Dos `ssh_exec` consecutivos al mismo host reutilizan la conexión maestra (verificable: socket de control existente entre llamadas; tests con comando ssh simulado/mocked que asserten los flags `-o ControlMaster/ControlPath/ControlPersist`). (2) `ssh_context_refresh` genera el brief con secciones de os/hostname/servicios y `ssh_context` lo devuelve del caché sin re-ejecutar; staleness respetada (test con timestamp manipulado). (3) Host sin docker/systemd degrada sin error (secciones omitidas, test con outputs simulados). (4) Introspección estrictamente read-only (lista fija de comandos, sin interpolación de input del usuario en shell). (5) Spawn con `ssh_host_id`: `meta.loaded_capabilities.tool_groups` incluye `ssh` y el `auto_intro` contiene el brief (test). (6) `cargo test -p module-ssh -p harness-mcp-server -p harness-server` y `just test` verdes; `just gen-types` corrido si cambió el tipo. |
+| **Checks obligatorios** | `cargo test -p module-ssh -p harness-mcp-server -p harness-server`, `cargo fmt --check`, `just gen-types` (CreateSessionRequest cambia), `just test` al cierre. Smoke real contra un sshd solo si hay uno disponible en localhost (no asumir). |
+
+### Contrato — W2-S1
+
+- `ssh_context_refresh` input `{host_id: string}` → corre la introspección y reescribe el caché; `ssh_context` input `{host_id: string, max_age_hours?: number}` → devuelve el brief (refresca si stale/missing). Output: markdown del brief.
+- `CreateSessionRequest.ssh_host_id?: string` (ts-rs → `just gen-types`); el server NO falla si el host no tiene context pack aún (degrada a instrucción).
+- La introspección usa una lista fija de comandos read-only con timeout; nada de input del usuario interpolado en la línea de shell. El sandbox actual de module-ssh se mantiene.
+- Estado de conexiones maestras: en module-ssh (no en el MCP server); sockets bajo dir runtime del perfil con hash corto.
+
+### Handoff Implementación W2-S1 — Codex 2026-06-12 (registrado por el Planner; sandbox de Codex sin write a docs/)
+
+**Archivos tocados:** `module-ssh/{Cargo.toml,src/manager.rs}`, `harness-mcp-server/src/{dispatcher.rs,tools/ssh.rs,tools/capabilities.rs,tools/mod.rs,tools/toolsets.rs}`, `harness-server/src/routes/{sessions.rs,ssh.rs,db.rs}` (ssh.rs/db.rs: ajuste menor de firma), tipos generados (`CreateSessionRequest.ts` con `ssh_host_id`, vía gen-types; el path generado no está trackeado por git).
+
+**Implementado / decisiones:**
+- ControlMaster reuse en `ssh`/`scp`: `ControlMaster=auto` + `ControlPath` corto con hash + `ControlPersist=10m`; limpieza de sockets y cierre explícito del master al cerrar la sesión SSH.
+- Remote context pack: lista FIJA de probes read-only con timeout ≤5s c/u; brief markdown cacheado en `profiles/<p>/modules/ssh/context/<host_id>.md` con freshness; degradación sin docker/systemd testeada con outputs simulados.
+- Tools MCP `ssh_context_refresh(host_id)` y `ssh_context(host_id, max_age_hours?)` registradas en descriptors, capabilities, dispatcher y grupo `ssh` del registry W1.
+- `CreateSessionRequest.ssh_host_id`: precarga grupo `ssh` en tool_groups e inyecta el brief cacheado (o instrucción de refresh) en `auto_intro`.
+
+**Checks:** `cargo test -p module-ssh` 10/10 ✅; `-p harness-mcp-server` 78/78 ✅; `harness-server ssh_bound_spawn` 2/2 ✅; `cargo fmt --check` ✅; `just gen-types` corrido (bindings copiados). `just test` en su sandbox paró en la falla ambiental conocida (`local_port_available_detects_bound_port`, 307 pass antes del fail-fast) — re-verificar fuera. Sin smoke contra sshd real (no asumido).
+
+### Review + fix round W2-S1 — 2026-06-12
+
+- Revisor (Sonnet 4.6, 1 ronda): 0 P0; 1 P1 (prompt injection por fence-escape: stdout remoto sin sanitizar dentro de ```text en el brief → llegaba verbatim al auto_intro) + 5 P2 (dir de control sockets sin 0700; sin cap global del brief ~42KB posibles; `-O exit` con ControlMaster=auto; colisiones de safe_cache_key; sha2 duplicado en el grafo). Introspección read-only y contrato validados sin hallazgos; sin regresiones de W1.
+- Fix round (Codex, registrado por el Planner): los 6 corregidos — sanitización de backticks + marcadores BEGIN/END por sección con test de fence-escape; cap global 12KB con nota de truncado; 0o700 en dirs de control y caché; `ControlMaster=no` para `-O exit`; hash corto de 8 hex en la clave de caché; `sha2` a `[workspace.dependencies]` (queda 0.11 transitivo vía pdf_oxide, anotado).
+- Checks del fix round: `cargo fmt --check` ✅; `cargo test -p module-ssh` 14/14 ✅; harness-mcp-server ✅; harness-server solo la falla ambiental conocida del sandbox.
+
+## Última cerrada — Super-harness W1-S1: Tool loading 2.0 (lazy load/unload) en harness-mcp-server
+
+| Campo | Valor |
+|---|---|
+| **Tarea** | Primer slice del plan "Super-harness 2026-06" (`docs/12-build-plan/super-harness-plan-2026-06-12.md`): el MCP server deja de exponer 60+ tools fijas a todo agente y pasa a un registry de **toolsets composables** con carga/descarga en runtime. Patrón de referencia: hermes-agent (`toolsets.py` resolución recursiva con includes + LRU de schemas) y el modelo de deferred-tools de Claude Code. |
+| **Estado** | ✅ DONE — cerrada 2026-06-12. Review 1 P1 + 6 P2, todos corregidos en fix round. QA PASS en los 7 criterios (`just test` 407/407 + svelte-check 0/0; smoke stdio completo: base 21 tools vs 60+, load/unload con `list_changed`, auto-load con nota, `tools_search` funcional). VERIFY del Planner OK. Nota: el criterio decía ≤20 tools base; quedó en 21 porque el P1 del review promovió `session_cancel_child` a `core` — aceptado. Pendiente: puntuación del usuario en SCOREBOARD. |
+| **Objetivo** | (1) Definir grupos de tools en `harness-mcp-server`: `core` (tasks/spec/session/mailbox + meta-tools), `repo`, `knowledge`, `db`, `ssh`, `skills`, `docs`, con composición `includes` cycle-safe. (2) `tools/list` devuelve solo `core` + los grupos activos de la sesión (semilla: `LoadedCapabilities.tool_groups` del `SessionMeta`, leído vía `--session-id` que el dispatcher ya recibe). (3) Meta-tools siempre presentes: `tools_search(query)` → tools/grupos disponibles con descripción y grupo; `tools_load(groups)` / `tools_unload(groups)` → actualizan el set activo y emiten `notifications/tools/list_changed` por stdio. (4) Llamada a una tool de grupo no cargado → **auto-load del grupo + ejecutar** (con nota en el resultado), para clientes que ignoren `list_changed`; el gating de seguridad sigue siendo policy per-call, no la visibilidad. (5) Caché de la lista de schemas por set de grupos activos (recompute solo al cambiar el set). (6) `resolve_smart_tool_groups` en `harness-server` mapea señales → grupos iniciales nuevos (db/ssh/knowledge/repo) además de `data_loader`. |
+| **Alcance / archivos** | Backend solamente: `backend/crates/harness-mcp-server/src/**` (registry nuevo + `dispatcher.rs` + `main.rs` para list_changed) y `backend/crates/harness-server/src/routes/sessions.rs` (solo `resolve_smart_tool_groups` + paso de grupos al MCP config). NO tocar `frontend/**`. `LoadedCapabilities` ya existe en `harness-session/src/meta.rs`; si se le agrega algo con `#[derive(TS)]`, correr `just gen-types`. |
+| **Responsables** | Planner: Claude (Opus). Codificador: Codex gpt-5.5 (`codex exec`). Revisor: Sonnet 4.6 (subagente `reviewer`, 1 ronda). QA: subagente `qa`. |
+| **Criterio de aceptación** | (1) Sesión sin grupos extra: `tools/list` expone ≤20 tools (core + meta-tools) en vez de 60+. (2) `tools_load(["db"])` emite `list_changed` y el siguiente `tools/list` incluye las `db_*`; `tools_unload` las quita. (3) Llamar `db_query` sin el grupo cargado funciona (auto-load) y el resultado lo anota. (4) Los upstreams del gateway (p.ej. `crawl4ai__*`) se listan solo si su capability está activa (comportamiento actual preservado). (5) Resolución de grupos con `includes` anidados y detección de ciclos, con tests. (6) `tools_search("export csv de una tabla")` devuelve `db_export_table` con su grupo. (7) `cargo test -p harness-mcp-server -p harness-server` y `just test` verdes; smoke por stdio: initialize → tools/list → tools_load → tools/list muestra el delta. |
+| **Checks obligatorios** | `cargo test -p harness-mcp-server -p harness-server`, `cargo fmt --check`, smoke JSON-RPC por stdio, `just test` al cierre, `just gen-types` solo si cambia un tipo TS. |
+
+### Contrato — W1-S1 (sin cambios de protocolo HTTP)
+
+- Protocolo MCP stdio: se agrega la **notificación** `notifications/tools/list_changed` (estándar MCP) tras `tools_load`/`tools_unload`/auto-load. Ningún cambio en rutas HTTP ni en `X-Protocol-Version`.
+- `tools_search` / `tools_load` / `tools_unload`: tools MCP nuevas en `core`. Input: `{query: string}` / `{groups: string[]}`. Output: texto con tools/grupos y el set activo resultante.
+- Estado de grupos activos: en memoria del proceso MCP (por sesión de agente); semilla desde `SessionMeta.loaded_capabilities.tool_groups`. Persistir cambios de vuelta al meta es OPCIONAL en este slice (anotar decisión en handoff).
+- Policy: el check per-call de `harness-policy` NO se relaja; la visibilidad de tools no es gating de seguridad.
+- Tipos `ts-rs`: no se esperan cambios; si los hay, `just gen-types` obligatorio.
+
+### Handoff Implementación — Codex 2026-06-12
+
+**Archivos tocados:**
+- `backend/Cargo.lock`
+- `backend/crates/harness-mcp-server/Cargo.toml`
+- `backend/crates/harness-mcp-server/src/{dispatcher.rs,main.rs,protocol.rs}`
+- `backend/crates/harness-mcp-server/src/tools/{mod.rs,toolsets.rs,session.rs}`
+- `backend/crates/harness-server/src/routes/sessions.rs`
+- `docs/teamwork/BOARD.md`
+
+**Implementado / decisiones:**
+- Registry `toolsets` con grupos `core`, `repo`, `knowledge`, `db`, `ssh`, `skills`, `docs`, includes recursivos cycle-safe y aliases legacy (`data_loader`, `document_extract`, `project_memory`, `docs_web`, `repo_write`, `docs_build`).
+- `tools/list` ahora usa `core + active_groups`, cacheado por set activo. Base smoke: 20 tools.
+- `tools_search`, `tools_load`, `tools_unload` quedan en `core`; load/unload invalidan cache y emiten `notifications/tools/list_changed` por stdio.
+- `LoadedCapabilities.tool_groups` se lee desde `SessionMeta` vía `--session-id`; los cambios runtime quedan en memoria y no se persisten de vuelta al meta en este slice.
+- Llamar una tool de un grupo descargado auto-carga el grupo, emite `list_changed` y agrega una nota al resultado sin relajar el check per-call de policy.
+- Upstreams gateway (`crawl4ai__*`) solo se listan si existe upstream y está activo `knowledge` o `docs`.
+- `resolve_smart_tool_groups` conserva `data_loader` y agrega señales para `repo`, `knowledge`, `db`, `ssh`, `docs`.
+- No se tocaron tipos `#[derive(TS)]`; no se corrió `just gen-types`.
+
+**Checks corridos:**
+- `cargo test -p harness-mcp-server` ✅ 75/75.
+- `cargo test -p harness-server smart_loader` ✅ 5/5.
+- `cargo test -p harness-mcp-server -p harness-server` ⚠️ `harness-mcp-server` 75/75 ✅; `harness-server` 113/114 antes del fallo. Falla solo `routes::threads::tests::local_port_available_detects_bound_port` por `TcpListener::bind("127.0.0.1:0")` → `PermissionDenied` en el sandbox; no se tocó `routes/threads.rs` por alcance estricto.
+- `cargo fmt --check` ✅.
+- Smoke JSON-RPC stdio ✅: `initialize -> tools/list -> tools_load(db) -> tools/list`; resultado: `base_count=20`, `list_changed=true`, `db_before=false`, `db_after=true`.
+- `XDG_RUNTIME_DIR=/tmp just test` ⚠️ ejecutó hasta el mismo fallo ambiental de `routes::threads::tests::local_port_available_detects_bound_port` (302 pass, 1 fail, 1 skip antes de fail-fast). `just test` sin `XDG_RUNTIME_DIR=/tmp` no arranca porque `/run/user/1000/just` es read-only.
+
+### Review + fix round — 2026-06-12
+
+- Revisor (Sonnet 4.6, 1 ronda): 1 P1 (`session_cancel_child` huérfano: sin grupo → invisible para tools/list, tools_search y auto-load) + 6 P2 (mutación parcial sin list_changed ante grupo desconocido; break interno con stdout roto en notificaciones; shape MCP inválido en fallback de apply_auto_load_note; hit_count amplificado vs semántica score de Wave 2; test de auto-load frágil por CWD; regresión de compat en listado de upstreams crawl4ai). Sin P0. Registro del Planner (el revisor no escribe aquí).
+- Fix round (Codex, registrado por el Planner — el sandbox de Codex no pudo escribir docs/): los 7 corregidos. `session_cancel_child` en `core`; validación de grupos antes de mutar; fallo de write de notificación corta el loop exterior; fallback serializa el result como item de texto; `hit_count` cuenta el peso una vez por señal; test de auto-load usa `ssh_hosts`; upstreams se listan si están en `mcp_servers` de la sesión O knowledge/docs activo.
+- Checks del fix round: `cargo fmt --check` ✅; `cargo test -p harness-mcp-server` 78/78 ✅; smart_loader 6/6 ✅; harness-server 114/115 (falla solo `local_port_available_detects_bound_port`, ambiental del sandbox de Codex — pasa fuera, verificado por el Planner). Smoke stdio ✅: base 21 tools, `session_cancel_child` visible, `tools_load(db)` → `list_changed` + `db_*` visibles.
+
+### Cola (después de W1-S1, en orden)
+1. **W2 — SSH completo + remote context pack** (pendiente explícito del usuario): ControlMaster/reuso, transfer queue con progreso, `ssh_context` (introspección del host al conectar → brief para agentes), spawn de agente "sobre" una conexión SSH.
+2. **W3 — DB context pack + perf**: `db_context` por conexión (schema summary + row counts → brief al spawn), caché de introspección (N+1), keyset pagination en export, read-only transaccional.
+3. **W4 — Context engine v2**: resúmenes estructurados del governor (Goal/Progress/Decisions/Next + files), `knowledge_search` FTS5 sobre shards, ingesta xlsx/csv a knowledge, truncación dual líneas+bytes en tool results.
+4. **Pipeline Zeus sobre ChatView** (handoff 2026-06-10, abajo) — sigue en cola, no cancelada.
 
 ### Hecho y pusheado esta sesión (2026-06-10)
 - **Análisis del harness + revisión del fuente de Codex** (`docs/12-build-plan/harness-analysis-2026-06-10.md`): bugs P1 verificados, perf, hueco de seguridad de delegación, formato de rollout de Codex, fix del cuelgue headless.

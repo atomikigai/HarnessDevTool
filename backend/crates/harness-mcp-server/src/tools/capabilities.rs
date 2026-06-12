@@ -179,7 +179,16 @@ fn categories(runtime: CapabilityRuntime) -> Vec<CapabilityCategory> {
             description: "List known hosts, test SSH access, run guarded remote commands, and move files over SFTP.",
             use_when: &["remote host", "SSH", "SFTP", "remote file", "server command"],
             mentions: &["ssh", "sftp", "remote", "host", "server"],
-            tools: &["ssh_hosts", "ssh_test", "ssh_exec", "sftp_list", "sftp_get", "sftp_put"],
+            tools: &[
+                "ssh_hosts",
+                "ssh_test",
+                "ssh_exec",
+                "ssh_context_refresh",
+                "ssh_context",
+                "sftp_list",
+                "sftp_get",
+                "sftp_put",
+            ],
             skills: &[],
             status: if requested("ssh") {
                 CapabilityStatus::Loaded
@@ -191,7 +200,7 @@ fn categories(runtime: CapabilityRuntime) -> Vec<CapabilityCategory> {
             id: "document_extract",
             title: "Document extraction",
             description:
-                "Convert local PDF, DOCX, and PPTX documents into compact Markdown shards optimized for agent reading.",
+                "Convert local PDF, DOCX, PPTX, CSV, and XLSX files into searchable Markdown knowledge shards optimized for agent reading.",
             use_when: &[
                 "PDF manual",
                 "Word document",
@@ -209,8 +218,14 @@ fn categories(runtime: CapabilityRuntime) -> Vec<CapabilityCategory> {
                 "document",
                 "manual",
                 "slides",
+                "knowledge_search",
             ],
-            tools: &["knowledge_pdf_ingest", "knowledge_office_ingest"],
+            tools: &[
+                "knowledge_pdf_ingest",
+                "knowledge_office_ingest",
+                "knowledge_data_ingest",
+                "knowledge_search",
+            ],
             skills: &[],
             status: if requested("document_extract") {
                 CapabilityStatus::Loaded
@@ -221,10 +236,22 @@ fn categories(runtime: CapabilityRuntime) -> Vec<CapabilityCategory> {
         CapabilityCategory {
             id: "data_loader",
             title: "CSV/XLSX data loader",
-            description: "Inspect and write CSV/XLSX files with deterministic parsing and row/column limits.",
-            use_when: &["CSV", "Excel", "spreadsheet", "tabular file", "normalize rows"],
+            description: "Inspect, write, and ingest CSV/XLSX files with deterministic parsing and searchable knowledge summaries.",
+            use_when: &[
+                "CSV",
+                "Excel",
+                "spreadsheet",
+                "tabular file",
+                "normalize rows",
+                "ingest data to knowledge",
+            ],
             mentions: &["csv", "xlsx", "excel", "spreadsheet", "rows", "columns"],
-            tools: &["POST /api/data/inspect", "POST /api/data/write"],
+            tools: &[
+                "POST /api/data/inspect",
+                "POST /api/data/write",
+                "knowledge_data_ingest",
+                "knowledge_search",
+            ],
             skills: &[],
             status: if requested("data_loader") {
                 CapabilityStatus::Loaded

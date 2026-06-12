@@ -78,6 +78,7 @@ struct ThreadState {
     index: Arc<Mutex<Index>>,
     tasks: Arc<Mutex<HashMap<String, Task>>>,
     bus: broadcast::Sender<TaskEvent>,
+    loading: Arc<Mutex<()>>,
 }
 
 impl TaskStore {
@@ -164,24 +165,70 @@ impl TaskStore {
         ),
         Error,
     > {
-        let mut threads = lock_or_recover(&self.threads);
-        if let Some(s) = threads.get(tid) {
-            return Ok((s.index.clone(), s.tasks.clone(), s.bus.clone()));
+        loop {
+            if let Some((index, tasks, bus, loading)) = {
+                let threads = lock_or_recover(&self.threads);
+                threads.get(tid).map(|s| {
+                    (
+                        s.index.clone(),
+                        s.tasks.clone(),
+                        s.bus.clone(),
+                        s.loading.clone(),
+                    )
+                })
+            } {
+                let _loading = lock_or_recover(&loading);
+                let threads = lock_or_recover(&self.threads);
+                if threads
+                    .get(tid)
+                    .is_some_and(|state| Arc::ptr_eq(&state.loading, &loading))
+                {
+                    return Ok((index, tasks, bus));
+                }
+                continue;
+            }
+            break;
         }
         let dir = self.thread_dir(tid)?;
         fs::create_dir_all(&dir)?;
         let index = Arc::new(Mutex::new(Index::open(&dir.join("index.db"))?));
         let tasks = Arc::new(Mutex::new(HashMap::new()));
-        self.rebuild_index_inner(tid, &dir, &index, &tasks)?;
         let (tx, _) = broadcast::channel(BROADCAST_CAP);
-        threads.insert(
-            tid.to_string(),
-            ThreadState {
-                index: index.clone(),
-                tasks: tasks.clone(),
-                bus: tx.clone(),
-            },
-        );
+        let loading = Arc::new(Mutex::new(()));
+        let loading_guard = lock_or_recover(&loading);
+        {
+            let mut threads = lock_or_recover(&self.threads);
+            if let Some(s) = threads.get(tid) {
+                let index = s.index.clone();
+                let tasks = s.tasks.clone();
+                let bus = s.bus.clone();
+                let loading = s.loading.clone();
+                drop(threads);
+                drop(loading_guard);
+                let _loading = lock_or_recover(&loading);
+                return Ok((index, tasks, bus));
+            }
+            threads.insert(
+                tid.to_string(),
+                ThreadState {
+                    index: index.clone(),
+                    tasks: tasks.clone(),
+                    bus: tx.clone(),
+                    loading: loading.clone(),
+                },
+            );
+        }
+        if let Err(err) = self.rebuild_index_inner(tid, &dir, &index, &tasks) {
+            let mut threads = lock_or_recover(&self.threads);
+            if threads
+                .get(tid)
+                .is_some_and(|state| Arc::ptr_eq(&state.loading, &loading))
+            {
+                threads.remove(tid);
+            }
+            return Err(err);
+        }
+        drop(loading_guard);
         Ok((index, tasks, tx))
     }
 
@@ -1339,6 +1386,32 @@ mod tests {
         assert_eq!(got.title, "first");
         let all = s.list("thr-1", ListFilters::default()).unwrap();
         assert_eq!(all.len(), 1);
+    }
+
+    #[test]
+    fn concurrent_first_access_rebuilds_thread_consistently() {
+        let (dir, s) = store();
+        for i in 1..=THREAD_ACTIVE_TASK_CAP {
+            s.create("thr-1", mk_draft(&format!("task {i}"))).unwrap();
+        }
+
+        let s = Arc::new(TaskStore::new(dir.path()).unwrap());
+        let barrier = Arc::new(std::sync::Barrier::new(8));
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let s = Arc::clone(&s);
+            let barrier = Arc::clone(&barrier);
+            handles.push(std::thread::spawn(move || {
+                barrier.wait();
+                s.list("thr-1", ListFilters::default()).unwrap()
+            }));
+        }
+
+        for handle in handles {
+            let tasks = handle.join().unwrap();
+            assert_eq!(tasks.len(), THREAD_ACTIVE_TASK_CAP);
+            assert!(tasks.iter().any(|task| task.id == "T-0001"));
+        }
     }
 
     #[test]

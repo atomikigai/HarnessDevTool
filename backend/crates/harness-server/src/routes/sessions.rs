@@ -74,6 +74,18 @@ pub struct CreateSessionRequest {
     /// Optional Zeus role routing/model matrix. Honored only for `kind=zeus`.
     #[serde(default)]
     pub zeus_roles: Vec<ZeusRoleSelection>,
+    /// Optional saved SSH host id to bind this session to. The session starts
+    /// with the SSH tool group loaded and receives the cached remote context
+    /// brief when available.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts-export", ts(optional = nullable))]
+    pub ssh_host_id: Option<String>,
+    /// Optional saved DB connection id to bind this session to. The session
+    /// starts with the DB tool group loaded and receives the cached database
+    /// context brief when available.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts-export", ts(optional = nullable))]
+    pub db_connection_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -315,6 +327,8 @@ async fn create_session(
             include_project_context: req.include_project_context,
             capability_profile: req.capability_profile,
             zeus_roles: req.zeus_roles,
+            ssh_host_id: req.ssh_host_id,
+            db_connection_id: req.db_connection_id,
             model: None,
             effort: None,
             routing_source: None,
@@ -355,6 +369,8 @@ pub struct SpawnArgs {
     pub include_project_context: bool,
     pub capability_profile: CapabilityProfile,
     pub zeus_roles: Vec<ZeusRoleSelection>,
+    pub ssh_host_id: Option<String>,
+    pub db_connection_id: Option<String>,
     pub model: Option<String>,
     pub effort: Option<String>,
     pub routing_source: Option<&'static str>,
@@ -403,6 +419,9 @@ pub async fn spawn_session_internal(
     state: &Arc<AppState>,
     args: SpawnArgs,
 ) -> Result<String, ApiError> {
+    const AUTO_INTRO_MAX_BYTES: usize = 24_000;
+    const AUTO_INTRO_TRUNCATED_NOTICE: &str = "\n\n[harness] Auto intro truncated to 24KB.";
+
     // Resolve the underlying CLI. For real CLIs this is the kind itself;
     // for Zeus it's Codex (today — F3 will wire real multi-CLI delegation).
     // The session's recorded `kind` keeps the user-facing value.
@@ -566,7 +585,7 @@ pub async fn spawn_session_internal(
         &args.scopes,
         args.capability_profile,
     );
-    let smart_tool_groups = resolve_smart_tool_groups(
+    let mut smart_tool_groups = resolve_smart_tool_groups(
         args.role.as_deref(),
         Some(&args.cwd),
         [
@@ -576,6 +595,11 @@ pub async fn spawn_session_internal(
         ],
         &args.scopes,
         args.capability_profile,
+    );
+    push_ssh_tool_group_for_bound_host(&mut smart_tool_groups, args.ssh_host_id.as_deref());
+    push_db_tool_group_for_bound_connection(
+        &mut smart_tool_groups,
+        args.db_connection_id.as_deref(),
     );
 
     let (mut opts, config_path) = build_spawn_opts(
@@ -633,6 +657,34 @@ pub async fn spawn_session_internal(
             _ => auto_intro.to_string(),
         });
     }
+    if let Some(ssh_host_id) = args
+        .ssh_host_id
+        .as_deref()
+        .filter(|id| !id.trim().is_empty())
+    {
+        let ssh_intro = ssh_context_spawn_intro(state, ssh_host_id);
+        opts.auto_intro = Some(match opts.auto_intro.take() {
+            Some(existing) if !existing.is_empty() => format!("{existing}\n\n{ssh_intro}"),
+            _ => ssh_intro,
+        });
+    }
+    if let Some(db_connection_id) = args
+        .db_connection_id
+        .as_deref()
+        .filter(|id| !id.trim().is_empty())
+    {
+        if !opts
+            .auto_intro
+            .as_deref()
+            .is_some_and(|intro| auto_intro_has_db_context_for_connection(intro, db_connection_id))
+        {
+            let db_intro = db_context_spawn_intro(state, db_connection_id);
+            opts.auto_intro = Some(match opts.auto_intro.take() {
+                Some(existing) if !existing.is_empty() => format!("{existing}\n\n{db_intro}"),
+                _ => db_intro,
+            });
+        }
+    }
 
     // Zeus: inject the orchestrator briefing as `auto_intro` (silent via
     // Codex system-prompt plumbing. Pre-F3 the orchestrator delegates mentally;
@@ -648,6 +700,10 @@ pub async fn spawn_session_internal(
             _ => marker,
         });
     }
+    opts.auto_intro = opts
+        .auto_intro
+        .take()
+        .map(|intro| cap_auto_intro(intro, AUTO_INTRO_MAX_BYTES, AUTO_INTRO_TRUNCATED_NOTICE));
 
     // Role resolution differs by spawn type:
     //   - ROOT spawn (no parent): `role` is the name of a registered template
@@ -1354,6 +1410,120 @@ pub(crate) fn spawn_capability_intro(
     parts.join("\n\n")
 }
 
+fn push_ssh_tool_group_for_bound_host(tool_groups: &mut Vec<String>, host_id: Option<&str>) {
+    if host_id.is_some_and(|id| !id.trim().is_empty()) {
+        push_unique(tool_groups, "ssh".to_string());
+    }
+}
+
+fn push_db_tool_group_for_bound_connection(
+    tool_groups: &mut Vec<String>,
+    connection_id: Option<&str>,
+) {
+    if connection_id.is_some_and(|id| !id.trim().is_empty()) {
+        push_unique(tool_groups, "db".to_string());
+    }
+}
+
+fn ssh_context_spawn_intro(state: &AppState, host_id: &str) -> String {
+    ssh_context_spawn_intro_from_cache(host_id, || {
+        state
+            .ssh
+            .cached_context_if_fresh(host_id, std::time::Duration::from_secs(24 * 60 * 60))
+            .map_err(|err| err.to_string())
+    })
+}
+
+fn ssh_context_spawn_intro_from_cache(
+    host_id: &str,
+    read_cache: impl FnOnce() -> Result<Option<String>, String>,
+) -> String {
+    match read_cache() {
+        Ok(Some(brief)) => format!(
+            "[harness] This session is bound to SSH host `{host_id}`. \
+             The `ssh` tool group is preloaded. Cached remote context follows:\n\n{brief}"
+        ),
+        Ok(None) => format!(
+            "[harness] This session is bound to SSH host `{host_id}` and the `ssh` tool \
+             group is preloaded. No fresh remote context pack is cached yet; run \
+             `ssh_context_refresh` with `{{\"host_id\":\"{host_id}\"}}` before making \
+             host-specific assumptions."
+        ),
+        Err(err) => format!(
+            "[harness] This session is bound to SSH host `{host_id}` and the `ssh` tool \
+             group is preloaded. The cached remote context pack could not be read \
+             ({err}); run `ssh_context_refresh` with `{{\"host_id\":\"{host_id}\"}}` \
+             before making host-specific assumptions."
+        ),
+    }
+}
+
+fn db_context_spawn_intro(state: &AppState, connection_id: &str) -> String {
+    db_context_spawn_intro_from_cache(connection_id, || {
+        state
+            .db
+            .cached_context_if_fresh(connection_id, std::time::Duration::from_secs(24 * 60 * 60))
+            .map_err(|err| err.to_string())
+    })
+}
+
+fn db_context_spawn_intro_from_cache(
+    connection_id: &str,
+    read_cache: impl FnOnce() -> Result<Option<String>, String>,
+) -> String {
+    match read_cache() {
+        Ok(Some(brief)) => format!(
+            "[harness] This session is bound to DB connection `{connection_id}`. \
+             The `db` tool group is preloaded. Cached database context follows:\n\n{brief}"
+        ),
+        Ok(None) => format!(
+            "[harness] This session is bound to DB connection `{connection_id}` and the `db` tool \
+             group is preloaded. No fresh database context pack is cached yet; run \
+             `db_context_refresh` with `{{\"connection_id\":\"{connection_id}\"}}` before making \
+             schema-specific assumptions."
+        ),
+        Err(err) => format!(
+            "[harness] This session is bound to DB connection `{connection_id}` and the `db` tool \
+             group is preloaded. The cached database context pack could not be read \
+             ({err}); run `db_context_refresh` with `{{\"connection_id\":\"{connection_id}\"}}` \
+             before making schema-specific assumptions."
+        ),
+    }
+}
+
+fn auto_intro_has_db_context_for_connection(auto_intro: &str, connection_id: &str) -> bool {
+    let connection_line = format!("- connection id: {connection_id}");
+    let tool_default = format!("connection=\"{connection_id}\"");
+    let bound_intro = format!("DB connection `{connection_id}`");
+    auto_intro.contains("[harness-db-agent]")
+        && (auto_intro.contains(&connection_line) || auto_intro.contains(&tool_default))
+        || auto_intro.contains(&bound_intro)
+}
+
+fn cap_auto_intro(mut intro: String, max_bytes: usize, notice: &str) -> String {
+    if intro.len() <= max_bytes {
+        return intro;
+    }
+
+    let content_cap = max_bytes.saturating_sub(notice.len());
+    if content_cap == 0 {
+        intro.truncate(previous_char_boundary(&intro, max_bytes));
+        return intro;
+    }
+
+    intro.truncate(previous_char_boundary(&intro, content_cap));
+    intro.push_str(notice);
+    intro
+}
+
+fn previous_char_boundary(text: &str, max: usize) -> usize {
+    let mut idx = max.min(text.len());
+    while idx > 0 && !text.is_char_boundary(idx) {
+        idx -= 1;
+    }
+    idx
+}
+
 pub(crate) fn resolve_smart_skills<'a>(
     load_crawl4ai: bool,
     role: Option<&str>,
@@ -1538,6 +1708,80 @@ pub(crate) fn resolve_smart_tool_groups<'a>(
     ]);
     if file_format_score > 0 && file_format_score + data_context_score >= 5 {
         push_unique(&mut tool_groups, "data_loader".to_string());
+        push_unique(&mut tool_groups, "knowledge".to_string());
+    }
+
+    if signals.hit_count(&[
+        "repo",
+        "repository",
+        "workspace",
+        "codebase",
+        "git",
+        "diff",
+        "file",
+        "read file",
+        "write file",
+    ]) >= 3
+    {
+        push_unique(&mut tool_groups, "repo".to_string());
+    }
+
+    if signals.hit_count(&[
+        "database",
+        "db",
+        "sql",
+        "schema",
+        "query",
+        "postgres",
+        "mysql",
+        "sqlite",
+        "table",
+        "tabla",
+        "export csv",
+    ]) >= 3
+    {
+        push_unique(&mut tool_groups, "db".to_string());
+    }
+
+    if signals.hit_count(&[
+        "ssh",
+        "sftp",
+        "remote host",
+        "remote server",
+        "servidor remoto",
+    ]) >= 2
+    {
+        push_unique(&mut tool_groups, "ssh".to_string());
+    }
+
+    if signals.hit_count(&[
+        "knowledge",
+        "memory",
+        "pdf",
+        ".pdf",
+        "docx",
+        ".docx",
+        "pptx",
+        ".pptx",
+        "documentation",
+        "documentacion",
+        "documentación",
+        "api reference",
+        "context7",
+    ]) >= 2
+    {
+        push_unique(&mut tool_groups, "knowledge".to_string());
+    }
+
+    if signals.hit_count(&[
+        "docs build",
+        "documentation site",
+        "mdbook",
+        "starlight",
+        "vitepress",
+    ]) >= 2
+    {
+        push_unique(&mut tool_groups, "docs".to_string());
     }
     tool_groups
 }
@@ -1586,6 +1830,10 @@ impl SmartCapabilitySignals {
             .filter(|signal| terms.iter().any(|term| signal.matches(term)))
             .map(|signal| signal.weight)
             .sum()
+    }
+
+    fn hit_count(&self, terms: &[&str]) -> u16 {
+        self.score(terms)
     }
 }
 
@@ -2311,6 +2559,8 @@ async fn spawn_child_route(
             include_project_context: true,
             capability_profile: CapabilityProfile::Auto,
             zeus_roles: Vec::new(),
+            ssh_host_id: None,
+            db_connection_id: None,
             model: routing.model,
             effort: routing.effort,
             routing_source: Some(routing.source),
@@ -3409,7 +3659,10 @@ mod tests {
             CapabilityProfile::Auto,
         );
 
-        assert_eq!(tool_groups, vec!["data_loader".to_string()]);
+        assert_eq!(
+            tool_groups,
+            vec!["data_loader".to_string(), "knowledge".to_string()]
+        );
     }
 
     #[test]
@@ -3437,7 +3690,10 @@ mod tests {
             CapabilityProfile::Auto,
         );
 
-        assert_eq!(tool_groups, vec!["data_loader".to_string()]);
+        assert_eq!(
+            tool_groups,
+            vec!["data_loader".to_string(), "knowledge".to_string()]
+        );
     }
 
     #[test]
@@ -3451,6 +3707,124 @@ mod tests {
         );
 
         assert!(tool_groups.is_empty());
+    }
+
+    #[test]
+    fn smart_loader_selects_new_backend_tool_groups() {
+        let db_groups = resolve_smart_tool_groups(
+            Some("backend"),
+            Some(std::path::Path::new("/repo/backend")),
+            [Some(
+                "Inspect the database schema and export csv from a table",
+            )],
+            &["database".to_string()],
+            CapabilityProfile::Auto,
+        );
+        assert!(db_groups.contains(&"db".to_string()));
+
+        let ssh_groups = resolve_smart_tool_groups(
+            Some("ssh"),
+            Some(std::path::Path::new("/repo")),
+            [Some("Use ssh to inspect the remote server")],
+            &[],
+            CapabilityProfile::Auto,
+        );
+        assert_eq!(ssh_groups, vec!["ssh".to_string()]);
+
+        let repo_groups = resolve_smart_tool_groups(
+            Some("backend"),
+            Some(std::path::Path::new("/repo/backend/crates")),
+            [Some("Read files and inspect the git diff")],
+            &[],
+            CapabilityProfile::Auto,
+        );
+        assert_eq!(repo_groups, vec!["repo".to_string()]);
+    }
+
+    #[test]
+    fn ssh_bound_spawn_forces_ssh_tool_group() {
+        let mut groups = vec!["repo".to_string()];
+        push_ssh_tool_group_for_bound_host(&mut groups, Some("host-1"));
+        push_ssh_tool_group_for_bound_host(&mut groups, Some("host-1"));
+
+        assert_eq!(groups, vec!["repo".to_string(), "ssh".to_string()]);
+    }
+
+    #[test]
+    fn db_bound_spawn_forces_db_tool_group() {
+        let mut groups = vec!["repo".to_string()];
+        push_db_tool_group_for_bound_connection(&mut groups, Some("conn-1"));
+        push_db_tool_group_for_bound_connection(&mut groups, Some("conn-1"));
+
+        assert_eq!(groups, vec!["repo".to_string(), "db".to_string()]);
+    }
+
+    #[test]
+    fn ssh_bound_spawn_intro_includes_cached_brief_or_refresh_instruction() {
+        let cached = ssh_context_spawn_intro_from_cache("host-1", || {
+            Ok(Some(
+                "# SSH Remote Context\n\n## Hostname\n\nremote-a".to_string(),
+            ))
+        });
+        assert!(cached.contains("SSH host `host-1`"));
+        assert!(cached.contains("## Hostname"));
+        assert!(cached.contains("remote-a"));
+
+        let missing = ssh_context_spawn_intro_from_cache("host-1", || Ok(None));
+        assert!(missing.contains("ssh_context_refresh"));
+        assert!(missing.contains("\"host_id\":\"host-1\""));
+    }
+
+    #[test]
+    fn db_bound_spawn_intro_includes_cached_brief_or_refresh_instruction() {
+        let cached = db_context_spawn_intro_from_cache("conn-1", || {
+            Ok(Some("# Database Context Pack\n\n#### `users`".to_string()))
+        });
+        assert!(cached.contains("DB connection `conn-1`"));
+        assert!(cached.contains("#### `users`"));
+
+        let missing = db_context_spawn_intro_from_cache("conn-1", || Ok(None));
+        assert!(missing.contains("db_context_refresh"));
+        assert!(missing.contains("\"connection_id\":\"conn-1\""));
+    }
+
+    #[test]
+    fn db_agent_auto_intro_is_recognized_as_connection_context() {
+        let intro = r#"[harness-db-agent]
+Connection defaults (redacted):
+- connection id: conn-1
+
+Use these defaults in DB tools: connection="conn-1", database="main".
+"#;
+
+        assert!(auto_intro_has_db_context_for_connection(intro, "conn-1"));
+        assert!(!auto_intro_has_db_context_for_connection(intro, "conn-2"));
+    }
+
+    #[test]
+    fn auto_intro_cap_truncates_with_annotation_on_char_boundary() {
+        let intro = format!("{}{}", "a".repeat(20), "b".repeat(20));
+        let capped = cap_auto_intro(intro, 32, "\n[truncated]");
+
+        assert!(capped.len() <= 32);
+        assert!(capped.ends_with("[truncated]"));
+    }
+
+    #[test]
+    fn smart_loader_hit_count_counts_each_signal_once() {
+        let signals = SmartCapabilitySignals::new(
+            Some("database sql schema query postgres mysql sqlite table"),
+            None,
+            [Some("unrelated prompt")],
+            &[],
+        );
+
+        assert_eq!(
+            signals.hit_count(&[
+                "database", "sql", "schema", "query", "postgres", "mysql", "sqlite", "table",
+            ]),
+            5
+        );
     }
 
     #[test]

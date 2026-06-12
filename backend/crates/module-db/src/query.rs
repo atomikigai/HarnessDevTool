@@ -139,6 +139,157 @@ pub async fn run(
     result
 }
 
+/// Run a read-only statement under engine-enforced read-only mode.
+///
+/// This is intentionally separate from the keyword gate used by MCP tools:
+/// callers keep the fast lexical gate, then use this path so engine semantics
+/// reject write attempts hidden behind SELECT-shaped SQL.
+pub async fn run_read_only(
+    pool: &DbPool,
+    sql: &str,
+    page_size: usize,
+    page: usize,
+    registry: &QueryRegistry,
+) -> DbResult<QueryResult> {
+    let engine = pool.engine();
+    let query_id = uuid::Uuid::new_v4().to_string();
+    registry.inner.insert(
+        query_id.clone(),
+        RunningQuery {
+            engine,
+            backend_pid: None,
+            pool: pool.clone(),
+        },
+    );
+
+    let start = Instant::now();
+    let trimmed = sql.trim_end_matches(';').trim();
+    let is_select_like = matches!(
+        leading_keyword(trimmed).to_ascii_uppercase().as_str(),
+        "SELECT" | "WITH" | "EXPLAIN" | "SHOW" | "DESCRIBE" | "DESC"
+    );
+    let effective = if is_select_like {
+        let offset = page.saturating_mul(page_size);
+        format!(
+            "SELECT * FROM ({trimmed}) AS _harness_sub LIMIT {} OFFSET {}",
+            page_size + 1,
+            offset
+        )
+    } else {
+        sql.to_string()
+    };
+
+    let result = (async {
+        let (columns, mut decoded) = match pool {
+            DbPool::Sqlite(p) => {
+                let mut conn = p.acquire().await.map_err(DbError::from)?;
+                sqlx::query("PRAGMA query_only = ON")
+                    .execute(&mut *conn)
+                    .await
+                    .map_err(DbError::from)?;
+                let rows_result = sqlx::query(&effective).fetch_all(&mut *conn).await;
+                let reset_result = sqlx::query("PRAGMA query_only = OFF")
+                    .execute(&mut *conn)
+                    .await;
+                let rows = rows_result.map_err(DbError::from)?;
+                reset_result.map_err(DbError::from)?;
+                let cols = first_row_cols_sqlite(rows.first());
+                let dec: Vec<Vec<crate::Value>> = rows.iter().map(decode_sqlite_row).collect();
+                (cols, dec)
+            }
+            DbPool::Postgres(p) => {
+                let mut conn = p.acquire().await.map_err(DbError::from)?;
+                sqlx::query("BEGIN READ ONLY")
+                    .execute(&mut *conn)
+                    .await
+                    .map_err(DbError::from)?;
+                let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+                    .fetch_one(&mut *conn)
+                    .await
+                    .map_err(DbError::from)?;
+                if let Some(mut entry) = registry.inner.get_mut(&query_id) {
+                    entry.backend_pid = Some(i64::from(pid));
+                }
+                let rows_result = sqlx::query(&effective).fetch_all(&mut *conn).await;
+                match rows_result {
+                    Ok(rows) => {
+                        sqlx::query("COMMIT")
+                            .execute(&mut *conn)
+                            .await
+                            .map_err(DbError::from)?;
+                        let cols = first_row_cols_pg(rows.first());
+                        let dec: Vec<Vec<crate::Value>> =
+                            rows.iter().map(decode_postgres_row).collect();
+                        (cols, dec)
+                    }
+                    Err(err) => {
+                        let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
+                        return Err(DbError::from(err));
+                    }
+                }
+            }
+            DbPool::Mysql(p) => {
+                let mut conn = p.acquire().await.map_err(DbError::from)?;
+                sqlx::query("START TRANSACTION READ ONLY")
+                    .execute(&mut *conn)
+                    .await
+                    .map_err(DbError::from)?;
+                let pid: i64 = sqlx::query_scalar("SELECT CAST(CONNECTION_ID() AS SIGNED)")
+                    .fetch_one(&mut *conn)
+                    .await
+                    .map_err(DbError::from)?;
+                if let Some(mut entry) = registry.inner.get_mut(&query_id) {
+                    entry.backend_pid = Some(pid);
+                }
+                let rows_result = sqlx::query(&effective).fetch_all(&mut *conn).await;
+                match rows_result {
+                    Ok(rows) => {
+                        sqlx::query("COMMIT")
+                            .execute(&mut *conn)
+                            .await
+                            .map_err(DbError::from)?;
+                        let cols = first_row_cols_mysql(rows.first());
+                        let dec: Vec<Vec<crate::Value>> =
+                            rows.iter().map(decode_mysql_row).collect();
+                        (cols, dec)
+                    }
+                    Err(err) => {
+                        let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
+                        return Err(DbError::from(err));
+                    }
+                }
+            }
+        };
+
+        let mut truncated = false;
+        if decoded.len() > page_size {
+            decoded.truncate(page_size);
+            truncated = true;
+        }
+        let elapsed_ms = start.elapsed().as_millis() as u64;
+        Ok::<_, DbError>(QueryResult {
+            columns,
+            rows: decoded,
+            total_rows: None,
+            truncated,
+            elapsed_ms,
+            query_id: query_id.clone(),
+        })
+    })
+    .await;
+
+    registry.inner.remove(&query_id);
+    result
+}
+
+pub fn postgres_read_only_begin_sql() -> &'static str {
+    "BEGIN READ ONLY"
+}
+
+pub fn mysql_read_only_begin_sql() -> &'static str {
+    "START TRANSACTION READ ONLY"
+}
+
 fn first_row_cols_sqlite(r: Option<&sqlx::sqlite::SqliteRow>) -> Vec<ResultColumn> {
     r.map(|r| {
         r.columns()

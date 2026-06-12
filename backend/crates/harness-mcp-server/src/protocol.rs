@@ -86,7 +86,7 @@ pub fn result_response(id: Value, result: Value) -> Value {
 }
 
 /// Spec-shape for a single tool descriptor in `tools/list`.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolDescriptor {
     pub name: String,
     pub description: String,

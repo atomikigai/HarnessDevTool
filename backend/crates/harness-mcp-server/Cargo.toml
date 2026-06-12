@@ -17,11 +17,12 @@ gix = { workspace = true }
 gix-hash = { workspace = true }
 tokei = { workspace = true }
 harness-core = { path = "../harness-core" }
+harness-session = { path = "../harness-session" }
 harness-policy = { path = "../harness-policy" }
 module-db = { path = "../module-db" }
 module-ssh = { path = "../module-ssh" }
 tokio = { workspace = true }
-sha2 = "0.10"
+sha2 = { workspace = true }
 tempfile = "3"
 zip = { version = "0.6", default-features = false, features = ["deflate"] }
 # Tiny sync HTTP client used to ping the harness-server when an agent creates

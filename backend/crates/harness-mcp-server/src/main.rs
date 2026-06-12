@@ -274,7 +274,7 @@ fn main() -> ExitCode {
     let mut out = stdout.lock();
     let mut reader = BufReader::new(stdin.lock());
 
-    loop {
+    'read_loop: loop {
         let (message, mode) = match read_wire_message(&mut reader) {
             Ok(Some(m)) => m,
             Ok(None) => break,
@@ -309,7 +309,20 @@ fn main() -> ExitCode {
             };
             debug!(line = %s, "send");
             if write_wire_message(&mut out, mode, &s).is_err() {
-                break;
+                break 'read_loop;
+            }
+        }
+        for notification in dispatcher.drain_notifications() {
+            let s = match serde_json::to_string(&notification) {
+                Ok(s) => s,
+                Err(e) => {
+                    error!(error = %e, "failed to serialize notification");
+                    continue;
+                }
+            };
+            debug!(line = %s, "send notification");
+            if write_wire_message(&mut out, mode, &s).is_err() {
+                break 'read_loop;
             }
         }
     }

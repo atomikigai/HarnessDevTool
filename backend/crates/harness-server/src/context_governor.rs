@@ -353,24 +353,7 @@ async fn request_checkpoint(
     let Some(session) = manager.get(&target.session_id) else {
         return;
     };
-    let prompt = format!(
-        "\n\n[harness context governor]\n\
-         Context pressure is at {:.0}% ({} / {} tokens). Before continuing, \
-         reply with a compact checkpoint headed exactly `CONTEXT CHECKPOINT`.\n\n\
-         Use these labels so the harness can persist a structured checkpoint:\n\
-         goal:\n\
-         completed:\n\
-         current_focus:\n\
-         next_action:\n\
-         files_touched:\n\
-         commands_run:\n\
-         risks:\n\
-         blockers:\n\n\
-         Keep it concise; the harness may clear live context after saving this checkpoint.\n",
-        pressure.pressure * 100.0,
-        pressure.context_tokens,
-        pressure.max_context_tokens
-    );
+    let prompt = checkpoint_prompt(pressure);
     if let Err(e) = session.write_input(format!("{prompt}\r").as_bytes()).await {
         tracing::warn!(
             session_id = %target.session_id,
@@ -378,6 +361,29 @@ async fn request_checkpoint(
             "context governor could not request checkpoint"
         );
     }
+}
+
+fn checkpoint_prompt(pressure: &ContextPressure) -> String {
+    format!(
+        "\n\n[harness context governor]\n\
+         Context pressure is at {:.0}% ({} / {} tokens). Before continuing, \
+         reply with a compact checkpoint headed exactly `CONTEXT CHECKPOINT`.\n\n\
+         Use this structured format so the harness can persist the checkpoint:\n\
+         Goal:\n\
+         Constraints:\n\
+         Progress:\n\
+         - Done:\n\
+         - In Progress:\n\
+         - Blocked:\n\
+         Key Decisions:\n\
+         Next Steps:\n\
+         Critical Context:\n\
+         Files read/modified:\n\n\
+         Keep it concise; the harness may clear live context after saving this checkpoint.\n",
+        pressure.pressure * 100.0,
+        pressure.context_tokens,
+        pressure.max_context_tokens
+    )
 }
 
 async fn clear_and_resume(
@@ -706,10 +712,23 @@ fn parse_checkpoint_sections(checkpoint: &str) -> Value {
             continue;
         }
         if let Some((key, rest)) = trimmed.split_once(':') {
-            let normalized = key.trim().to_ascii_lowercase();
+            let normalized = key
+                .trim()
+                .trim_start_matches('-')
+                .trim()
+                .to_ascii_lowercase();
             if matches!(
                 normalized.as_str(),
                 "goal"
+                    | "constraints"
+                    | "progress"
+                    | "done"
+                    | "in progress"
+                    | "blocked"
+                    | "key decisions"
+                    | "next steps"
+                    | "critical context"
+                    | "files read/modified"
                     | "completed"
                     | "current_focus"
                     | "next_action"
@@ -910,6 +929,35 @@ mod tests {
         };
 
         assert!(is_checkpoint_candidate(&event));
+    }
+
+    #[test]
+    fn checkpoint_prompt_requests_structured_sections() {
+        let pressure = ContextPressure {
+            model: "gpt-5.5".to_string(),
+            context_tokens: 50_000,
+            max_context_tokens: 100_000,
+            pressure: 0.5,
+            source_seq: 1,
+        };
+
+        let prompt = checkpoint_prompt(&pressure);
+
+        for section in [
+            "CONTEXT CHECKPOINT",
+            "Goal:",
+            "Constraints:",
+            "Progress:",
+            "- Done:",
+            "- In Progress:",
+            "- Blocked:",
+            "Key Decisions:",
+            "Next Steps:",
+            "Critical Context:",
+            "Files read/modified:",
+        ] {
+            assert!(prompt.contains(section), "missing section {section}");
+        }
     }
 
     #[test]

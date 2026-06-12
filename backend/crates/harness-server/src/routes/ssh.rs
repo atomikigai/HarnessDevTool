@@ -194,6 +194,6 @@ async fn close_session(
     Path(id): Path<String>,
 ) -> ApiResult<Json<RemovedResponse>> {
     Ok(Json(RemovedResponse {
-        removed: state.ssh.close_session(&id)?,
+        removed: state.ssh.close_session(&id).await?,
     }))
 }

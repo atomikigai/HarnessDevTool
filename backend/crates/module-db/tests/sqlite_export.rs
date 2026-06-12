@@ -1,7 +1,8 @@
 //! Export pipeline integration tests against in-temp SQLite.
 
 use module_db::{
-    ConnectionInput, Engine, ExportFormat, ExportRequest, ExportScope, ExportTarget, Manager,
+    export::export_page_sql_for_test, ConnectionInput, Engine, ExportFormat, ExportRequest,
+    ExportScope, ExportTarget, Manager,
 };
 use tempfile::TempDir;
 
@@ -188,6 +189,113 @@ async fn sql_export_schema_only_and_schema_and_data() {
     );
     // Single quotes in stored value were 'hello' — must be doubled.
     assert!(s.contains("''hello''"), "missing single-quote escape: {s}");
+}
+
+#[tokio::test]
+async fn export_table_uses_keyset_sql_for_simple_pk_and_matches_data() {
+    let (mgr, dir) = fresh_manager();
+    let path = dir.path().join("keyset.db");
+    let c = mgr.connections_add(sqlite_input(&path, "keyset")).unwrap();
+    mgr.query_run(
+        &c.id,
+        None,
+        "CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT NOT NULL)",
+        None,
+        10,
+        0,
+    )
+    .await
+    .unwrap();
+    for id in 1..=12 {
+        mgr.query_run(
+            &c.id,
+            None,
+            &format!("INSERT INTO items (id, name) VALUES ({id}, 'item-{id}')"),
+            None,
+            10,
+            0,
+        )
+        .await
+        .unwrap();
+    }
+
+    let tree = mgr.schema_tree(&c.id, None).await.unwrap();
+    let table = tree.schemas[0]
+        .tables
+        .iter()
+        .find(|table| table.name == "items")
+        .unwrap();
+    let selected = table.columns.iter().collect::<Vec<_>>();
+    let first_sql =
+        export_page_sql_for_test(Engine::Sqlite, Some("main"), table, &selected, None, 5, 0);
+    let next_sql = export_page_sql_for_test(
+        Engine::Sqlite,
+        Some("main"),
+        table,
+        &selected,
+        Some(&module_db::Value::Int(5)),
+        5,
+        5,
+    );
+    assert_eq!(
+        first_sql,
+        "SELECT \"id\", \"name\" FROM \"items\" ORDER BY \"id\" ASC LIMIT 5"
+    );
+    assert_eq!(
+        next_sql,
+        "SELECT \"id\", \"name\" FROM \"items\" WHERE \"id\" > 5 ORDER BY \"id\" ASC LIMIT 5"
+    );
+    assert!(!first_sql.contains("OFFSET"));
+    assert!(!next_sql.contains("OFFSET"));
+
+    let req = ExportRequest {
+        database: None,
+        target: ExportTarget::Table {
+            schema: Some("main".into()),
+            name: "items".into(),
+            columns: None,
+        },
+        format: ExportFormat::Json,
+        scope: ExportScope::DataOnly,
+    };
+    let res = mgr.export(&c.id, req).await.unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&res.body).unwrap();
+    let rows = v["rows"].as_array().unwrap();
+    assert_eq!(rows.len(), 12);
+    assert_eq!(rows[0], serde_json::json!([1, "item-1"]));
+    assert_eq!(rows[11], serde_json::json!([12, "item-12"]));
+}
+
+#[test]
+fn export_sql_falls_back_to_offset_without_simple_pk() {
+    let table = module_db::Table {
+        name: "events".into(),
+        kind: module_db::TableKind::Table,
+        row_estimate: None,
+        columns: vec![module_db::Column {
+            name: "name".into(),
+            r#type: "TEXT".into(),
+            nullable: false,
+            pk: false,
+            default: None,
+            kind: None,
+        }],
+        indexes: Vec::new(),
+        foreign_keys: Vec::new(),
+    };
+    let selected = table.columns.iter().collect::<Vec<_>>();
+
+    let sql = export_page_sql_for_test(
+        Engine::Sqlite,
+        Some("main"),
+        &table,
+        &selected,
+        None,
+        10,
+        20,
+    );
+
+    assert_eq!(sql, "SELECT \"name\" FROM \"events\" LIMIT 10 OFFSET 20");
 }
 
 #[tokio::test]

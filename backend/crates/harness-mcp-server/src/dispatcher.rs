@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Duration;
 
+use harness_session::SessionMeta;
 use serde_json::{json, Value};
 use tracing::warn;
 
@@ -16,12 +17,16 @@ use crate::protocol::{
 use crate::tools::{
     self, capabilities as capability_tools, db as db_tools, docs as docs_tools,
     knowledge as knowledge_tools, repo, session as session_tools, skills, spec, ssh as ssh_tools,
-    tasks, wrap_error, wrap_text,
+    tasks, toolsets::ToolRegistry, wrap_error, wrap_text,
 };
 use harness_core::TaskStore;
 use harness_policy::{capability_default, is_sensitive_tool, Decision, PolicyEngine};
 use module_db::Manager as DbManager;
 use module_ssh::Manager as SshManager;
+
+const DEFAULT_TRUNCATION_LINES: usize = 2_000;
+const DEFAULT_TRUNCATION_BYTES: usize = 50 * 1024;
+const POLICY_CHECK_TIMEOUT: Duration = Duration::from_secs(8);
 
 pub struct Dispatcher {
     store: TaskStore,
@@ -48,7 +53,12 @@ pub struct Dispatcher {
     api_token: Option<String>,
     cwd: PathBuf,
     gateway: Gateway,
+    seeded_mcp_servers: HashSet<String>,
     requested_capabilities: Mutex<HashSet<String>>,
+    tool_registry: ToolRegistry,
+    active_tool_groups: Mutex<HashSet<String>>,
+    descriptor_cache: Mutex<Option<(Vec<String>, Vec<crate::protocol::ToolDescriptor>)>>,
+    notifications: Mutex<Vec<Value>>,
 }
 
 impl Dispatcher {
@@ -105,6 +115,17 @@ impl Dispatcher {
             None => Gateway::default(),
         };
 
+        let loaded_capabilities =
+            seed_loaded_capabilities(&harness_home, &profile, session_id.as_deref());
+        let tool_registry = ToolRegistry::new(tools::list_descriptors());
+        let active_tool_groups = loaded_capabilities
+            .tool_groups
+            .into_iter()
+            .filter_map(|group| tool_registry.canonical_group(&group).map(str::to_string))
+            .filter(|group| group != "core")
+            .collect();
+        let seeded_mcp_servers = loaded_capabilities.mcp_servers.into_iter().collect();
+
         Ok(Self {
             store,
             db,
@@ -123,7 +144,12 @@ impl Dispatcher {
             api_token,
             cwd,
             gateway,
+            seeded_mcp_servers,
             requested_capabilities: Mutex::new(HashSet::new()),
+            tool_registry,
+            active_tool_groups: Mutex::new(active_tool_groups),
+            descriptor_cache: Mutex::new(None),
+            notifications: Mutex::new(Vec::new()),
         })
     }
 
@@ -171,6 +197,14 @@ impl Dispatcher {
         }
     }
 
+    pub fn drain_notifications(&self) -> Vec<Value> {
+        self.notifications
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .drain(..)
+            .collect()
+    }
+
     fn handle_tool_call(&self, id: Value, params: Value) -> Value {
         let name = match params.get("name").and_then(|v| v.as_str()) {
             Some(n) => n.to_string(),
@@ -180,14 +214,22 @@ impl Dispatcher {
         };
         let args = params.get("arguments").cloned().unwrap_or(json!({}));
 
+        let auto_loaded = self.auto_load_group_for_tool(&name);
+
         if let Some(msg) = self.check_tool_policy(&name, &args) {
             return result_response(id, wrap_error(&msg));
         }
 
         if self.gateway.prefixed_tool(&name).is_some() {
             return match self.gateway.call(&name, args) {
-                Ok(result) => result_response(id, result),
-                Err(msg) => result_response(id, wrap_error(&msg)),
+                Ok(result) => result_response(
+                    id,
+                    self.truncate_tool_result(
+                        &name,
+                        self.apply_auto_load_note(result, auto_loaded),
+                    ),
+                ),
+                Err(msg) => result_response(id, self.truncate_tool_result(&name, wrap_error(&msg))),
             };
         }
 
@@ -201,6 +243,7 @@ impl Dispatcher {
                             .lock()
                             .unwrap_or_else(|e| e.into_inner())
                             .insert(id.clone());
+                        let _ = self.load_tool_groups(std::slice::from_ref(&id));
                         Ok(json!({
                             "id": id,
                             "status": "loaded",
@@ -210,6 +253,9 @@ impl Dispatcher {
                     Err(e) => Err(e),
                 }
             }
+            "tools_search" => self.tools_search(&args),
+            "tools_load" => self.tools_load(&args),
+            "tools_unload" => self.tools_unload(&args),
             "task_create" => tasks::create(
                 &self.store,
                 &self.thread_id,
@@ -252,6 +298,10 @@ impl Dispatcher {
             "knowledge_office_ingest" => {
                 knowledge_tools::office_ingest(&self.harness_home, &self.profile, &args)
             }
+            "knowledge_data_ingest" => {
+                knowledge_tools::data_ingest(&self.harness_home, &self.profile, &args)
+            }
+            "knowledge_search" => knowledge_tools::search(&self.harness_home, &self.profile, &args),
             "skills_search" => skills::search(&self.harness_home, &self.profile, &args),
             "skill_propose" => skills::propose(&self.harness_home, &self.profile, &args),
             "skill_promote" => skills::promote(&self.harness_home, &self.profile, &args),
@@ -285,6 +335,8 @@ impl Dispatcher {
             "repo_codebase_memory_status" => repo::codebase_memory_status(&self.cwd, &args),
             "docs_build" => docs_tools::build(&self.cwd, &args),
             "db_query" => db_tools::query(&self.db, &args),
+            "db_context_refresh" => db_tools::context_refresh(&self.db, &args),
+            "db_context" => db_tools::context(&self.db, &args),
             "db_select" => db_tools::select(&self.db, &args),
             "db_validate_query" => db_tools::validate_query(&self.db, &args),
             "db_schema" => db_tools::schema(&self.db, &args),
@@ -313,6 +365,8 @@ impl Dispatcher {
             "ssh_hosts" => ssh_tools::hosts(&self.ssh),
             "ssh_test" => ssh_tools::test_host(&self.ssh, &args),
             "ssh_exec" => ssh_tools::exec(&self.ssh, &args),
+            "ssh_context_refresh" => ssh_tools::context_refresh(&self.ssh, &args),
+            "ssh_context" => ssh_tools::context(&self.ssh, &args),
             "sftp_list" => ssh_tools::sftp_list(&self.ssh, &args),
             "sftp_get" => ssh_tools::sftp_get(&self.ssh, &args),
             "sftp_put" => ssh_tools::sftp_put(&self.ssh, &args),
@@ -376,26 +430,52 @@ impl Dispatcher {
         };
 
         match outcome {
-            Ok(payload) => result_response(id, wrap_text(&payload)),
+            Ok(payload) => result_response(
+                id,
+                self.truncate_tool_result(
+                    &name,
+                    self.apply_auto_load_note(wrap_text(&payload), auto_loaded),
+                ),
+            ),
             Err(msg) => {
                 // Per MCP spec, tool errors should be returned as a normal
                 // result with isError=true, NOT as a JSON-RPC error (those are
                 // reserved for protocol-level failures). This keeps the agent
                 // loop alive and surfaces a structured message to the model.
-                result_response(id, wrap_error(&msg))
+                result_response(id, self.truncate_tool_result(&name, wrap_error(&msg)))
             }
         }
     }
 
     fn list_tool_descriptors(&self) -> Vec<crate::protocol::ToolDescriptor> {
-        let requested = self.requested_capability_snapshot();
-        let mut descriptors: Vec<_> = tools::list_descriptors()
-            .into_iter()
-            .filter(|descriptor| self.tool_visible(&descriptor.name, &requested))
-            .collect();
-        if self.gateway.has_upstream("crawl4ai") {
+        let active = self.active_tool_group_snapshot();
+        let cache_key = active_cache_key(&active);
+        if let Some((key, descriptors)) = self
+            .descriptor_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .filter(|(key, _)| key == &cache_key)
+            .cloned()
+        {
+            let _ = key;
+            return descriptors;
+        }
+
+        let mut descriptors = match self.tool_registry.visible_descriptors(&active) {
+            Ok(descriptors) => descriptors,
+            Err(msg) => {
+                warn!(error = %msg, "failed to resolve active tool groups");
+                Vec::new()
+            }
+        };
+        if self.should_list_crawl4ai_gateway(&active) {
             descriptors.extend(self.gateway.list_descriptors());
         }
+        *self
+            .descriptor_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some((cache_key, descriptors.clone()));
         descriptors
     }
 
@@ -413,65 +493,205 @@ impl Dispatcher {
             .clone()
     }
 
-    fn tool_visible(&self, tool_name: &str, requested: &HashSet<String>) -> bool {
-        if matches!(
-            tool_name,
-            "capability_list" | "capability_describe" | "capability_request"
-        ) {
-            return true;
+    fn active_tool_group_snapshot(&self) -> HashSet<String> {
+        self.active_tool_groups
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    fn tools_search(&self, args: &Value) -> Result<Value, String> {
+        let query = args
+            .get("query")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "tools_search requires query".to_string())?;
+        Ok(self
+            .tool_registry
+            .search(&self.active_tool_group_snapshot(), query))
+    }
+
+    fn tools_load(&self, args: &Value) -> Result<Value, String> {
+        let groups = parse_groups_arg(args, "tools_load")?;
+        let loaded = self.load_tool_groups(&groups)?;
+        let active = active_cache_key(&self.active_tool_group_snapshot());
+        Ok(json!({
+            "loaded": loaded,
+            "active_groups": active,
+            "message": "Tool groups loaded. Clients should refresh tools/list."
+        }))
+    }
+
+    fn tools_unload(&self, args: &Value) -> Result<Value, String> {
+        let groups = parse_groups_arg(args, "tools_unload")?;
+        let groups = self.canonicalize_tool_groups(&groups)?;
+        let mut unloaded = Vec::new();
+        let mut changed = false;
+        {
+            let mut active = self
+                .active_tool_groups
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            for group in groups {
+                if group == "core" {
+                    continue;
+                }
+                if active.remove(&group) {
+                    unloaded.push(group);
+                    changed = true;
+                }
+            }
         }
-        if tool_name.starts_with("task_") {
-            return true;
+        if changed {
+            self.invalidate_tool_descriptor_cache();
+            self.queue_tools_list_changed();
         }
-        if matches!(
-            tool_name,
-            "repo_analyze"
-                | "repo_scan"
-                | "repo_find"
-                | "repo_read_file"
-                | "repo_git_status"
-                | "repo_git_log"
-                | "repo_git_diff"
-                | "skills_search"
-                | "skill_propose"
-                | "skill_promote"
-                | "skill_archive"
-                | "skill_record_usage"
-                | "evolve_observe"
-                | "evolve_run"
-                | "curator_run"
-                | "spec_read"
-        ) {
-            return true;
+        let active = active_cache_key(&self.active_tool_group_snapshot());
+        Ok(json!({
+            "unloaded": unloaded,
+            "active_groups": active,
+            "message": "Tool groups unloaded. Clients should refresh tools/list."
+        }))
+    }
+
+    fn auto_load_group_for_tool(&self, tool_name: &str) -> Option<String> {
+        let group = self.tool_registry.group_for_tool(tool_name)?;
+        if group == "core" || self.active_tool_group_snapshot().contains(group) {
+            return None;
         }
-        if matches!(tool_name, "repo_codebase_memory_status") {
-            return requested.contains("project_memory");
+        match self.load_tool_groups(&[group.to_string()]) {
+            Ok(loaded) if loaded.iter().any(|item| item == group) => Some(group.to_string()),
+            Ok(_) => None,
+            Err(msg) => {
+                warn!(tool = %tool_name, group = %group, error = %msg, "tool auto-load failed");
+                None
+            }
         }
-        if tool_name.starts_with("repo_") {
-            return requested.contains("repo_write") || requested.contains("repo");
+    }
+
+    fn load_tool_groups(&self, groups: &[String]) -> Result<Vec<String>, String> {
+        let groups = self.canonicalize_tool_groups(groups)?;
+        let mut loaded = Vec::new();
+        let mut changed = false;
+        {
+            let mut active = self
+                .active_tool_groups
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            for group in groups {
+                if group == "core" {
+                    continue;
+                }
+                if active.insert(group.clone()) {
+                    loaded.push(group);
+                    changed = true;
+                }
+            }
         }
-        if tool_name.starts_with("db_") {
-            return requested.contains("db");
+        if changed {
+            self.invalidate_tool_descriptor_cache();
+            self.queue_tools_list_changed();
         }
-        if tool_name.starts_with("ssh_") || tool_name.starts_with("sftp_") {
-            return requested.contains("ssh");
+        Ok(loaded)
+    }
+
+    fn canonicalize_tool_groups(&self, groups: &[String]) -> Result<Vec<String>, String> {
+        groups
+            .iter()
+            .map(|group| {
+                self.tool_registry
+                    .canonical_group(group)
+                    .map(str::to_string)
+                    .ok_or_else(|| format!("unknown tool group: {group}"))
+            })
+            .collect()
+    }
+
+    fn should_list_crawl4ai_gateway(&self, active: &HashSet<String>) -> bool {
+        self.gateway.has_upstream("crawl4ai")
+            && (self.seeded_mcp_servers.contains("crawl4ai")
+                || active.contains("knowledge")
+                || active.contains("docs"))
+    }
+
+    fn invalidate_tool_descriptor_cache(&self) {
+        *self
+            .descriptor_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = None;
+    }
+
+    fn queue_tools_list_changed(&self) {
+        self.notifications
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(json!({
+                "jsonrpc": "2.0",
+                "method": "notifications/tools/list_changed",
+                "params": {}
+            }));
+    }
+
+    fn apply_auto_load_note(&self, result: Value, auto_loaded: Option<String>) -> Value {
+        let Some(group) = auto_loaded else {
+            return result;
+        };
+        if result.get("isError").and_then(|v| v.as_bool()) == Some(true) {
+            return result;
         }
-        if matches!(tool_name, "docs_build") {
-            return requested.contains("docs_build");
+        let note = json!({
+            "type": "text",
+            "text": format!(
+                "note: auto-loaded tool group `{group}` before executing this tool. Refresh tools/list to see the expanded schema set."
+            )
+        });
+        match result {
+            Value::Object(mut map) => {
+                if let Some(content) = map
+                    .get_mut("content")
+                    .and_then(|value| value.as_array_mut())
+                {
+                    content.push(note);
+                    Value::Object(map)
+                } else {
+                    let result = Value::Object(map);
+                    json!({ "content": [note, { "type": "text", "text": result.to_string() }] })
+                }
+            }
+            other => json!({ "content": [note, { "type": "text", "text": other.to_string() }] }),
         }
-        if matches!(
-            tool_name,
-            "knowledge_pdf_ingest" | "knowledge_office_ingest"
-        ) {
-            return requested.contains("document_extract") || requested.contains("project_memory");
+    }
+
+    fn truncate_tool_result(&self, tool_name: &str, mut result: Value) -> Value {
+        let policy = truncation_policy(tool_name);
+        let allow_byte_truncation = allows_byte_truncation(tool_name);
+        let Some(content) = result.get_mut("content").and_then(Value::as_array_mut) else {
+            return result;
+        };
+        for item in content {
+            if item.get("type").and_then(Value::as_str) != Some("text") {
+                continue;
+            }
+            let Some(text) = item.get("text").and_then(Value::as_str).map(str::to_string) else {
+                continue;
+            };
+            let truncated = truncate_text_result(&text, policy, allow_byte_truncation);
+            if truncated.changed {
+                *item.get_mut("text").expect("checked text field") = Value::String(truncated.text);
+            }
         }
-        if tool_name.starts_with("session_") {
-            return requested.contains("sessions");
-        }
-        false
+        result
     }
 
     fn check_tool_policy(&self, tool_name: &str, tool_args: &Value) -> Option<String> {
+        self.check_tool_policy_with_timeout(tool_name, tool_args, POLICY_CHECK_TIMEOUT)
+    }
+
+    fn check_tool_policy_with_timeout(
+        &self,
+        tool_name: &str,
+        tool_args: &Value,
+        timeout: Duration,
+    ) -> Option<String> {
         let Some(server_url) = self.server_url.as_deref() else {
             return self.check_local_tool_policy(tool_name, tool_args);
         };
@@ -483,7 +703,7 @@ impl Dispatcher {
             "role": self.role.as_deref(),
         });
         let url = format!("{}/api/approvals/check", server_url.trim_end_matches('/'));
-        let mut req = ureq::post(&url).timeout(Duration::from_secs(120));
+        let mut req = ureq::post(&url).timeout(timeout);
         if let Some(token) = self.api_token.as_deref() {
             req = req.set("Authorization", &format!("Bearer {token}"));
         }
@@ -511,7 +731,8 @@ impl Dispatcher {
             Err(e) => {
                 warn!(error = %e, "approval check failed");
                 Some(format!(
-                    "approval check failed for {tool_name}; failing closed"
+                    "approval check failed for {tool_name} within {}; failing closed",
+                    format_duration(timeout)
                 ))
             }
         }
@@ -588,6 +809,206 @@ fn policy_denied_message(tool_name: &str) -> String {
     match tool_name {
         "task_create" => "denied_by_role: task_create; usa task_propose".to_string(),
         _ => format!("denied_by_role: {tool_name}"),
+    }
+}
+
+fn format_duration(duration: Duration) -> String {
+    if duration.as_millis() < 1_000 {
+        format!("{}ms", duration.as_millis())
+    } else {
+        format!("{}s", duration.as_secs())
+    }
+}
+
+fn active_cache_key(active: &HashSet<String>) -> Vec<String> {
+    let mut groups: Vec<_> = active.iter().cloned().collect();
+    groups.sort();
+    groups
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TruncationMode {
+    Head,
+    Tail,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TruncationPolicy {
+    mode: TruncationMode,
+    max_lines: usize,
+    max_bytes: usize,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct TruncatedText {
+    text: String,
+    changed: bool,
+}
+
+fn truncation_policy(tool_name: &str) -> TruncationPolicy {
+    let mode = match tool_name {
+        "ssh_exec" => TruncationMode::Tail,
+        name if name.starts_with("repo_git_") => TruncationMode::Tail,
+        _ => TruncationMode::Head,
+    };
+    TruncationPolicy {
+        mode,
+        max_lines: DEFAULT_TRUNCATION_LINES,
+        max_bytes: DEFAULT_TRUNCATION_BYTES,
+    }
+}
+
+fn allows_byte_truncation(tool_name: &str) -> bool {
+    tool_name == "repo_read_file"
+        || tool_name == "ssh_exec"
+        || tool_name.starts_with("repo_git_")
+        || tool_name.contains("__")
+}
+
+fn truncate_text_result(
+    text: &str,
+    policy: TruncationPolicy,
+    allow_byte_truncation: bool,
+) -> TruncatedText {
+    let line_count = text.lines().count();
+    let exceeds_byte_limit = allow_byte_truncation && text.len() > policy.max_bytes;
+    if line_count <= policy.max_lines && !exceeds_byte_limit {
+        return TruncatedText {
+            text: text.to_string(),
+            changed: false,
+        };
+    }
+
+    let range = match policy.mode {
+        TruncationMode::Head => {
+            let line_end = byte_after_first_lines(text, policy.max_lines);
+            let byte_end = if allow_byte_truncation {
+                previous_char_boundary(text, policy.max_bytes.min(text.len()))
+            } else {
+                text.len()
+            };
+            0..line_end.min(byte_end)
+        }
+        TruncationMode::Tail => {
+            let line_start = byte_before_last_lines(text, policy.max_lines);
+            let byte_start = if allow_byte_truncation {
+                next_char_boundary(text, text.len().saturating_sub(policy.max_bytes))
+            } else {
+                0
+            };
+            line_start.max(byte_start)..text.len()
+        }
+    };
+
+    let kept = &text[range.clone()];
+    let omitted_bytes = text.len().saturating_sub(kept.len());
+    let kept_lines = kept.lines().count();
+    let omitted_lines = line_count.saturating_sub(kept_lines);
+    let notice = format!("[truncated: {omitted_lines} lines / {omitted_bytes} bytes omitted]");
+    let text = match policy.mode {
+        TruncationMode::Head => format!("{kept}\n{notice}"),
+        TruncationMode::Tail => format!("{notice}\n{kept}"),
+    };
+    TruncatedText {
+        text,
+        changed: true,
+    }
+}
+
+fn byte_after_first_lines(text: &str, max_lines: usize) -> usize {
+    if max_lines == 0 {
+        return 0;
+    }
+    let mut lines_seen = 0usize;
+    for (idx, ch) in text.char_indices() {
+        if ch == '\n' {
+            lines_seen += 1;
+            if lines_seen == max_lines {
+                return idx;
+            }
+        }
+    }
+    text.len()
+}
+
+fn byte_before_last_lines(text: &str, max_lines: usize) -> usize {
+    if max_lines == 0 {
+        return text.len();
+    }
+    let mut newlines_seen = 0usize;
+    for (idx, ch) in text.char_indices().rev() {
+        if ch == '\n' {
+            newlines_seen += 1;
+            if newlines_seen == max_lines {
+                return idx + ch.len_utf8();
+            }
+        }
+    }
+    0
+}
+
+fn previous_char_boundary(text: &str, mut idx: usize) -> usize {
+    while idx > 0 && !text.is_char_boundary(idx) {
+        idx -= 1;
+    }
+    idx
+}
+
+fn next_char_boundary(text: &str, mut idx: usize) -> usize {
+    while idx < text.len() && !text.is_char_boundary(idx) {
+        idx += 1;
+    }
+    idx
+}
+
+fn parse_groups_arg(args: &Value, tool: &str) -> Result<Vec<String>, String> {
+    let groups = args
+        .get("groups")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| format!("{tool} requires groups: string[]"))?;
+    groups
+        .iter()
+        .map(|group| {
+            group
+                .as_str()
+                .map(str::to_string)
+                .ok_or_else(|| format!("{tool} groups must be strings"))
+        })
+        .collect()
+}
+
+#[derive(Default)]
+struct SeededLoadedCapabilities {
+    mcp_servers: Vec<String>,
+    tool_groups: Vec<String>,
+}
+
+fn seed_loaded_capabilities(
+    harness_home: &std::path::Path,
+    profile: &str,
+    session_id: Option<&str>,
+) -> SeededLoadedCapabilities {
+    let Some(session_id) = session_id else {
+        return SeededLoadedCapabilities::default();
+    };
+    let meta_path = harness_home
+        .join("profiles")
+        .join(profile)
+        .join("sessions")
+        .join(session_id)
+        .join("meta.json");
+    let Ok(bytes) = std::fs::read(&meta_path) else {
+        return SeededLoadedCapabilities::default();
+    };
+    match serde_json::from_slice::<SessionMeta>(&bytes) {
+        Ok(meta) => SeededLoadedCapabilities {
+            mcp_servers: meta.loaded_capabilities.mcp_servers,
+            tool_groups: meta.loaded_capabilities.tool_groups,
+        },
+        Err(e) => {
+            warn!(path = %meta_path.display(), error = %e, "failed to read MCP session loaded capabilities");
+            SeededLoadedCapabilities::default()
+        }
     }
 }
 
@@ -745,13 +1166,18 @@ mod tests {
         let resp = d.handle(req).unwrap();
         let tools = resp["result"]["tools"].as_array().unwrap();
         let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
-        assert_eq!(names[0], "capability_list");
-        assert_eq!(names[1], "capability_describe");
-        assert_eq!(names[2], "capability_request");
+        assert!(
+            names.len() <= 21,
+            "base tools/list too large: {}",
+            names.len()
+        );
+        assert_eq!(names[0], "tools_search");
+        assert_eq!(names[1], "tools_load");
+        assert_eq!(names[2], "tools_unload");
         for expected in [
-            "capability_list",
-            "capability_describe",
-            "capability_request",
+            "tools_search",
+            "tools_load",
+            "tools_unload",
             "task_create",
             "task_propose",
             "task_list",
@@ -762,19 +1188,26 @@ mod tests {
             "task_release",
             "task_submit",
             "spec_read",
-            "skills_search",
+            "session_spawn_child",
+            "session_cancel_child",
+            "session_mailbox_list",
         ] {
             assert!(names.contains(&expected), "missing tool: {expected}");
         }
         for hidden in [
+            "capability_list",
+            "capability_describe",
+            "capability_request",
+            "skills_search",
             "spec_write",
             "knowledge_pdf_ingest",
             "knowledge_office_ingest",
+            "knowledge_data_ingest",
+            "knowledge_search",
             "docs_build",
             "db_query",
             "db_performance_audit",
             "ssh_exec",
-            "session_spawn_child",
         ] {
             assert!(!names.contains(&hidden), "tool should be hidden: {hidden}");
         }
@@ -836,6 +1269,287 @@ mod tests {
         let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
         assert!(names.contains(&"knowledge_pdf_ingest"));
         assert!(names.contains(&"knowledge_office_ingest"));
+        assert!(names.contains(&"knowledge_data_ingest"));
+        assert!(names.contains(&"knowledge_search"));
+    }
+
+    #[test]
+    fn tools_load_and_unload_emit_list_changed_and_change_list() {
+        let (d, _) = mk("t1", "agent:1");
+        let load = r#"{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"tools_load","arguments":{"groups":["db"]}}}"#;
+        let resp = d.handle(parse_request(load).unwrap()).unwrap();
+        assert_ne!(resp["result"]["isError"], true);
+        let notifications = d.drain_notifications();
+        assert_eq!(notifications.len(), 1);
+        assert_eq!(
+            notifications[0]["method"],
+            "notifications/tools/list_changed"
+        );
+
+        let list_line = r#"{"jsonrpc":"2.0","id":11,"method":"tools/list"}"#;
+        let resp = d.handle(parse_request(list_line).unwrap()).unwrap();
+        let tools = resp["result"]["tools"].as_array().unwrap();
+        let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
+        assert!(names.contains(&"db_query"));
+        assert!(names.contains(&"db_export_table"));
+
+        let unload = r#"{"jsonrpc":"2.0","id":12,"method":"tools/call","params":{"name":"tools_unload","arguments":{"groups":["db"]}}}"#;
+        let resp = d.handle(parse_request(unload).unwrap()).unwrap();
+        assert_ne!(resp["result"]["isError"], true);
+        assert_eq!(d.drain_notifications().len(), 1);
+
+        let resp = d.handle(parse_request(list_line).unwrap()).unwrap();
+        let tools = resp["result"]["tools"].as_array().unwrap();
+        let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
+        assert!(!names.contains(&"db_query"));
+    }
+
+    #[test]
+    fn tools_search_finds_db_export_by_natural_language() {
+        let (d, _) = mk("t1", "agent:1");
+        let search = r#"{"jsonrpc":"2.0","id":13,"method":"tools/call","params":{"name":"tools_search","arguments":{"query":"export csv de una tabla"}}}"#;
+        let resp = d.handle(parse_request(search).unwrap()).unwrap();
+        let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+        let value: serde_json::Value = serde_json::from_str(text).unwrap();
+        assert!(value["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|tool| { tool["name"] == "db_export_table" && tool["group"] == "db" }));
+    }
+
+    #[test]
+    fn truncation_limits_by_lines_with_head_mode_metadata() {
+        let text = (0..8)
+            .map(|idx| format!("line-{idx}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let result = truncate_text_result(
+            &text,
+            TruncationPolicy {
+                mode: TruncationMode::Head,
+                max_lines: 3,
+                max_bytes: 1_000,
+            },
+            false,
+        );
+
+        assert!(result.changed);
+        assert!(result.text.starts_with("line-0\nline-1\nline-2"));
+        assert!(!result.text.contains("line-7"));
+        assert!(result
+            .text
+            .ends_with("[truncated: 5 lines / 35 bytes omitted]"));
+    }
+
+    #[test]
+    fn truncation_limits_by_bytes_utf8_safe() {
+        let text = "áéíóú".repeat(20);
+        let result = truncate_text_result(
+            &text,
+            TruncationPolicy {
+                mode: TruncationMode::Head,
+                max_lines: 100,
+                max_bytes: 21,
+            },
+            true,
+        );
+
+        assert!(result.changed);
+        assert!(std::str::from_utf8(result.text.as_bytes()).is_ok());
+        assert!(result.text.contains("[truncated: 0 lines /"));
+    }
+
+    #[test]
+    fn truncation_tail_mode_keeps_execution_end() {
+        let text = (0..8)
+            .map(|idx| format!("line-{idx}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let result = truncate_text_result(
+            &text,
+            TruncationPolicy {
+                mode: TruncationMode::Tail,
+                max_lines: 3,
+                max_bytes: 1_000,
+            },
+            false,
+        );
+
+        assert!(result.changed);
+        assert!(!result.text.contains("line-0"));
+        assert!(result.text.starts_with("[truncated: 5 lines /"));
+        assert!(result.text.ends_with("line-5\nline-6\nline-7"));
+    }
+
+    #[test]
+    fn dispatcher_truncates_tool_result_text_after_execution() {
+        let cwd = tempfile::tempdir().unwrap();
+        std::fs::write(
+            cwd.path().join("big.txt"),
+            "x".repeat(DEFAULT_TRUNCATION_BYTES + 4096),
+        )
+        .unwrap();
+        let (d, _) = mk_with_cwd("t1", "agent:1", cwd.path().to_path_buf());
+        let call = r#"{"jsonrpc":"2.0","id":31,"method":"tools/call","params":{"name":"repo_read_file","arguments":{"path":"big.txt"}}}"#;
+
+        let resp = d.handle(parse_request(call).unwrap()).unwrap();
+        let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+
+        assert!(text.contains("[truncated:"));
+        assert!(text.len() < DEFAULT_TRUNCATION_BYTES + 512);
+    }
+
+    #[test]
+    fn dispatcher_does_not_byte_truncate_structured_json_results() {
+        let (d, _) = mk("t1", "agent:1");
+        let payload = json!({
+            "tables": (0..400)
+                .map(|idx| json!({
+                    "name": format!("table_{idx}"),
+                    "columns": ["alpha", "beta", "gamma", "delta"],
+                    "description": "x".repeat(1024)
+                }))
+                .collect::<Vec<_>>()
+        });
+        let result = d.truncate_tool_result("db_schema", wrap_text(&payload));
+        let text = result["content"][0]["text"].as_str().unwrap();
+
+        assert!(text.len() > DEFAULT_TRUNCATION_BYTES);
+        serde_json::from_str::<Value>(text).unwrap();
+    }
+
+    #[test]
+    fn dispatcher_byte_truncates_free_text_results() {
+        let (d, _) = mk("t1", "agent:1");
+        let result = d.truncate_tool_result(
+            "ssh_exec",
+            wrap_text(&Value::String("x".repeat(DEFAULT_TRUNCATION_BYTES + 4096))),
+        );
+        let text = result["content"][0]["text"].as_str().unwrap();
+
+        assert!(text.starts_with("[truncated:"));
+        assert!(text.len() < DEFAULT_TRUNCATION_BYTES + 512);
+    }
+
+    #[test]
+    fn active_groups_are_seeded_from_session_meta() {
+        let home = tmp_home();
+        let meta_dir = home.join("profiles/default/sessions/sid-1");
+        std::fs::create_dir_all(&meta_dir).unwrap();
+        std::fs::write(
+            meta_dir.join("meta.json"),
+            serde_json::to_vec(&json!({
+                "id": "sid-1",
+                "kind": "codex",
+                "thread_id": "t1",
+                "cwd": ".",
+                "pid": 0,
+                "status": "exited",
+                "started_at": 0,
+                "loaded_capabilities": {
+                    "mcp_servers": [],
+                    "skills": [],
+                    "tool_groups": ["ssh"]
+                },
+                "root_session_id": "sid-1",
+                "has_transcript": false
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let d = Dispatcher::new_with_server(
+            home,
+            "t1".to_string(),
+            "agent:1".to_string(),
+            Some("sid-1".to_string()),
+            "default".into(),
+            None,
+            std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            None,
+            None,
+            None,
+            Vec::new(),
+            None,
+        )
+        .unwrap();
+        let list_line = r#"{"jsonrpc":"2.0","id":15,"method":"tools/list"}"#;
+        let resp = d.handle(parse_request(list_line).unwrap()).unwrap();
+        let tools = resp["result"]["tools"].as_array().unwrap();
+        let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
+        assert!(names.contains(&"ssh_hosts"));
+        assert!(names.contains(&"ssh_exec"));
+        assert!(!names.contains(&"db_query"));
+    }
+
+    #[test]
+    fn load_and_unload_validate_all_groups_before_mutating() {
+        let (d, _) = mk("t1", "agent:1");
+
+        let bad_load = r#"{"jsonrpc":"2.0","id":16,"method":"tools/call","params":{"name":"tools_load","arguments":{"groups":["db","missing"]}}}"#;
+        let resp = d.handle(parse_request(bad_load).unwrap()).unwrap();
+        assert_eq!(resp["result"]["isError"], true);
+        assert!(d.drain_notifications().is_empty());
+
+        let list_line = r#"{"jsonrpc":"2.0","id":17,"method":"tools/list"}"#;
+        let resp = d.handle(parse_request(list_line).unwrap()).unwrap();
+        let tools = resp["result"]["tools"].as_array().unwrap();
+        let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
+        assert!(!names.contains(&"db_query"));
+
+        let load = r#"{"jsonrpc":"2.0","id":18,"method":"tools/call","params":{"name":"tools_load","arguments":{"groups":["db","ssh"]}}}"#;
+        let resp = d.handle(parse_request(load).unwrap()).unwrap();
+        assert_ne!(resp["result"]["isError"], true);
+        assert_eq!(d.drain_notifications().len(), 1);
+
+        let bad_unload = r#"{"jsonrpc":"2.0","id":19,"method":"tools/call","params":{"name":"tools_unload","arguments":{"groups":["db","missing"]}}}"#;
+        let resp = d.handle(parse_request(bad_unload).unwrap()).unwrap();
+        assert_eq!(resp["result"]["isError"], true);
+        assert!(d.drain_notifications().is_empty());
+
+        let resp = d.handle(parse_request(list_line).unwrap()).unwrap();
+        let tools = resp["result"]["tools"].as_array().unwrap();
+        let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
+        assert!(names.contains(&"db_query"));
+        assert!(names.contains(&"ssh_hosts"));
+    }
+
+    #[test]
+    fn auto_load_fallback_wraps_result_as_content_item() {
+        let (d, _) = mk("t1", "agent:1");
+        let result = d.apply_auto_load_note(json!({"ok": true}), Some("db".to_string()));
+
+        assert!(result.get("result").is_none());
+        let content = result["content"].as_array().unwrap();
+        assert_eq!(content.len(), 2);
+        assert!(content[0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("auto-loaded tool group `db`"));
+        assert_eq!(content[1]["type"], "text");
+        assert!(content[1]["text"].as_str().unwrap().contains("\"ok\":true"));
+    }
+
+    #[test]
+    fn unloaded_group_tool_auto_loads_before_execution() {
+        let (d, _) = mk("t1", "agent:1");
+        let call = r#"{"jsonrpc":"2.0","id":14,"method":"tools/call","params":{"name":"ssh_hosts","arguments":{}}}"#;
+        let resp = d.handle(parse_request(call).unwrap()).unwrap();
+        assert_ne!(resp["result"]["isError"], true);
+        let content = resp["result"]["content"].as_array().unwrap();
+        let note = content
+            .iter()
+            .filter_map(|item| item["text"].as_str())
+            .find(|text| text.contains("auto-loaded tool group `ssh`"))
+            .unwrap();
+        assert!(note.contains("Refresh tools/list"));
+        assert_eq!(d.drain_notifications().len(), 1);
+
+        let list_line = r#"{"jsonrpc":"2.0","id":15,"method":"tools/list"}"#;
+        let resp = d.handle(parse_request(list_line).unwrap()).unwrap();
+        let tools = resp["result"]["tools"].as_array().unwrap();
+        let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
+        assert!(names.contains(&"ssh_hosts"));
     }
 
     #[test]
@@ -847,6 +1561,91 @@ mod tests {
         assert_eq!(resp["result"]["isError"], true);
         let text = resp["result"]["content"][0]["text"].as_str().unwrap();
         assert!(text.contains("docs_web is not hot-loaded"));
+    }
+
+    #[test]
+    fn crawl4ai_gateway_lists_when_seeded_mcp_server_is_active() {
+        let home = tmp_home();
+        let meta_dir = home.join("profiles/default/sessions/sid-crawl");
+        std::fs::create_dir_all(&meta_dir).unwrap();
+        std::fs::write(
+            meta_dir.join("meta.json"),
+            serde_json::to_vec(&json!({
+                "id": "sid-crawl",
+                "kind": "codex",
+                "thread_id": "t1",
+                "cwd": ".",
+                "pid": 0,
+                "status": "exited",
+                "started_at": 0,
+                "loaded_capabilities": {
+                    "mcp_servers": ["crawl4ai"],
+                    "skills": [],
+                    "tool_groups": []
+                },
+                "root_session_id": "sid-crawl",
+                "has_transcript": false
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let upstream = home.join("mock-crawl4ai.sh");
+        std::fs::write(
+            &upstream,
+            r#"#!/bin/sh
+init='{"jsonrpc":"2.0","id":1,"result":{}}'
+tools='{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"crawl","description":"Crawl docs","inputSchema":{"type":"object"}}]}}'
+printf 'Content-Length: %s\r\n\r\n%s' "${#init}" "$init"
+printf 'Content-Length: %s\r\n\r\n%s' "${#tools}" "$tools"
+sleep 5
+"#,
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&upstream).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&upstream, perms).unwrap();
+        }
+
+        let upstream_config = home.join("upstreams.json");
+        std::fs::write(
+            &upstream_config,
+            serde_json::to_vec(&json!([{
+                "name": "crawl4ai",
+                "command": upstream,
+                "args": []
+            }]))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let d = Dispatcher::new_with_server(
+            home,
+            "t1".to_string(),
+            "agent:1".to_string(),
+            Some("sid-crawl".to_string()),
+            "default".into(),
+            None,
+            std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            None,
+            None,
+            None,
+            Vec::new(),
+            Some(upstream_config),
+        )
+        .unwrap();
+
+        let list_line = r#"{"jsonrpc":"2.0","id":15,"method":"tools/list"}"#;
+        let resp = d.handle(parse_request(list_line).unwrap()).unwrap();
+        let tools = resp["result"]["tools"].as_array().unwrap();
+        let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
+        assert!(
+            names.contains(&"crawl4ai__crawl"),
+            "expected crawl4ai__crawl in tools/list, got: {names:?}"
+        );
     }
 
     #[test]
@@ -1212,6 +2011,72 @@ decision = "allow"
         let msg = d.check_tool_policy("task_create", &json!({})).unwrap();
         assert!(msg.contains("local policy failed to load"));
         assert!(d.check_tool_policy("task_list", &json!({})).is_none());
+    }
+
+    #[test]
+    fn approval_check_failure_message_includes_timeout_budget() {
+        let home = tmp_home();
+        let d = Dispatcher::new_with_server(
+            home,
+            "t-policy-timeout".to_string(),
+            "agent:planner".to_string(),
+            None,
+            "default".into(),
+            Some("http://127.0.0.1:9".into()),
+            std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            None,
+            Some("planner".into()),
+            None,
+            Vec::new(),
+            None,
+        )
+        .unwrap();
+
+        let msg = d
+            .check_tool_policy_with_timeout("task_list", &json!({}), Duration::from_millis(50))
+            .unwrap();
+
+        assert_eq!(format_duration(POLICY_CHECK_TIMEOUT), "8s");
+        assert!(msg.contains("approval check failed for task_list within 50ms"));
+        assert!(msg.contains("failing closed"));
+    }
+
+    #[test]
+    fn approval_check_times_out_against_hanging_endpoint_when_tcp_available() {
+        let listener = match std::net::TcpListener::bind("127.0.0.1:0") {
+            Ok(listener) => listener,
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => return,
+            Err(e) => panic!("failed to bind test listener: {e}"),
+        };
+        let addr = listener.local_addr().unwrap();
+        let handle = std::thread::spawn(move || {
+            let (_stream, _) = listener.accept().unwrap();
+            std::thread::sleep(Duration::from_millis(900));
+        });
+        let home = tmp_home();
+        let d = Dispatcher::new_with_server(
+            home,
+            "t-policy-hanging".to_string(),
+            "agent:planner".to_string(),
+            None,
+            "default".into(),
+            Some(format!("http://{addr}")),
+            std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            None,
+            Some("planner".into()),
+            None,
+            Vec::new(),
+            None,
+        )
+        .unwrap();
+
+        let msg = d
+            .check_tool_policy_with_timeout("task_list", &json!({}), Duration::from_millis(150))
+            .unwrap();
+
+        assert!(msg.contains("approval check failed for task_list within 150ms"));
+        assert!(msg.contains("failing closed"));
+        handle.join().unwrap();
     }
 
     #[test]

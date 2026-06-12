@@ -294,7 +294,9 @@ mod tests {
 
     #[test]
     fn spawn_child_without_kind_posts_protocol_header_and_null_kind() {
-        let (server_url, rx) = spawn_http_capture_server();
+        let Some((server_url, rx)) = spawn_http_capture_server() else {
+            return;
+        };
 
         let result = spawn_child(
             Some("parent-1"),
@@ -324,8 +326,12 @@ mod tests {
         assert_eq!(body["scopes"], json!(["task:T-0001"]));
     }
 
-    fn spawn_http_capture_server() -> (String, mpsc::Receiver<String>) {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
+    fn spawn_http_capture_server() -> Option<(String, mpsc::Receiver<String>)> {
+        let listener = match TcpListener::bind("127.0.0.1:0") {
+            Ok(listener) => listener,
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => return None,
+            Err(e) => panic!("bind test server: {e}"),
+        };
         let addr = listener.local_addr().expect("local addr");
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
@@ -371,7 +377,7 @@ mod tests {
                 .write_all(response.as_bytes())
                 .expect("write response");
         });
-        (format!("http://{addr}"), rx)
+        Some((format!("http://{addr}"), rx))
     }
 
     fn find_header_end(buf: &[u8]) -> Option<usize> {

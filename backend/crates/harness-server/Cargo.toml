@@ -40,7 +40,7 @@ dirs = { workspace = true }
 base64 = { workspace = true }
 toml_edit = { workspace = true }
 bytes = "1"
-sha2 = "0.10"
+sha2 = { workspace = true }
 zstd = { workspace = true }
 tempfile = "3"
 rayon = { workspace = true }

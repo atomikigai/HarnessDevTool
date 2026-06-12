@@ -21,6 +21,8 @@ chrono = { workspace = true }
 uuid = { workspace = true }
 toml_edit.workspace = true
 rusqlite.workspace = true
+csv = { workspace = true }
+calamine = { workspace = true }
 dirs = { workspace = true }
 fs2.workspace = true
 schemars.workspace = true
@@ -30,3 +32,4 @@ ts-rs = { workspace = true, optional = true }
 undoc = { version = "0.5.0", default-features = false, features = ["docx", "pptx"] }
 
 [dev-dependencies]
+rust_xlsxwriter = { workspace = true }

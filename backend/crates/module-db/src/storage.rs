@@ -52,6 +52,12 @@ impl ConnectionsStore {
         Ok(parsed.connections)
     }
 
+    pub fn root(&self) -> &Path {
+        self.path
+            .parent()
+            .expect("connections.toml always lives under module db root")
+    }
+
     pub fn get(&self, id: &str) -> DbResult<Connection> {
         self.list()?
             .into_iter()

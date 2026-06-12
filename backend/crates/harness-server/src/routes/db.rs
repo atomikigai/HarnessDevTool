@@ -102,6 +102,8 @@ async fn start_db_agent(
             include_project_context: true,
             capability_profile: crate::routes::sessions::CapabilityProfile::Auto,
             zeus_roles: Vec::new(),
+            ssh_host_id: None,
+            db_connection_id: Some(id.clone()),
             model: None,
             effort: None,
             routing_source: None,

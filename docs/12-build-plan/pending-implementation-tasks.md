@@ -13,6 +13,11 @@ sources: []
 Backlog ordenado para retomar el harness tarea por tarea. Cada bloque se puede
 revisar, aprobar y ejecutar sin mezclar scopes.
 
+> **Plan maestro: Super-harness 2026-06** — ver [[build-plan/super-harness-plan-2026-06-12]]
+> para la síntesis post-análisis de referencias (pi, hermes-agent) y workstreams W1–W5
+> (tool loading 2.0, SSH completo, DB context pack, context engine v2, residuales perf).
+> Ese documento articula las prioridades estratégicas y el cronograma estimado.
+
 > **Análisis pendiente de convertir en tareas (2026-06-10):**
 > [[build-plan/planning-codex-delegation-2026-06-10]] — auditoría de la planificación y la delegación
 > a Codex (`--dangerously-bypass-approvals-and-sandbox`). **Objetivo primario (aclaraciones del

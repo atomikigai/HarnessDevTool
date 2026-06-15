@@ -180,6 +180,12 @@ Objetivo: evitar leer todos los TOML para vistas y planning.
 
 ### Criterios de aceptacion
 
+- `tasks/index.db` materializa summaries compactos con title/status/assignee,
+  labels, blockers, counts, latest handoff y preview.
+- `TaskStore::list_summaries`, `latest_active_summary` y `ready_queue` leen
+  desde SQLite; tests verifican que `list_summaries` no reabre TOML.
+- MCP expone `task_list_summary` y `task_next_best` para planning/status scans
+  antes de pedir `task_get`.
 - Listar tasks para dashboard/scheduler no relee cada TOML.
 - `task_list` completo sigue disponible cuando el agente necesita detalles.
 - Scheduler usa summaries donde no necesita task completo.

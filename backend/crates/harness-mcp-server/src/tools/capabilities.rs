@@ -194,6 +194,8 @@ fn categories(runtime: CapabilityRuntime) -> Vec<CapabilityCategory> {
                 "test_selector",
                 "contract_guard",
                 "evidence_pack",
+                "task_list_summary",
+                "task_next_best",
             ],
             skills: &["code-review-and-quality"],
             status: if requested("planning") {

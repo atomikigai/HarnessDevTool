@@ -376,6 +376,29 @@ pub struct Task {
     pub history: HistoryBlock,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct TaskSummary {
+    pub id: String,
+    pub title: String,
+    pub status: TaskStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assignee: Option<String>,
+    pub updated_at: DateTime<Utc>,
+    #[serde(default)]
+    pub labels: Vec<String>,
+    #[serde(default)]
+    pub blocked_by: Vec<String>,
+    #[serde(default)]
+    pub depends_on: Vec<String>,
+    pub acceptance_count: usize,
+    pub artifact_count: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latest_handoff_status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latest_handoff_at: Option<i64>,
+    pub summary_preview: String,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[cfg_attr(feature = "ts-export", derive(TS))]
 #[cfg_attr(feature = "ts-export", ts(export, export_to = "../../../bindings/"))]

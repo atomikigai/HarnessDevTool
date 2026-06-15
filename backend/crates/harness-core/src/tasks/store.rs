@@ -18,7 +18,7 @@ use super::index::Index;
 use super::model::{
     AcceptanceBlock, Artifact, ArtifactKind, Artifacts, ClaimResult, HistoryBlock, HistoryEvent,
     Lease, ListFilters, Notes, ReconcileReport, ReconcileSessionRef, SchedulerExplanation, Task,
-    TaskDraft, TaskPatch, TaskStatus,
+    TaskDraft, TaskPatch, TaskStatus, TaskSummary,
 };
 use super::reconcile::reconcile_tasks;
 use super::state_machine::validate_transition;
@@ -234,7 +234,7 @@ impl TaskStore {
 
     fn rebuild_index_inner(
         &self,
-        _tid: &str,
+        tid: &str,
         dir: &Path,
         index: &Arc<Mutex<Index>>,
         tasks: &Arc<Mutex<HashMap<String, Task>>>,
@@ -254,7 +254,8 @@ impl TaskStore {
             }
             match read_task_file(&path) {
                 Ok(t) => {
-                    if let Err(e) = idx.upsert(&t) {
+                    let (handoff_status, handoff_at) = self.latest_handoff_fields(tid, &t.id)?;
+                    if let Err(e) = idx.upsert(&t, handoff_status.as_deref(), handoff_at) {
                         tracing::warn!(?path, ?e, "failed to index task");
                     }
                     task_map.insert(t.id.clone(), t);
@@ -281,6 +282,18 @@ impl TaskStore {
         Ok(out)
     }
 
+    /// List compact task summaries from the derived SQLite index without
+    /// reopening each task TOML.
+    pub fn list_summaries(
+        &self,
+        tid: &str,
+        filters: ListFilters,
+    ) -> Result<Vec<TaskSummary>, Error> {
+        let (index, _, _) = self.ensure_thread(tid)?;
+        let idx = lock_or_recover(&index);
+        idx.list_summaries(&filters)
+    }
+
     /// Read a single task.
     pub fn get(&self, tid: &str, task_id: &str) -> Result<Task, Error> {
         self.ensure_thread(tid)?;
@@ -294,21 +307,40 @@ impl TaskStore {
     /// Count active (non-terminal) tasks in a thread. Used for the per-thread
     /// cap and for the "anything to resume?" check at session spawn.
     pub fn count_active(&self, tid: &str) -> Result<usize, Error> {
-        let tasks = self.list(tid, ListFilters::default())?;
+        let tasks = self.list_summaries(tid, ListFilters::default())?;
         Ok(tasks.into_iter().filter(|t| is_active(t.status)).count())
+    }
+
+    pub fn latest_active_summary(&self, tid: &str) -> Result<Option<TaskSummary>, Error> {
+        let mut tasks: Vec<TaskSummary> = self
+            .list_summaries(tid, ListFilters::default())?
+            .into_iter()
+            .filter(|t| is_active(t.status))
+            .collect();
+        tasks.sort_by_key(|task| std::cmp::Reverse(task.updated_at));
+        Ok(tasks.into_iter().next())
     }
 
     /// Most-recently-updated active task in a thread, or `None` if the thread
     /// has no active tasks. Used to auto-pick "what should this session
     /// continue" at spawn time.
     pub fn latest_active(&self, tid: &str) -> Result<Option<Task>, Error> {
-        let mut tasks: Vec<Task> = self
-            .list(tid, ListFilters::default())?
+        let Some(summary) = self.latest_active_summary(tid)? else {
+            return Ok(None);
+        };
+        self.get(tid, &summary.id).map(Some)
+    }
+
+    pub fn ready_queue(&self, tid: &str) -> Result<Vec<TaskSummary>, Error> {
+        let mut tasks: Vec<TaskSummary> = self
+            .list_summaries(tid, ListFilters::default())?
             .into_iter()
-            .filter(|t| is_active(t.status))
+            .filter(|t| {
+                t.status == TaskStatus::Queued && t.blocked_by.is_empty() && t.assignee.is_none()
+            })
             .collect();
         tasks.sort_by_key(|task| std::cmp::Reverse(task.updated_at));
-        Ok(tasks.into_iter().next())
+        Ok(tasks)
     }
 
     /// Create a new task. Status starts as `queued`, or `blocked` if any
@@ -396,8 +428,7 @@ impl TaskStore {
         let path = self.task_path(tid, &id)?;
         write_task_atomic(&path, &task)?;
         {
-            let idx = lock_or_recover(&index);
-            idx.upsert(&task)?;
+            self.upsert_task_index(tid, &index, &task)?;
         }
         {
             let mut task_map = lock_or_recover(&tasks);
@@ -431,8 +462,7 @@ impl TaskStore {
             with_locked_task(&path, |task| apply_patch(task, &patch, by, &handoffs))?;
 
         {
-            let idx = lock_or_recover(&index);
-            idx.upsert(&task)?;
+            self.upsert_task_index(tid, &index, &task)?;
         }
         {
             let mut task_map = lock_or_recover(&tasks);
@@ -522,8 +552,7 @@ impl TaskStore {
             Ok(ClaimResult::Granted(lease))
         })?;
         {
-            let idx = lock_or_recover(&index);
-            idx.upsert(&task)?;
+            self.upsert_task_index(tid, &index, &task)?;
         }
         {
             let mut task_map = lock_or_recover(&tasks);
@@ -581,8 +610,7 @@ impl TaskStore {
             Ok::<_, Error>(lease)
         })?;
         {
-            let idx = lock_or_recover(&index);
-            idx.upsert(&task)?;
+            self.upsert_task_index(tid, &index, &task)?;
         }
         {
             let mut task_map = lock_or_recover(&tasks);
@@ -615,8 +643,7 @@ impl TaskStore {
             Ok::<_, Error>(new_lease)
         })?;
         {
-            let idx = lock_or_recover(&index);
-            idx.upsert(&task)?;
+            self.upsert_task_index(tid, &index, &task)?;
         }
         {
             let mut task_map = lock_or_recover(&tasks);
@@ -641,8 +668,7 @@ impl TaskStore {
             Ok::<_, Error>(())
         })?;
         {
-            let idx = lock_or_recover(&index);
-            idx.upsert(&task)?;
+            self.upsert_task_index(tid, &index, &task)?;
         }
         {
             let mut task_map = lock_or_recover(&tasks);
@@ -898,11 +924,36 @@ impl TaskStore {
         let (_, out) = with_locked_task(&path, |t| f(t))?;
         let (index, tasks, _) = self.ensure_thread(tid)?;
         let t = read_task_file(&path)?;
-        let idx = lock_or_recover(&index);
-        idx.upsert(&t)?;
+        self.upsert_task_index(tid, &index, &t)?;
         let mut task_map = lock_or_recover(&tasks);
         task_map.insert(t.id.clone(), t);
         Ok(out)
+    }
+
+    fn upsert_task_index(
+        &self,
+        tid: &str,
+        index: &Arc<Mutex<Index>>,
+        task: &Task,
+    ) -> Result<(), Error> {
+        let (handoff_status, handoff_at) = self.latest_handoff_fields(tid, &task.id)?;
+        let idx = lock_or_recover(index);
+        idx.upsert(task, handoff_status.as_deref(), handoff_at)
+    }
+
+    fn latest_handoff_fields(
+        &self,
+        tid: &str,
+        task_id: &str,
+    ) -> Result<(Option<String>, Option<i64>), Error> {
+        let latest = self
+            .read_handoffs(tid, task_id)?
+            .into_iter()
+            .max_by_key(|handoff| handoff.at);
+        Ok(match latest {
+            Some(handoff) => (Some(handoff.status), Some(handoff.at)),
+            None => (None, None),
+        })
     }
 }
 
@@ -1992,6 +2043,42 @@ mod tests {
         .unwrap();
         let pick = s.latest_active("thr-1").unwrap().unwrap();
         assert_eq!(pick.id, "T-0001");
+    }
+
+    #[test]
+    fn list_summaries_uses_index_without_task_file_reads() {
+        let (_dir, s) = store();
+        s.create("thr-1", mk_draft("a")).unwrap();
+        s.create("thr-1", mk_draft("b")).unwrap();
+
+        reset_task_file_read_count();
+        let summaries = s.list_summaries("thr-1", ListFilters::default()).unwrap();
+
+        assert_eq!(summaries.len(), 2);
+        assert_eq!(task_file_read_count(), 0);
+        assert_eq!(summaries[0].title, "a");
+        assert_eq!(summaries[0].acceptance_count, 0);
+    }
+
+    #[test]
+    fn ready_queue_returns_unblocked_unassigned_summaries() {
+        let (_dir, s) = store();
+        s.create("thr-1", mk_draft("ready")).unwrap();
+        s.create(
+            "thr-1",
+            TaskDraft {
+                depends_on: vec!["T-9999".into()],
+                ..mk_draft("blocked")
+            },
+        )
+        .unwrap();
+        s.create("thr-1", mk_draft("ready-2")).unwrap();
+        s.claim("thr-1", "T-0001", "agent:a", Duration::from_secs(60))
+            .unwrap();
+
+        let ready = s.ready_queue("thr-1").unwrap();
+        assert_eq!(ready.len(), 1);
+        assert_eq!(ready[0].id, "T-0003");
     }
 
     #[test]

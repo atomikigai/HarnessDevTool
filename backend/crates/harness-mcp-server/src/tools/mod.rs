@@ -673,6 +673,31 @@ pub fn list_descriptors() -> Vec<ToolDescriptor> {
             }),
         },
         ToolDescriptor {
+            name: "task_list_summary".into(),
+            description: "List compact task summaries from the derived tasks/index.db without reopening every task TOML. Use for planning, dashboards, and status scans before task_get."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "thread_id": { "type": "string" },
+                    "status": { "type": "string" },
+                    "label": { "type": "string" },
+                    "assignee": { "type": "string" }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "task_next_best".into(),
+            description: "Return the best next task summary from tasks/index.db: first ready queued work, otherwise latest active task."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "thread_id": { "type": "string" }
+                }
+            }),
+        },
+        ToolDescriptor {
             name: "task_get".into(),
             description: "Fetch a single task by id within a thread. `thread_id` defaults to \
                           the caller's thread when omitted."

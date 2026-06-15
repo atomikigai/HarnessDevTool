@@ -13,7 +13,7 @@ pub use model::{
     AcceptanceCheck, Artifact, ArtifactKind, Artifacts, ClaimResult, HistoryEvent, Lease,
     ListFilters, ReconcileEntity, ReconcileIssue, ReconcileReport, ReconcileSessionRef,
     ReconcileSeverity, SchedulerDecisionKind, SchedulerExplanation, SpecRef, Task, TaskBrief,
-    TaskDraft, TaskPatch, TaskStatus,
+    TaskDraft, TaskPatch, TaskStatus, TaskSummary,
 };
 pub use reconcile::reconcile_tasks;
 pub use store::TaskStore;

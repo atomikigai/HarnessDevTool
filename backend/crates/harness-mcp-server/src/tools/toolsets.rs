@@ -301,6 +301,8 @@ fn groups() -> Vec<ToolGroup> {
                 "test_selector",
                 "contract_guard",
                 "evidence_pack",
+                "task_list_summary",
+                "task_next_best",
             ],
         },
         ToolGroup {

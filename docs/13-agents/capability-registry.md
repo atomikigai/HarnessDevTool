@@ -137,7 +137,7 @@ Estas son las MCP tools que expone `harness-bridge`. Patrón de namespace:
 
 | Namespace | Tools | Descripción |
 |---|---|---|
-| `task.*` | `list`, `get`, `claim`, `renew`, `update`, `release`, `submit` | Operaciones sobre tasks |
+| `task.*` | `list`, `list_summary`, `next_best`, `get`, `claim`, `renew`, `update`, `release`, `submit` | Operaciones sobre tasks; usar summaries para status/planning antes de pedir task completo |
 | `spec.*` | `read`, `append_section`, `set_section` | Mantenimiento de spec.md |
 | `skills.*` | `search`, `get`, `manage` | F5; antes de F5 devuelven `[]` |
 | `capability.*` | `request`, `list_loaded` | Solicitar/listar capabilities en runtime |

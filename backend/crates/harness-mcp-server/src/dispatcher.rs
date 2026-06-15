@@ -346,6 +346,8 @@ impl Dispatcher {
                 &args,
             ),
             "task_list" => tasks::list(&self.store, &self.thread_id, &args),
+            "task_list_summary" => tasks::list_summary(&self.store, &self.thread_id, &args),
+            "task_next_best" => tasks::next_best(&self.store, &self.thread_id, &args),
             "task_get" => tasks::get(&self.store, &self.thread_id, &args),
             "task_claim" => tasks::claim(&self.store, &self.thread_id, &args),
             "task_renew" => tasks::renew(&self.store, &self.thread_id, &args),

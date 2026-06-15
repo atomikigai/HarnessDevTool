@@ -405,6 +405,51 @@ pub fn list(store: &TaskStore, default_thread: &str, args: &Value) -> Result<Val
     Ok(json!(tasks))
 }
 
+pub fn list_summary(
+    store: &TaskStore,
+    default_thread: &str,
+    args: &Value,
+) -> Result<Value, String> {
+    let thread_id = valid_thread_or_default(args, default_thread)?;
+    let status = match opt_str(args, "status") {
+        Some(s) => Some(TaskStatus::from_str(s).map_err(|e| format!("bad status: {e}"))?),
+        None => None,
+    };
+    let filters = ListFilters {
+        status,
+        label: opt_str(args, "label").map(String::from),
+        assignee: opt_str(args, "assignee").map(String::from),
+    };
+    let tasks = store.list_summaries(thread_id, filters).map_err(map_err)?;
+    Ok(json!({
+        "thread_id": thread_id,
+        "count": tasks.len(),
+        "tasks": tasks,
+        "source": "tasks/index.db",
+        "canonical_source": "tasks/*.toml",
+    }))
+}
+
+pub fn next_best(store: &TaskStore, default_thread: &str, args: &Value) -> Result<Value, String> {
+    let thread_id = valid_thread_or_default(args, default_thread)?;
+    let ready = store.ready_queue(thread_id).map_err(map_err)?;
+    if let Some(task) = ready.into_iter().next() {
+        return Ok(json!({
+            "thread_id": thread_id,
+            "task": task,
+            "reason": "ready_queued_task",
+            "source": "tasks/index.db",
+        }));
+    }
+    let latest = store.latest_active_summary(thread_id).map_err(map_err)?;
+    Ok(json!({
+        "thread_id": thread_id,
+        "task": latest,
+        "reason": if latest.is_some() { "latest_active_task" } else { "no_active_task" },
+        "source": "tasks/index.db",
+    }))
+}
+
 pub fn get(store: &TaskStore, default_thread: &str, args: &Value) -> Result<Value, String> {
     let thread_id = valid_thread_or_default(args, default_thread)?;
     let task_id = valid_task_arg(args)?;

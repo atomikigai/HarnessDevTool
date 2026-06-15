@@ -53,6 +53,8 @@ Resultado: agentes **más precisos**, menos tokens en "explorar", menos retries.
 | `tasks.touches_conflict` | `id` | `[task_id]` de tasks `in_progress` que tocan archivos solapados |
 | `tasks.dep_graph` | `thread` | DAG completo (DOT) |
 | `tasks.list_ready` | `thread` | tasks `queued` con `blocked_by∅` |
+| `task_list_summary` | `thread_id?, status?, label?, assignee?` | summaries desde `tasks/index.db` sin reabrir cada TOML |
+| `task_next_best` | `thread_id?` | mejor siguiente task: queued listo o ultimo active summary |
 
 ### `contracts.*`
 | Tool | Args | Devuelve |

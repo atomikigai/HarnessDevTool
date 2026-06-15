@@ -264,9 +264,21 @@ disponibles.
 
 ### Criterios de aceptacion
 
-- El agente recupera memoria on-demand en vez de recibir dumps.
-- `memory_note_propose` no escribe memoria libre sin approval.
-- Search soporta top-K, kind/status/tags y snippets.
+- Implementado 2026-06-15: el MCP expone `memory_search`,
+  `memory_read`, `memory_continuity` y `memory_note_propose` bajo smart
+  loading de `context`/`memory`.
+- `memory_fts.sqlite` vive en `profiles/<profile>/memory/` como indice
+  derivado/rebuildable; sincroniza incrementalmente por `mtime/len` y no
+  reemplaza Markdown, docs ni logs canonicos.
+- El agente recupera memoria on-demand con snippets y filtros `top_k`,
+  `kind`, `status` y `tags` en vez de recibir dumps.
+- `memory_note_propose` escribe solo propuestas Markdown en
+  `memory/proposals/` con `status: proposed` y `approval_required: true`; no
+  activa ni sobrescribe memoria libre.
+- El indice cubre memoria Markdown del profile, propuestas, skills, learner
+  reports, docs relevantes del repo y `AGENTS.md`/`DESIGN.md` cuando existen.
+- `skills_search` combina relevancia textual con bonus acotado por usage count
+  y freshness para priorizar skills utiles sin ocultar coincidencias nuevas.
 
 ## Workstream R7 — Repo manifest y symbol index
 

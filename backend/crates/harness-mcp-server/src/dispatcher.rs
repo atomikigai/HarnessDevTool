@@ -17,8 +17,9 @@ use crate::protocol::{
 use crate::tools::{
     self, attachments as attachment_tools, capabilities as capability_tools, db as db_tools,
     docs as docs_tools, evidence as evidence_tools, knowledge as knowledge_tools,
-    ledger as ledger_tools, n8n as n8n_tools, planning, repo, session as session_tools, skills,
-    spec, ssh as ssh_tools, tasks, toolsets::ToolRegistry, wrap_error, wrap_text,
+    ledger as ledger_tools, memory as memory_tools, n8n as n8n_tools, planning, repo,
+    session as session_tools, skills, spec, ssh as ssh_tools, tasks, toolsets::ToolRegistry,
+    wrap_error, wrap_text,
 };
 use harness_core::TaskStore;
 use harness_policy::{capability_default, is_sensitive_tool, Decision, PolicyEngine};
@@ -424,6 +425,18 @@ impl Dispatcher {
             }
             "knowledge_search" => knowledge_tools::search(&self.harness_home, &self.profile, &args),
             "skills_search" => skills::search(&self.harness_home, &self.profile, &args),
+            "memory_search" => {
+                memory_tools::search(&self.harness_home, &self.profile, &self.cwd, &args)
+            }
+            "memory_read" => {
+                memory_tools::read(&self.harness_home, &self.profile, &self.cwd, &args)
+            }
+            "memory_continuity" => {
+                memory_tools::continuity(&self.harness_home, &self.profile, &self.cwd, &args)
+            }
+            "memory_note_propose" => {
+                memory_tools::note_propose(&self.harness_home, &self.profile, &self.cwd, &args)
+            }
             "skill_propose" => skills::propose(&self.harness_home, &self.profile, &args),
             "skill_promote" => skills::promote(&self.harness_home, &self.profile, &args),
             "skill_archive" => skills::archive(&self.harness_home, &self.profile, &args),
@@ -1445,6 +1458,23 @@ mod tests {
         let tools = resp["result"]["tools"].as_array().unwrap();
         let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
         assert!(!names.contains(&"db_query"));
+    }
+
+    #[test]
+    fn tools_load_memory_alias_exposes_memory_rails() {
+        let (d, _) = mk("t1", "agent:1");
+        let load = r#"{"jsonrpc":"2.0","id":13,"method":"tools/call","params":{"name":"tools_load","arguments":{"groups":["memory"]}}}"#;
+        let resp = d.handle(parse_request(load).unwrap()).unwrap();
+        assert_ne!(resp["result"]["isError"], true);
+
+        let list_line = r#"{"jsonrpc":"2.0","id":14,"method":"tools/list"}"#;
+        let resp = d.handle(parse_request(list_line).unwrap()).unwrap();
+        let tools = resp["result"]["tools"].as_array().unwrap();
+        let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
+        assert!(names.contains(&"memory_search"));
+        assert!(names.contains(&"memory_read"));
+        assert!(names.contains(&"memory_continuity"));
+        assert!(names.contains(&"memory_note_propose"));
     }
 
     #[test]

@@ -153,6 +153,8 @@ impl SkillStore {
         if query_tokens.is_empty() {
             return Ok(Vec::new());
         }
+        let usage_counts = self.usage_counts()?;
+        let now = Utc::now();
         let mut hits = Vec::new();
         for record in self.list_skills(false)? {
             if record.status == SkillStatus::Archived {
@@ -167,7 +169,9 @@ impl SkillStore {
                 content
             );
             let hay_tokens = tokenize(&haystack);
-            let score = score_tokens(&query_tokens, &hay_tokens, &record);
+            let score = score_tokens(&query_tokens, &hay_tokens, &record)
+                + usage_bonus(usage_counts.get(&record.id).copied().unwrap_or(0))
+                + freshness_bonus(&record, now);
             if score == 0 {
                 continue;
             }
@@ -823,6 +827,26 @@ fn score_tokens(query: &HashSet<String>, hay: &HashSet<String>, record: &SkillRe
     score
 }
 
+fn usage_bonus(count: usize) -> u32 {
+    (count as u32).min(5)
+}
+
+fn freshness_bonus(record: &SkillRecord, now: DateTime<Utc>) -> u32 {
+    let Some(updated_at) = record.updated_at.as_ref().or(record.created_at.as_ref()) else {
+        return 0;
+    };
+    let age = now.signed_duration_since(*updated_at);
+    if age.num_days() <= 7 {
+        3
+    } else if age.num_days() <= 30 {
+        2
+    } else if age.num_days() <= 90 {
+        1
+    } else {
+        0
+    }
+}
+
 fn snippet(content: &str, query: &HashSet<String>) -> String {
     for line in content.lines() {
         let lower = line.to_ascii_lowercase();
@@ -971,6 +995,46 @@ mod tests {
         assert_eq!(archived.status, SkillStatus::Archived);
         assert!(archived.path.to_string_lossy().contains(".archive"));
         assert!(store.backups_dir().read_dir().unwrap().next().is_some());
+    }
+
+    #[test]
+    fn search_ranking_uses_usage_when_relevance_ties() {
+        let (_dir, store) = store();
+        let alpha = store
+            .propose(
+                "Alpha audit workflow",
+                "# Alpha audit workflow\n\nRun repeatable audit checks.",
+                vec!["audit".into()],
+                "seed",
+            )
+            .unwrap();
+        let beta = store
+            .propose(
+                "Beta audit workflow",
+                "# Beta audit workflow\n\nRun repeatable audit checks.",
+                vec!["audit".into()],
+                "seed",
+            )
+            .unwrap();
+
+        let before_usage = store.search("audit workflow", 5).unwrap();
+        assert_eq!(before_usage[0].id, alpha.id);
+
+        store
+            .record_usage(SkillUsage {
+                skill_id: beta.id.clone(),
+                outcome: "success".into(),
+                session_id: None,
+                task_id: None,
+                loaded: true,
+                used: true,
+                duration_ms: None,
+                recorded_at: Utc::now(),
+            })
+            .unwrap();
+
+        let after_usage = store.search("audit workflow", 5).unwrap();
+        assert_eq!(after_usage[0].id, beta.id);
     }
 
     #[test]

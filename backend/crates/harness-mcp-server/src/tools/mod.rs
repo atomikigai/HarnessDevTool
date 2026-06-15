@@ -5,6 +5,7 @@ pub mod docs;
 pub mod evidence;
 pub mod knowledge;
 pub mod ledger;
+pub mod memory;
 pub mod n8n;
 pub mod planning;
 pub mod repo;
@@ -1521,6 +1522,60 @@ pub fn list_descriptors() -> Vec<ToolDescriptor> {
                 "properties": {
                     "query": { "type": "string" },
                     "top_k": { "type": "integer", "minimum": 1 }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "memory_search".into(),
+            description: "Search profile/repo memory FTS on demand. Returns compact snippets from Markdown memory, plans, decisions, docs, and skills without loading full dumps."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["query"],
+                "properties": {
+                    "query": { "type": "string" },
+                    "top_k": { "type": "integer", "minimum": 1, "maximum": 50 },
+                    "kind": { "type": "string", "description": "Optional kind filter such as memory, proposal, plan, agent_doc, skill, doc." },
+                    "status": { "type": "string", "description": "Optional status filter such as active, proposed, archived." },
+                    "tags": { "type": "array", "items": { "type": "string" } }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "memory_read".into(),
+            description: "Read one selected memory entry by id after memory_search. Use sparingly; prefer snippets first."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["id"],
+                "properties": {
+                    "id": { "type": "string" }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "memory_continuity".into(),
+            description: "Return compact memory index counts and recent continuity anchors for the active profile."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 25 }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "memory_note_propose".into(),
+            description: "Write a proposed memory Markdown note for human/reviewer approval. It does not activate or overwrite memory."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["title", "body"],
+                "properties": {
+                    "title": { "type": "string" },
+                    "body": { "type": "string", "maxLength": 65536 },
+                    "tags": { "type": "array", "items": { "type": "string" } },
+                    "reason": { "type": "string" }
                 }
             }),
         },

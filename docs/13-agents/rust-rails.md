@@ -101,12 +101,18 @@ Resultado: agentes **más precisos**, menos tokens en "explorar", menos retries.
 | `transcript_query` | `session_id, since?, limit?, kind?, role?` | pagina de transcript por seq desde indice derivado |
 | `transcript_search` | `session_id?, query, since?, limit?, kind?, role?` | busqueda FTS5 sobre contenido, tool args/results y raw payload sin replay completo |
 | `transcript_tool_results` | `session_id?, since?, limit?, tool_name?, errors_only?` | resultados de tools recientes filtrables por tool/error desde `transcript_index.sqlite` |
+| `memory_search` | `query, top_k?, kind?, status?, tags?` | snippets top-K desde `memory_fts.sqlite` por profile sobre memoria Markdown, docs, skills y propuestas |
+| `memory_read` | `id` | cuerpo completo de un hit seleccionado; usar despues de `memory_search`, no como primer paso |
+| `memory_continuity` | `limit?` | conteos por kind y anclas recientes para retomar objetivo sin dumps |
+| `memory_note_propose` | `title, body, tags?, reason?` | propuesta Markdown con `status: proposed`; no activa ni sobrescribe memoria libre |
 | `evidence_pack` | `task_id?, session_id?, paths?` | diff resumido, archivos, comandos, tests, artifacts, riesgos y checks pendientes |
 
 Implementado hoy: `session_context_pack`, `context_status`, `context_search`,
 `context_checkpoint_request`, `agent_ledger_list`, `agent_ledger_get`,
 `handoff_latest`, `session_handoff_submit`, `evidence_pack`, `timeline_query`,
-`transcript_query`, `transcript_search` y `transcript_tool_results`.
+`transcript_query`, `transcript_search`, `transcript_tool_results`,
+`memory_search`, `memory_read`, `memory_continuity` y
+`memory_note_propose`.
 El agent ledger materializa `agent_ledger.sqlite` por profile desde session
 meta, handoffs y `context.sqlite`, y se reconstruye on-demand para mantener
 JSON/JSONL como fuente canonica.
@@ -118,6 +124,9 @@ errores sin replay completo. `evidence_pack` devuelve git
 `status`/`name-status`/`stat` acotados, metadata de task/sesion, artifacts
 registrados, gaps conocidos y next steps; para evidencia de comandos/tests debe
 combinarse con `transcript_tool_results` o `transcript_search`.
+`memory_fts.sqlite` tambien es derivado/rebuildable: sincroniza archivos por
+`mtime/len` y permite recuperar memoria de forma selectiva bajo smart loading
+`context`/`memory_runtime`.
 
 ### `repo.*`
 | Tool | Args | Devuelve |

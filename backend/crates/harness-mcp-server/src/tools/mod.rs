@@ -4,6 +4,7 @@ pub mod db;
 pub mod docs;
 pub mod evidence;
 pub mod knowledge;
+pub mod ledger;
 pub mod n8n;
 pub mod planning;
 pub mod repo;
@@ -243,6 +244,70 @@ pub fn list_descriptors() -> Vec<ToolDescriptor> {
                 "type": "object",
                 "properties": {
                     "session_id": { "type": "string", "description": "Defaults to the current MCP session id." }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "agent_ledger_list".into(),
+            description: "List compact subagent/session ledger entries rebuilt from session meta, handoffs, and context index without replaying transcripts."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "root_session_id": { "type": "string" },
+                    "thread_id": { "type": "string" },
+                    "status": { "type": "string" },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 200 }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "agent_ledger_get".into(),
+            description: "Read one compact agent ledger entry by session_id, including objective, capabilities, latest handoff, pressure, and next action."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["session_id"],
+                "properties": {
+                    "session_id": { "type": "string" }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "handoff_latest".into(),
+            description: "Return the latest structured task handoff for a task or for a session's assigned task."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "thread_id": { "type": "string", "description": "Defaults to current MCP thread." },
+                    "task_id": { "type": "string" },
+                    "session_id": { "type": "string", "description": "Used to resolve thread/task from session meta." }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "session_handoff_submit".into(),
+            description: "Submit a structured handoff for a session/task via the backend append-only handoff API."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["to_role", "status", "goal", "next_agent_action"],
+                "properties": {
+                    "session_id": { "type": "string", "description": "Defaults to current MCP session." },
+                    "thread_id": { "type": "string", "description": "Defaults to current MCP thread." },
+                    "task_id": { "type": "string", "description": "Required unless session_id resolves to a task." },
+                    "from": { "type": "string", "description": "Defaults to session_id." },
+                    "to_role": { "type": "string" },
+                    "status": { "type": "string" },
+                    "goal": { "type": "string" },
+                    "assumptions": { "type": "array", "items": { "type": "string" } },
+                    "files_changed": { "type": "array", "items": { "type": "string" } },
+                    "commands_run": { "type": "array", "items": { "type": "string" } },
+                    "verification_passed": { "type": "array", "items": { "type": "string" } },
+                    "verification_not_run": { "type": "array", "items": { "type": "string" } },
+                    "blocked_on": { "type": "array", "items": { "type": "string" } },
+                    "next_agent_action": { "type": "string" }
                 }
             }),
         },
@@ -2005,8 +2070,8 @@ pub fn list_descriptors() -> Vec<ToolDescriptor> {
         ToolDescriptor {
             name: "session_read_child_summary".into(),
             description:
-                "Read the current meta/status of a child session by id. Pre-F3 this is a \
-                 meta snapshot; richer handoff summaries land with F3."
+                "Read the current meta/status of a child session by id. For richer objective, \
+                 latest handoff, capabilities, and next action use agent_ledger_get."
                     .into(),
             input_schema: json!({
                 "type": "object",

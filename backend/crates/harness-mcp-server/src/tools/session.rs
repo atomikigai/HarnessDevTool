@@ -18,7 +18,7 @@ use serde_json::{json, Value};
 const HARNESS_PROTOCOL_VERSION_HEADER: &str = "X-Protocol-Version";
 const HARNESS_PROTOCOL_VERSION: &str = "1.0";
 
-fn harness_request(req: ureq::Request, api_token: Option<&str>) -> ureq::Request {
+pub(crate) fn harness_request(req: ureq::Request, api_token: Option<&str>) -> ureq::Request {
     let req = req.set(HARNESS_PROTOCOL_VERSION_HEADER, HARNESS_PROTOCOL_VERSION);
     if let Some(token) = api_token {
         req.set("Authorization", &format!("Bearer {token}"))
@@ -33,7 +33,7 @@ fn str_arg<'a>(args: &'a Value, key: &str) -> Result<&'a str, String> {
         .ok_or_else(|| format!("missing or non-string arg: {key}"))
 }
 
-fn opt_str<'a>(args: &'a Value, key: &str) -> Option<&'a str> {
+pub(crate) fn opt_str<'a>(args: &'a Value, key: &str) -> Option<&'a str> {
     args.get(key).and_then(|v| v.as_str())
 }
 
@@ -656,7 +656,7 @@ fn compact_next_actions(latest_handoff: Option<&Value>, has_task: bool) -> Vec<S
     out
 }
 
-fn encode_query(input: &str) -> String {
+pub(crate) fn encode_query(input: &str) -> String {
     let mut out = String::new();
     for byte in input.bytes() {
         match byte {

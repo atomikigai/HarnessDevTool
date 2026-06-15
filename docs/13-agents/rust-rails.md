@@ -93,7 +93,7 @@ Resultado: agentes **más precisos**, menos tokens en "explorar", menos retries.
 | `agent_ledger_list` | `root_session_id?, thread_id?, status?` | subagentes con objetivo, estado, role, task, capabilities, bloqueos y next action |
 | `agent_ledger_get` | `session_id` | ledger completo reconstruible de una sesion/subagente |
 | `handoff_latest` | `thread_id, task_id?, session_id?` | ultimo handoff estructurado relevante |
-| `session_handoff_submit` | `session_id, handoff` | valida y persiste handoff append-only, actualizando indices derivados |
+| `session_handoff_submit` | `session_id?, thread_id?, task_id?, to_role, status, goal, next_agent_action, evidence arrays?` | valida y persiste handoff append-only via backend |
 | `context_search` | `session_id?, query, limit?` | snippets de checkpoints/eventos de contexto via FTS5 |
 | `context_status` | `session_id?` | estado del context governor e indice derivado para la sesion |
 | `context_checkpoint_request` | `session_id?` | solicita checkpoint compacto a una sesion running |
@@ -104,8 +104,12 @@ Resultado: agentes **más precisos**, menos tokens en "explorar", menos retries.
 | `evidence_pack` | `task_id?, session_id?, paths?` | diff resumido, archivos, comandos, tests, artifacts, riesgos y checks pendientes |
 
 Implementado hoy: `session_context_pack`, `context_status`, `context_search`,
-`context_checkpoint_request`, `evidence_pack`, `timeline_query`,
+`context_checkpoint_request`, `agent_ledger_list`, `agent_ledger_get`,
+`handoff_latest`, `session_handoff_submit`, `evidence_pack`, `timeline_query`,
 `transcript_query`, `transcript_search` y `transcript_tool_results`.
+El agent ledger materializa `agent_ledger.sqlite` por profile desde session
+meta, handoffs y `context.sqlite`, y se reconstruye on-demand para mantener
+JSON/JSONL como fuente canonica.
 `timeline_query` pagina por `seq`, filtra por tipo/actor/task/session y usa
 FTS5 (`q`) sobre summary/payload; el indice es derivado y se reconstruye desde
 `events.jsonl`. Las rails de transcript leen `transcript_index.sqlite`,

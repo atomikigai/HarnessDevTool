@@ -142,7 +142,7 @@ Estas son las MCP tools que expone `harness-bridge`. Patrón de namespace:
 | `skills.*` | `search`, `get`, `manage` | F5; antes de F5 devuelven `[]` |
 | `capability.*` | `request`, `list_loaded` | Solicitar/listar capabilities en runtime |
 | `memory.*` | `search`, `get` | F5; FTS5 sobre events.jsonl |
-| `context.*` | `session_context_pack`, `context_status`, `context_search`, `context_checkpoint_request`, `transcript_query`, `transcript_search`, `transcript_tool_results` | Contexto operacional compacto, búsqueda FTS5 de checkpoints y transcript indexado sin replay completo |
+| `context.*` | `session_context_pack`, `agent_ledger_list`, `agent_ledger_get`, `handoff_latest`, `session_handoff_submit`, `context_status`, `context_search`, `context_checkpoint_request`, `transcript_query`, `transcript_search`, `transcript_tool_results` | Contexto operacional compacto, ledger de subagentes, handoffs append-only, checkpoints y transcript indexado sin replay completo |
 | `timeline.*` | `timeline_query` | Timeline/eventos paginados y filtrables desde `events_index.sqlite`, con FTS5 opcional sobre summary/payload |
 | `evidence.*` | `evidence_pack` | Paquete compacto para review/QA con git status/stat, task/session metadata, artifacts, gaps y next steps |
 | `repo.*` | `analyze`, `scan`, `find`, `read_file`, `git_status`, `git_log`, `git_diff`, `manifest`, `symbol_search`, `related_files`, `codebase_memory_status` | Read-only del workspace; primera lectura recomendada en repos desconocidos |

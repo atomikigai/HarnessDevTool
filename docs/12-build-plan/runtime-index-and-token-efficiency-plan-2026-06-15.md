@@ -105,12 +105,20 @@ subagentes sin releer transcripts.
 
 ### Criterios de aceptacion
 
+- Implementado 2026-06-15: el MCP server mantiene
+  `agent_ledger.sqlite` por profile como indice derivado on-demand desde
+  `sessions/*/meta.json`, handoffs JSONL y `context.sqlite` cuando existe.
+- MCP expone `agent_ledger_list`, `agent_ledger_get`, `handoff_latest` y
+  `session_handoff_submit` bajo el grupo `context`; `session_handoff_submit`
+  usa la API REST append-only de handoffs con `X-Protocol-Version`.
 - `session_read_child_summary` o su reemplazo devuelve handoff estructurado,
   no solo metadata.
 - Orchestrator puede listar hijos y ver objetivo/next action/bloqueos en una
   llamada compacta.
 - Handoff submit persiste append-only y actualiza indice derivado.
-- Tests cubren reconstruccion del ledger desde meta + handoffs + context events.
+- Tests cubren reconstruccion desde meta + handoffs + `context.sqlite`,
+  resolucion de handoff desde session meta, y POST de handoff con header de
+  protocolo.
 
 ## Workstream R2 — Context index incremental
 

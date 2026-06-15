@@ -311,6 +311,10 @@ fn groups() -> Vec<ToolGroup> {
             includes: &[],
             tools: &[
                 "session_context_pack",
+                "agent_ledger_list",
+                "agent_ledger_get",
+                "handoff_latest",
+                "session_handoff_submit",
                 "context_status",
                 "context_search",
                 "context_checkpoint_request",

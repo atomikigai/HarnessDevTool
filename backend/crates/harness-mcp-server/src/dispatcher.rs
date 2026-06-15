@@ -16,9 +16,9 @@ use crate::protocol::{
 };
 use crate::tools::{
     self, attachments as attachment_tools, capabilities as capability_tools, db as db_tools,
-    docs as docs_tools, evidence as evidence_tools, knowledge as knowledge_tools, n8n as n8n_tools,
-    planning, repo, session as session_tools, skills, spec, ssh as ssh_tools, tasks,
-    toolsets::ToolRegistry, wrap_error, wrap_text,
+    docs as docs_tools, evidence as evidence_tools, knowledge as knowledge_tools,
+    ledger as ledger_tools, n8n as n8n_tools, planning, repo, session as session_tools, skills,
+    spec, ssh as ssh_tools, tasks, toolsets::ToolRegistry, wrap_error, wrap_text,
 };
 use harness_core::TaskStore;
 use harness_policy::{capability_default, is_sensitive_tool, Decision, PolicyEngine};
@@ -292,6 +292,28 @@ impl Dispatcher {
             ),
             "context_checkpoint_request" => session_tools::context_checkpoint_request(
                 self.session_id.as_deref(),
+                self.server_url.as_deref(),
+                self.api_token.as_deref(),
+                &args,
+            ),
+            "agent_ledger_list" => {
+                ledger_tools::list(&self.store, &self.harness_home, &self.profile, &args)
+            }
+            "agent_ledger_get" => {
+                ledger_tools::get(&self.store, &self.harness_home, &self.profile, &args)
+            }
+            "handoff_latest" => ledger_tools::handoff_latest(
+                &self.store,
+                &self.harness_home,
+                &self.profile,
+                &self.thread_id,
+                &args,
+            ),
+            "session_handoff_submit" => ledger_tools::submit_handoff(
+                self.session_id.as_deref(),
+                &self.harness_home,
+                &self.profile,
+                &self.thread_id,
                 self.server_url.as_deref(),
                 self.api_token.as_deref(),
                 &args,

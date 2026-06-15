@@ -915,6 +915,11 @@ fn apply_patch(
 ) -> Result<(TaskStatus, Vec<String>), Error> {
     let prev = task.status;
     let mut fields: Vec<String> = vec![];
+    if patch.status == Some(TaskStatus::Done) && patch.assignee.is_some() {
+        return Err(Error::Validation(
+            "pending_verify→done cannot change assignee in the same patch".into(),
+        ));
+    }
 
     if let Some(t) = &patch.title {
         task.title = t.clone();
@@ -1307,6 +1312,7 @@ fn write_task_atomic(path: &Path, task: &Task) -> Result<(), Error> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::model::AcceptanceCheck;
     use super::*;
     use tempfile::tempdir;
 
@@ -1639,6 +1645,137 @@ mod tests {
                 "agent:a",
             )
             .expect_err("pending_verify should require handoff");
+        assert!(matches!(err, Error::Validation(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn reassigned_evaluator_can_close_pending_verify() {
+        let (_dir, s) = store();
+        let mut draft = mk_draft("verify me");
+        draft.acceptance = vec![AcceptanceCheck {
+            id: "C1".into(),
+            text: "tests pass".into(),
+            verified: false,
+            verified_by: None,
+        }];
+        s.create("thr-1", draft).unwrap();
+        s.claim(
+            "thr-1",
+            "T-0001",
+            "agent:generator",
+            Duration::from_secs(60),
+        )
+        .unwrap();
+        s.patch(
+            "thr-1",
+            "T-0001",
+            TaskPatch {
+                status: Some(TaskStatus::InProgress),
+                ..Default::default()
+            },
+            "agent:generator",
+        )
+        .unwrap();
+        append_test_handoff(&s, "thr-1", "T-0001", "agent:generator");
+        s.submit(
+            "thr-1",
+            "T-0001",
+            Artifacts {
+                files: vec!["src/lib.rs".into()],
+                ..Default::default()
+            },
+            "agent:generator",
+        )
+        .unwrap();
+        s.reassign(
+            "thr-1",
+            "T-0001",
+            "agent:evaluator",
+            Duration::from_secs(60),
+            "verify",
+        )
+        .unwrap();
+
+        let task = s
+            .patch(
+                "thr-1",
+                "T-0001",
+                TaskPatch {
+                    status: Some(TaskStatus::Done),
+                    acceptance_checks: Some(vec![AcceptanceCheck {
+                        id: "C1".into(),
+                        text: "tests pass".into(),
+                        verified: true,
+                        verified_by: Some("agent:evaluator".into()),
+                    }]),
+                    ..Default::default()
+                },
+                "agent:evaluator",
+            )
+            .unwrap();
+
+        assert_eq!(task.status, TaskStatus::Done);
+    }
+
+    #[test]
+    fn done_patch_cannot_change_assignee() {
+        let (_dir, s) = store();
+        let mut draft = mk_draft("no assignee games");
+        draft.acceptance = vec![AcceptanceCheck {
+            id: "C1".into(),
+            text: "tests pass".into(),
+            verified: false,
+            verified_by: None,
+        }];
+        s.create("thr-1", draft).unwrap();
+        s.claim(
+            "thr-1",
+            "T-0001",
+            "agent:generator",
+            Duration::from_secs(60),
+        )
+        .unwrap();
+        s.patch(
+            "thr-1",
+            "T-0001",
+            TaskPatch {
+                status: Some(TaskStatus::InProgress),
+                ..Default::default()
+            },
+            "agent:generator",
+        )
+        .unwrap();
+        append_test_handoff(&s, "thr-1", "T-0001", "agent:generator");
+        s.submit(
+            "thr-1",
+            "T-0001",
+            Artifacts {
+                files: vec!["src/lib.rs".into()],
+                ..Default::default()
+            },
+            "agent:generator",
+        )
+        .unwrap();
+
+        let err = s
+            .patch(
+                "thr-1",
+                "T-0001",
+                TaskPatch {
+                    status: Some(TaskStatus::Done),
+                    assignee: Some(None),
+                    acceptance_checks: Some(vec![AcceptanceCheck {
+                        id: "C1".into(),
+                        text: "tests pass".into(),
+                        verified: true,
+                        verified_by: Some("agent:evaluator".into()),
+                    }]),
+                    ..Default::default()
+                },
+                "agent:evaluator",
+            )
+            .expect_err("done must not allow assignee mutation");
+
         assert!(matches!(err, Error::Validation(_)), "got {err:?}");
     }
 

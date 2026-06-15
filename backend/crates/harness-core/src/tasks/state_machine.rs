@@ -69,14 +69,32 @@ pub fn validate_transition(task: &Task, to: TaskStatus, by: &str) -> Result<(), 
                     "pending_verify→done requires all acceptance.checks verified".into(),
                 ));
             }
-            let assignee = task.assignee.as_deref().unwrap_or("");
+            let implementers = verification_implementers(task);
+            if implementers.is_empty() {
+                return Err(Error::Validation(
+                    "pending_verify→done requires an implementation assignee".into(),
+                ));
+            }
+            if !by.starts_with("human") && implementers.iter().any(|agent| *agent == by) {
+                return Err(Error::Validation(
+                    "verifier must differ from implementation assignee".into(),
+                ));
+            }
             for c in &task.acceptance.checks {
-                if let Some(vb) = &c.verified_by {
-                    if vb == assignee {
-                        return Err(Error::Validation(
-                            "verified_by must differ from assignee".into(),
-                        ));
-                    }
+                let Some(vb) = c.verified_by.as_deref() else {
+                    return Err(Error::Validation(
+                        "pending_verify→done requires verified_by on every acceptance check".into(),
+                    ));
+                };
+                if implementers.iter().any(|agent| *agent == vb) {
+                    return Err(Error::Validation(
+                        "verified_by must differ from implementation assignee".into(),
+                    ));
+                }
+                if !by.starts_with("human") && !vb.starts_with("human") && vb != by {
+                    return Err(Error::Validation(
+                        "pending_verify→done requires the closing agent to be the verifier".into(),
+                    ));
                 }
             }
         }
@@ -110,6 +128,14 @@ pub fn validate_transition(task: &Task, to: TaskStatus, by: &str) -> Result<(), 
         _ => {}
     }
     Ok(())
+}
+
+fn verification_implementers(task: &Task) -> Vec<&str> {
+    if task.previous_assignees.is_empty() {
+        task.assignee.iter().map(String::as_str).collect()
+    } else {
+        task.previous_assignees.iter().map(String::as_str).collect()
+    }
 }
 
 #[cfg(test)]
@@ -167,6 +193,36 @@ mod tests {
         assert!(validate_transition(&t, TaskStatus::Done, "agent:b").is_err());
         t.acceptance.checks[0].verified_by = Some("agent:b".into());
         assert!(validate_transition(&t, TaskStatus::Done, "agent:b").is_ok());
+    }
+
+    #[test]
+    fn pending_verify_to_done_allows_reassigned_evaluator() {
+        let mut t = base(TaskStatus::PendingVerify);
+        t.previous_assignees = vec!["agent:generator".into()];
+        t.assignee = Some("agent:evaluator".into());
+        t.acceptance.checks = vec![AcceptanceCheck {
+            id: "C1".into(),
+            text: "x".into(),
+            verified: true,
+            verified_by: Some("agent:evaluator".into()),
+        }];
+
+        assert!(validate_transition(&t, TaskStatus::Done, "agent:evaluator").is_ok());
+    }
+
+    #[test]
+    fn pending_verify_to_done_requires_closing_agent_to_be_verifier() {
+        let mut t = base(TaskStatus::PendingVerify);
+        t.previous_assignees = vec!["agent:generator".into()];
+        t.assignee = Some("agent:evaluator".into());
+        t.acceptance.checks = vec![AcceptanceCheck {
+            id: "C1".into(),
+            text: "x".into(),
+            verified: true,
+            verified_by: Some("agent:other-evaluator".into()),
+        }];
+
+        assert!(validate_transition(&t, TaskStatus::Done, "agent:evaluator").is_err());
     }
 
     #[test]

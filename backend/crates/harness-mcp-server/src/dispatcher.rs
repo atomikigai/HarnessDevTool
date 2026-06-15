@@ -16,8 +16,9 @@ use crate::protocol::{
 };
 use crate::tools::{
     self, attachments as attachment_tools, capabilities as capability_tools, db as db_tools,
-    docs as docs_tools, knowledge as knowledge_tools, repo, session as session_tools, skills, spec,
-    ssh as ssh_tools, tasks, toolsets::ToolRegistry, wrap_error, wrap_text,
+    docs as docs_tools, knowledge as knowledge_tools, n8n as n8n_tools, repo,
+    session as session_tools, skills, spec, ssh as ssh_tools, tasks, toolsets::ToolRegistry,
+    wrap_error, wrap_text,
 };
 use harness_core::TaskStore;
 use harness_policy::{capability_default, is_sensitive_tool, Decision, PolicyEngine};
@@ -259,6 +260,35 @@ impl Dispatcher {
             "attach_list" => attachment_tools::list(&self.harness_home, self.session_id.as_deref()),
             "attach_read" => {
                 attachment_tools::read(&self.harness_home, self.session_id.as_deref(), &args)
+            }
+            "n8n_configure" => n8n_tools::configure(&self.harness_home, &self.profile, &args),
+            "n8n_status" => n8n_tools::status(&self.harness_home, &self.profile, &args),
+            "n8n_local_start" => n8n_tools::local_start(&self.harness_home, &self.profile, &args),
+            "n8n_local_stop" => n8n_tools::local_stop(&self.harness_home, &self.profile, &args),
+            "n8n_save_workflow" => {
+                n8n_tools::save_workflow(&self.harness_home, &self.profile, &args)
+            }
+            "n8n_list_saved_workflows" => {
+                n8n_tools::list_saved_workflows(&self.harness_home, &self.profile)
+            }
+            "n8n_read_workflow" => {
+                n8n_tools::read_workflow(&self.harness_home, &self.profile, &args)
+            }
+            "n8n_validate_workflow" => n8n_tools::validate_workflow(&args),
+            "n8n_import_workflow" => {
+                n8n_tools::import_workflow(&self.harness_home, &self.profile, &args)
+            }
+            "n8n_list_remote_workflows" => {
+                n8n_tools::list_remote_workflows(&self.harness_home, &self.profile, &args)
+            }
+            "n8n_activate_workflow" => {
+                n8n_tools::activate_workflow(&self.harness_home, &self.profile, &args)
+            }
+            "n8n_deactivate_workflow" => {
+                n8n_tools::deactivate_workflow(&self.harness_home, &self.profile, &args)
+            }
+            "n8n_webhook_request" => {
+                n8n_tools::webhook_request(&self.harness_home, &self.profile, &args)
             }
             "task_create" => tasks::create(
                 &self.store,

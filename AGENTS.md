@@ -101,6 +101,7 @@ Cada skill describe cuándo usar la herramienta, patrones concretos y cuándo no
 | `efficient-cli` | CLIs Rust/Go | Búsqueda, selección, HTTP, benchmarks, watchers y streams |
 | `rust-tooling` | CLIs cargo | Calidad, deps, tamaño binario y profiling Rust |
 | `security-tooling` | CLIs Rust/Go/sistema | Secret scanning, CVEs, containers, Dockerfiles y shell |
+| `n8n-workflow-automation` | Skill harness | Crear, validar, importar y probar workflows de n8n desde agentes |
 
 ## Uso esperado de skills/capabilities
 
@@ -124,6 +125,10 @@ keywords, rol y contrato afectado; registra lo cargado en `loaded_capabilities`.
 - **Diagramas**: usar `excalidraw-board` para la integracion editable/MCP y
   `excalidraw-diagram` para que el diagrama argumente visualmente con evidencia
   tecnica real.
+- **n8n/workflows/automatizaciones**: cargar `n8n-workflow-automation`; usar
+  el grupo MCP `n8n` para validar/guardar/importar/probar workflows. No guardar
+  secretos crudos en JSON de workflows; usar credenciales de n8n o variables de
+  entorno referenciadas por nombre.
 
 ## CLIs soportados y auth compartida (importante)
 

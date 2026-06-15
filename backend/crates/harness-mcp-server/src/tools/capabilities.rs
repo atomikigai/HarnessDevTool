@@ -197,6 +197,33 @@ fn categories(runtime: CapabilityRuntime) -> Vec<CapabilityCategory> {
             },
         },
         CapabilityCategory {
+            id: "n8n",
+            title: "n8n workflow automation",
+            description: "Generate, validate, save, import, activate, and smoke-test n8n workflow automations against a configured or local n8n instance.",
+            use_when: &[
+                "n8n workflow",
+                "automation",
+                "webhook workflow",
+                "import workflow",
+                "test workflow",
+            ],
+            mentions: &["n8n", "workflow", "automation", "webhook", "zapier", "make.com"],
+            tools: &[
+                "n8n_validate_workflow",
+                "n8n_save_workflow",
+                "n8n_import_workflow",
+                "n8n_activate_workflow",
+                "n8n_webhook_request",
+                "n8n_local_start",
+            ],
+            skills: &[],
+            status: if requested("n8n") {
+                CapabilityStatus::Loaded
+            } else {
+                CapabilityStatus::AvailableOnRequest
+            },
+        },
+        CapabilityCategory {
             id: "document_extract",
             title: "Document extraction",
             description:

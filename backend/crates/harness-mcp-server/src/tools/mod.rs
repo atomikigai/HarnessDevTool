@@ -3,6 +3,7 @@ pub mod capabilities;
 pub mod db;
 pub mod docs;
 pub mod knowledge;
+pub mod n8n;
 pub mod repo;
 pub mod session;
 pub mod skills;
@@ -132,6 +133,176 @@ pub fn list_descriptors() -> Vec<ToolDescriptor> {
                         "maximum": 5242880,
                         "description": "Optional read cap. Defaults to 524288 bytes; hard cap 5 MiB."
                     }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "n8n_configure".into(),
+            description: "Configure the default n8n instance for this Harness profile. Stores base_url and the API-key environment variable name, never the API key value."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "base_url": { "type": "string", "description": "n8n base URL, for example http://127.0.0.1:5678 or https://example.com/api/v1." },
+                    "api_key_env": { "type": "string", "description": "Uppercase env var containing the n8n API key. Defaults to N8N_API_KEY." },
+                    "container_name": { "type": "string", "description": "Optional local Docker container name for n8n_local_* tools." }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "n8n_status".into(),
+            description: "Check configured n8n API reachability and local Docker container status without exposing secret values."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "base_url": { "type": "string" },
+                    "api_key_env": { "type": "string" }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "n8n_local_start".into(),
+            description: "Start a local self-hosted n8n Docker container for workflow testing. Requires approved=true after explicit user approval."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["approved"],
+                "properties": {
+                    "approved": { "type": "boolean" },
+                    "port": { "type": "integer", "minimum": 1024, "maximum": 65535, "description": "Optional host port. If omitted, Harness chooses a free localhost port." },
+                    "image": { "type": "string", "description": "Docker image. Defaults to docker.n8n.io/n8nio/n8n:latest." },
+                    "container_name": { "type": "string" }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "n8n_local_stop".into(),
+            description: "Stop and remove the local n8n Docker container created for testing. Requires approved=true after explicit user approval."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["approved"],
+                "properties": {
+                    "approved": { "type": "boolean" },
+                    "container_name": { "type": "string" }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "n8n_save_workflow".into(),
+            description: "Save generated n8n workflow JSON under HARNESS_HOME so agents can iterate and import it later."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["name", "workflow"],
+                "properties": {
+                    "name": { "type": "string", "description": "Safe workflow file stem." },
+                    "workflow": { "type": "object", "description": "n8n workflow JSON." }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "n8n_list_saved_workflows".into(),
+            description: "List locally saved n8n workflow JSON files for this Harness profile."
+                .into(),
+            input_schema: json!({ "type": "object", "properties": {} }),
+        },
+        ToolDescriptor {
+            name: "n8n_read_workflow".into(),
+            description: "Read a saved n8n workflow JSON file and return validation diagnostics."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["name"],
+                "properties": { "name": { "type": "string" } }
+            }),
+        },
+        ToolDescriptor {
+            name: "n8n_validate_workflow".into(),
+            description: "Validate generated n8n workflow JSON shape and warn about raw secrets embedded in node parameters."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["workflow"],
+                "properties": {
+                    "workflow": { "type": "object", "description": "n8n workflow JSON to validate." }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "n8n_import_workflow".into(),
+            description: "Import a saved or inline workflow into n8n using the configured API key. Requires approved=true after explicit user approval."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["approved"],
+                "properties": {
+                    "approved": { "type": "boolean" },
+                    "name": { "type": "string", "description": "Saved workflow name. Use this or workflow." },
+                    "workflow": { "type": "object", "description": "Inline n8n workflow JSON. Use this or name." },
+                    "base_url": { "type": "string" },
+                    "api_key_env": { "type": "string" }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "n8n_list_remote_workflows".into(),
+            description: "List workflows from the configured n8n instance using its public API."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "active": { "type": "boolean" },
+                    "base_url": { "type": "string" },
+                    "api_key_env": { "type": "string" }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "n8n_activate_workflow".into(),
+            description: "Activate/publish an n8n workflow by id. Requires approved=true after explicit user approval."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["id", "approved"],
+                "properties": {
+                    "id": { "type": "string" },
+                    "approved": { "type": "boolean" },
+                    "base_url": { "type": "string" },
+                    "api_key_env": { "type": "string" }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "n8n_deactivate_workflow".into(),
+            description: "Deactivate/unpublish an n8n workflow by id. Requires approved=true after explicit user approval."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["id", "approved"],
+                "properties": {
+                    "id": { "type": "string" },
+                    "approved": { "type": "boolean" },
+                    "base_url": { "type": "string" },
+                    "api_key_env": { "type": "string" }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "n8n_webhook_request".into(),
+            description: "Call a GET or POST webhook path on the configured n8n instance to smoke-test an automation. Requires approved=true after explicit user approval."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["path", "approved"],
+                "properties": {
+                    "path": { "type": "string", "description": "Absolute webhook path, for example /webhook-test/harness-smoke." },
+                    "method": { "type": "string", "enum": ["GET", "POST"] },
+                    "body": { "description": "Optional JSON body for POST." },
+                    "approved": { "type": "boolean" },
+                    "base_url": { "type": "string" },
+                    "api_key_env": { "type": "string" }
                 }
             }),
         },

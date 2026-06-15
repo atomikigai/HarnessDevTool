@@ -205,9 +205,10 @@ async fn decide(
         body.remember_scope
     {
         if let Some(summary) = pending {
-            let rule = remembered_rule(&summary, body.decision, scope);
-            if let Err(e) = state.policy.append_rule(rule) {
-                tracing::warn!(approval_id = %id, error = %e, "failed to persist remembered policy rule");
+            if let Some(rule) = remembered_rule(&summary, body.decision, scope) {
+                if let Err(e) = state.policy.append_rule(rule) {
+                    tracing::warn!(approval_id = %id, error = %e, "failed to persist remembered policy rule");
+                }
             }
         }
     }
@@ -219,12 +220,15 @@ fn remembered_rule(
     summary: &ApprovalSummary,
     decision: Decision,
     remember_scope: RememberScope,
-) -> Rule {
+) -> Option<Rule> {
     let args_match = match remember_scope {
         RememberScope::ToolAndArgs => string_args_match(&summary.args),
         RememberScope::ToolOnly | RememberScope::ThisCall => BTreeMap::new(),
     };
-    Rule {
+    if remember_scope == RememberScope::ToolAndArgs && args_match.is_empty() {
+        return None;
+    }
+    Some(Rule {
         tool: summary.tool.clone(),
         role: summary.role.clone(),
         args_match,
@@ -232,7 +236,7 @@ fn remembered_rule(
         created_at: Some(Utc::now().to_rfc3339()),
         created_by: Some("human".to_string()),
         args_hash: Some(hash_json(&summary.args)),
-    }
+    })
 }
 
 fn string_args_match(args: &serde_json::Value) -> BTreeMap<String, String> {
@@ -380,7 +384,8 @@ mod tests {
             created_at: Utc::now(),
         };
 
-        let rule = remembered_rule(&summary, Decision::Allow, RememberScope::ToolAndArgs);
+        let rule = remembered_rule(&summary, Decision::Allow, RememberScope::ToolAndArgs)
+            .expect("string args should produce a remembered rule");
 
         assert_eq!(rule.tool, "db_query");
         assert_eq!(rule.role.as_deref(), Some("worker"));
@@ -396,5 +401,22 @@ mod tests {
             .args_hash
             .as_deref()
             .is_some_and(|v| v.starts_with("sha256:")));
+    }
+
+    #[test]
+    fn remembered_tool_and_args_skips_unmatchable_non_string_args() {
+        let summary = ApprovalSummary {
+            id: "approval-1".to_string(),
+            tool: "n8n_local_start".to_string(),
+            args: json!({ "approved": true, "port": 5678 }),
+            thread_id: Some("thread-1".to_string()),
+            session_id: Some("session-1".to_string()),
+            agent_id: Some("agent:worker".to_string()),
+            role: Some("worker".to_string()),
+            created_at: Utc::now(),
+        };
+
+        assert!(remembered_rule(&summary, Decision::Allow, RememberScope::ToolAndArgs).is_none());
+        assert!(remembered_rule(&summary, Decision::Allow, RememberScope::ToolOnly).is_some());
     }
 }

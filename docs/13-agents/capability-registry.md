@@ -146,7 +146,7 @@ Estas son las MCP tools que expone `harness-bridge`. Patrón de namespace:
 | `timeline.*` | `timeline_query` | Timeline/eventos paginados y filtrables desde `events_index.sqlite`, con FTS5 opcional sobre summary/payload |
 | `evidence.*` | `evidence_pack` | Paquete compacto para review/QA con git status/stat, task/session metadata, artifacts, gaps y next steps |
 | `repo.*` | `analyze`, `scan`, `find`, `read_file`, `git_status`, `git_log`, `git_diff`, `manifest`, `symbol_search`, `related_files`, `codebase_memory_status` | Read-only del workspace; primera lectura recomendada en repos desconocidos |
-| `repo_code_graph_*` | `status` implementado; `index/search/impact/architecture_pack/snippet` planificados | Acelerador opcional via `codebase-memory-mcp`; se carga bajo smart loading cuando hace falta grafo de codigo |
+| `repo_code_graph_*` | `status`, `index`, `search`, `change_impact`, `architecture_pack`, `code_snippet` | Acelerador opcional via `codebase-memory-mcp` con wrappers Harness compactos y fallback nativo; se carga bajo smart loading cuando hace falta grafo de codigo |
 | `budget.*` | `remaining` | Solo lectura |
 | `agents.*` | `list`, `describe` | Para el orchestrator |
 | `mcps.*` | `list_available`, `describe` | Inspección del catálogo |

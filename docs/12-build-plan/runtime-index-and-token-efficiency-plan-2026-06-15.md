@@ -344,12 +344,18 @@ de git basicos.
   arquitectura, simbolos, impacto o grafo.
 - Si `codebase-memory-mcp` esta instalado, el config MCP por sesion lo monta
   como upstream persistente con idle timeout; si no, no se carga upstream.
+- Implementado 2026-06-15: el grupo `code_graph` expone wrappers Harness
+  compactos `repo_code_graph_status`, `repo_code_graph_index`,
+  `repo_code_graph_search`, `repo_change_impact`, `repo_architecture_pack` y
+  `repo_code_snippet`.
 - Un repo sin `codebase-memory-mcp` instalado degrada a `repo_manifest`,
-  `repo_find` y `repo_symbol_search` ligero.
+  `repo_find`, `repo_symbol_search`, `repo_related_files` y snippets nativos
+  acotados.
 - Las respuestas devuelven JSON compacto con limites, no dumps de grafo.
 - El proceso upstream se reutiliza entre calls y se cierra por idle timeout.
-- Indexar o consultar grafo registra spans con latencia, bytes/tokens estimados
-  y si el resultado vino de cache.
+- Pendiente de cierre R9: materializar cache SQLite propio para arquitectura/
+  impacto y registrar spans con latencia, bytes/tokens estimados y origen
+  cache/upstream/fallback.
 
 ## Workstream R8 — Evidence pack para review/QA
 

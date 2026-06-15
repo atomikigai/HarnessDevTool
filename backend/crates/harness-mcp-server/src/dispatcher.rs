@@ -471,6 +471,11 @@ impl Dispatcher {
             "repo_symbol_search" => repo::symbol_search(&self.cwd, &args),
             "repo_related_files" => repo::related_files(&self.cwd, &args),
             "repo_code_graph_status" => repo::code_graph_status(&self.cwd, &args),
+            "repo_code_graph_index" => repo::code_graph_index(&self.cwd, &args),
+            "repo_code_graph_search" => repo::code_graph_search(&self.cwd, &args),
+            "repo_change_impact" => repo::change_impact(&self.cwd, &args),
+            "repo_architecture_pack" => repo::architecture_pack(&self.cwd, &args),
+            "repo_code_snippet" => repo::code_snippet(&self.cwd, &args),
             "docs_build" => docs_tools::build(&self.cwd, &args),
             "db_query" => db_tools::query(&self.db, &args),
             "db_context_refresh" => db_tools::context_refresh(&self.db, &args),
@@ -1475,6 +1480,29 @@ mod tests {
         assert!(names.contains(&"memory_read"));
         assert!(names.contains(&"memory_continuity"));
         assert!(names.contains(&"memory_note_propose"));
+    }
+
+    #[test]
+    fn tools_load_code_graph_exposes_harness_wrappers() {
+        let (d, _) = mk("t1", "agent:1");
+        let load = r#"{"jsonrpc":"2.0","id":15,"method":"tools/call","params":{"name":"tools_load","arguments":{"groups":["code_graph"]}}}"#;
+        let resp = d.handle(parse_request(load).unwrap()).unwrap();
+        assert_ne!(resp["result"]["isError"], true);
+
+        let list_line = r#"{"jsonrpc":"2.0","id":16,"method":"tools/list"}"#;
+        let resp = d.handle(parse_request(list_line).unwrap()).unwrap();
+        let tools = resp["result"]["tools"].as_array().unwrap();
+        let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
+        for expected in [
+            "repo_code_graph_status",
+            "repo_code_graph_index",
+            "repo_code_graph_search",
+            "repo_change_impact",
+            "repo_architecture_pack",
+            "repo_code_snippet",
+        ] {
+            assert!(names.contains(&expected), "missing tool: {expected}");
+        }
     }
 
     #[test]

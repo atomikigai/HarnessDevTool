@@ -165,6 +165,11 @@ fn categories(runtime: CapabilityRuntime) -> Vec<CapabilityCategory> {
             ],
             tools: &[
                 "repo_code_graph_status",
+                "repo_code_graph_index",
+                "repo_code_graph_search",
+                "repo_change_impact",
+                "repo_architecture_pack",
+                "repo_code_snippet",
                 "repo_manifest",
                 "repo_symbol_search",
                 "repo_related_files",

@@ -146,9 +146,11 @@ combinarse con `transcript_tool_results` o `transcript_search`.
 | Tool | Args | Devuelve |
 |---|---|---|
 | `repo_code_graph_status` | `repo?` | instalado, upstream disponible, indice, head/dirty state, freshness |
-
-Planificados: `repo_code_graph_index`, `repo_code_graph_search`,
-`repo_change_impact`, `repo_architecture_pack` y `repo_code_snippet`.
+| `repo_code_graph_index` | `path?, run?, persistence?` | readiness del indice, comando `index_repository` y manifest fallback; `run=true` ejecuta indexado externo si esta instalado |
+| `repo_code_graph_search` | `query/name_pattern, language?, path?, limit?, max_depth?` | busqueda compacta de simbolos/archivos via fallback nativo, con hint al upstream profundo |
+| `repo_change_impact` | `paths?, limit?` | archivos cambiados, relacionados, tests probables y simbolos cercanos |
+| `repo_architecture_pack` | `path?, limit?` | stack, package manager, scripts, key files, git, code stats, manifest summary y hotspots |
+| `repo_code_snippet` | `path+line/window` o `symbol` | snippet acotado por lineas sin abrir archivo completo |
 
 Estas rails no son parte del `repo` basico. Se cargan con smart loading solo
 cuando la tarea requiere grafo de codigo, impacto amplio, arquitectura o
@@ -156,6 +158,8 @@ trazabilidad de simbolos. Si `codebase-memory-mcp` no esta disponible, Harness
 degrada a `repo_manifest`, `repo_symbol_search` ligero y `repo_related_files`.
 Cuando esta instalado, el gateway lo reutiliza como upstream persistente con
 idle timeout para evitar spawn/handshake por cada consulta.
+Pendiente R9 restante: cache SQLite propio de arquitectura/impacto y spans de
+latencia/origen para consultas de grafo.
 
 ### `budget.*`
 | Tool | Args | Devuelve |

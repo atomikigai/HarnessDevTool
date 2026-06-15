@@ -1890,6 +1890,75 @@ pub fn list_descriptors() -> Vec<ToolDescriptor> {
             input_schema: json!({ "type": "object", "properties": {} }),
         },
         ToolDescriptor {
+            name: "repo_code_graph_index".into(),
+            description: "Return code graph index readiness and native manifest summary. With run=true, explicitly invoke codebase-memory-mcp index_repository if installed."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string" },
+                    "run": { "type": "boolean", "description": "Default false. True may run a heavier external indexer." },
+                    "persistence": { "type": "boolean", "description": "Forwarded to codebase-memory-mcp index_repository when run=true." }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "repo_code_graph_search".into(),
+            description: "Compact code graph search wrapper. Uses native symbol/file search fallback and points to prefixed codebase-memory tools for deep graph traversal when loaded."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string" },
+                    "name_pattern": { "type": "string" },
+                    "language": { "type": "string" },
+                    "path": { "type": "string" },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 50 },
+                    "max_depth": { "type": "integer", "minimum": 0 }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "repo_change_impact".into(),
+            description: "Return compact impact hints for changed or provided files: related files, likely tests, and nearby symbols. Use before broad manual reads."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "paths": { "type": "array", "items": { "type": "string" } },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 80 }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "repo_architecture_pack".into(),
+            description: "Return a bounded architecture pack: stack, package manager, scripts, key files, git summary, language stats, manifest summary, and largest files."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string" },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 200 }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "repo_code_snippet".into(),
+            description: "Read a bounded source snippet by path+line/window or by lightweight symbol search hit. Prefer this over opening whole files for focused edits."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string" },
+                    "symbol": { "type": "string" },
+                    "line": { "type": "integer", "minimum": 1 },
+                    "start_line": { "type": "integer", "minimum": 1 },
+                    "end_line": { "type": "integer", "minimum": 1 },
+                    "context_lines": { "type": "integer", "minimum": 0, "maximum": 30 }
+                }
+            }),
+        },
+        ToolDescriptor {
             name: "docs_build".into(),
             description: "Build or scaffold a static documentation site from workspace Markdown. Conceptual capability: docs.build. Backend can be auto, starlight, mdbook, or vitepress."
                 .into(),

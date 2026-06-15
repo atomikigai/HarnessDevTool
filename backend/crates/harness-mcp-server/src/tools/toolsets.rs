@@ -290,7 +290,14 @@ fn groups() -> Vec<ToolGroup> {
             id: "code_graph",
             description: "Optional code graph acceleration and native repo-intelligence fallbacks for symbols, related files, and impact-oriented exploration.",
             includes: &["repo"],
-            tools: &["repo_code_graph_status"],
+            tools: &[
+                "repo_code_graph_status",
+                "repo_code_graph_index",
+                "repo_code_graph_search",
+                "repo_change_impact",
+                "repo_architecture_pack",
+                "repo_code_snippet",
+            ],
         },
         ToolGroup {
             id: "planning",

@@ -481,6 +481,100 @@ fn truncate_preview(line: &str) -> String {
     out
 }
 
+fn compact_pattern_query(query: &str) -> String {
+    let compact = query
+        .trim()
+        .trim_start_matches(".*")
+        .trim_end_matches(".*")
+        .trim_start_matches('^')
+        .trim_end_matches('$')
+        .replace(".*", " ")
+        .replace(['(', ')', '[', ']', '{', '}', '|', '\\'], " ");
+    compact
+        .split_whitespace()
+        .next()
+        .unwrap_or(query.trim())
+        .to_string()
+}
+
+fn changed_paths_from_git(root: &Path) -> Result<Vec<String>, String> {
+    let output = run_git(root, &["status", "--porcelain"], MAX_GIT_BYTES).unwrap_or_default();
+    let mut paths = Vec::new();
+    for line in output.lines() {
+        if line.len() < 4 {
+            continue;
+        }
+        if let Some(path) = line[3..].split(" -> ").last() {
+            paths.push(path.to_string());
+        }
+    }
+    if paths.is_empty() {
+        let output = run_git(root, &["diff", "--name-only", "HEAD"], MAX_GIT_BYTES)?;
+        paths.extend(output.lines().map(str::to_string));
+    }
+    paths.sort();
+    paths.dedup();
+    Ok(paths)
+}
+
+fn largest_files_from_manifest(manifest: &Value, limit: usize) -> Vec<Value> {
+    let mut files = manifest["files"].as_array().cloned().unwrap_or_default();
+    files.sort_by(|a, b| {
+        b["bytes"]
+            .as_u64()
+            .unwrap_or(0)
+            .cmp(&a["bytes"].as_u64().unwrap_or(0))
+    });
+    files
+        .into_iter()
+        .take(limit)
+        .map(|file| {
+            json!({
+                "path": file["path"].clone(),
+                "bytes": file["bytes"].clone(),
+                "extension": file["extension"].clone(),
+            })
+        })
+        .collect()
+}
+
+fn read_line_window(
+    path: &Path,
+    center_line: Option<usize>,
+    start_line: Option<usize>,
+    end_line: Option<usize>,
+    context: usize,
+) -> Result<(usize, usize, String), String> {
+    if !path.is_file() {
+        return Err(format!("path is not a file: {}", path.display()));
+    }
+    let text =
+        std::fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
+    let lines = text.lines().collect::<Vec<_>>();
+    if lines.is_empty() {
+        return Ok((1, 1, String::new()));
+    }
+    let mut start = start_line.unwrap_or_else(|| center_line.unwrap_or(1).saturating_sub(context));
+    if start == 0 {
+        start = 1;
+    }
+    let mut end = end_line.unwrap_or_else(|| {
+        center_line
+            .map(|line| line.saturating_add(context))
+            .unwrap_or_else(|| (start + context * 2).saturating_sub(1))
+    });
+    end = end.min(lines.len());
+    if start > end {
+        return Err("start_line must be <= end_line".to_string());
+    }
+    let max_lines = 120usize;
+    if end.saturating_sub(start).saturating_add(1) > max_lines {
+        end = start + max_lines - 1;
+    }
+    let content = lines[start - 1..end].join("\n");
+    Ok((start, end, content))
+}
+
 fn truncate_utf8_safe(content: &mut String, max_bytes: usize) {
     let mut end = max_bytes.min(content.len());
     while !content.is_char_boundary(end) {
@@ -746,9 +840,24 @@ pub fn code_graph_status(root: &Path, args: &Value) -> Result<Value, String> {
     Ok(json!({
         "available": codebase_memory["installed"].as_bool().unwrap_or(false),
         "engine": "codebase-memory-mcp",
-        "upstream_mode": "planned_persistent_mcp",
-        "persistent_upstream": false,
+        "upstream_mode": "persistent_mcp_when_smart_loaded",
+        "persistent_upstream": true,
         "codebase_memory": codebase_memory,
+        "harness_wrappers": [
+            "repo_code_graph_index",
+            "repo_code_graph_search",
+            "repo_change_impact",
+            "repo_architecture_pack",
+            "repo_code_snippet"
+        ],
+        "upstream_tools_when_configured": [
+            "codebase_memory__index_repository",
+            "codebase_memory__search_graph",
+            "codebase_memory__trace_path",
+            "codebase_memory__detect_changes",
+            "codebase_memory__get_architecture",
+            "codebase_memory__get_code_snippet"
+        ],
         "native_fallbacks": [
             "repo_manifest",
             "repo_symbol_search",
@@ -756,7 +865,237 @@ pub fn code_graph_status(root: &Path, args: &Value) -> Result<Value, String> {
             "repo_find",
             "repo_read_file"
         ],
-        "next_step": "Use native fallbacks now; persistent MCP-backed graph calls land in the code_graph adapter slice.",
+        "next_step": "Use Harness wrappers for compact bounded answers. If codebase-memory-mcp tools are listed, use prefixed upstream tools for deep graph traversal.",
+    }))
+}
+
+pub fn code_graph_index(root: &Path, args: &Value) -> Result<Value, String> {
+    let root = resolve_under_root(root, opt_str(args, "path").unwrap_or("."))?;
+    if !root.is_dir() {
+        return Err(format!("path is not a directory: {}", root.display()));
+    }
+    let codebase_memory = codebase_memory_status(&root, args)?;
+    let run = args.get("run").and_then(Value::as_bool).unwrap_or(false);
+    let persist = args
+        .get("persistence")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let index_command = json!({
+        "repo_path": root.display().to_string(),
+        "persistence": persist,
+    });
+    let output = if run {
+        if codebase_memory["installed"].as_bool().unwrap_or(false) {
+            let command = codebase_memory["binary"]
+                .as_str()
+                .ok_or_else(|| "codebase-memory-mcp binary missing from status".to_string())?;
+            let args = vec![
+                OsString::from("cli"),
+                OsString::from("index_repository"),
+                OsString::from(index_command.to_string()),
+            ];
+            Some(run_command_os(&root, command, &args, MAX_GIT_BYTES)?)
+        } else {
+            return Err(
+                "repo_code_graph_index requires codebase-memory-mcp installed when run=true".into(),
+            );
+        }
+    } else {
+        None
+    };
+    let manifest = manifest(&root, &json!({"limit": 200, "max_depth": 4}))?;
+    Ok(json!({
+        "root": root.display().to_string(),
+        "run": run,
+        "engine": if run { "codebase-memory-mcp-cli" } else { "native-summary" },
+        "codebase_memory": codebase_memory,
+        "index_command": {
+            "tool": "index_repository",
+            "arguments": index_command,
+        },
+        "output": output,
+        "fallback_index": {
+            "manifest_summary": manifest["summary"].clone(),
+            "truncated": manifest["truncated"].clone(),
+        }
+    }))
+}
+
+pub fn code_graph_search(root: &Path, args: &Value) -> Result<Value, String> {
+    let query = opt_str(args, "query")
+        .or_else(|| opt_str(args, "name_pattern"))
+        .unwrap_or("")
+        .trim();
+    if query.is_empty() {
+        return Err("repo_code_graph_search requires query or name_pattern".into());
+    }
+    let limit = args
+        .get("limit")
+        .and_then(Value::as_u64)
+        .map(|v| v as usize)
+        .unwrap_or(20)
+        .min(50);
+    let path = opt_str(args, "path").unwrap_or(".");
+    let language = opt_str(args, "language");
+    let symbol_args = json!({
+        "query": compact_pattern_query(query),
+        "path": path,
+        "language": language,
+        "limit": limit,
+    });
+    let symbols = symbol_search(root, &symbol_args)?;
+    let files = find(
+        root,
+        &json!({
+            "path": path,
+            "name_contains": compact_pattern_query(query),
+            "limit": limit,
+            "max_depth": args.get("max_depth").and_then(Value::as_u64).unwrap_or(usize::MAX as u64),
+        }),
+    )
+    .unwrap_or_else(|e| json!({ "error": e, "matches": [] }));
+    Ok(json!({
+        "engine": "native_fallback",
+        "query": query,
+        "limit": limit,
+        "symbols": symbols["symbols"].clone(),
+        "files": files["matches"].clone(),
+        "upstream_hint": "If codebase_memory__search_graph is visible, use it for callers/callees, semantic search, degree filters, and cross-repo graph relationships.",
+    }))
+}
+
+pub fn change_impact(root: &Path, args: &Value) -> Result<Value, String> {
+    let root = canonical_root(root)?;
+    let explicit_paths = args
+        .get("paths")
+        .and_then(Value::as_array)
+        .map(|items| items.iter().filter_map(Value::as_str).collect::<Vec<_>>())
+        .unwrap_or_default();
+    let paths = if explicit_paths.is_empty() {
+        changed_paths_from_git(&root)?
+    } else {
+        explicit_paths.into_iter().map(str::to_string).collect()
+    };
+    let limit = args
+        .get("limit")
+        .and_then(Value::as_u64)
+        .map(|v| v as usize)
+        .unwrap_or(40)
+        .min(80);
+    let mut impacted = Vec::new();
+    let mut tests = BTreeSet::new();
+    let mut related_paths = BTreeSet::new();
+    let mut symbols = Vec::new();
+    for raw in paths.iter().take(limit) {
+        let path = resolve_under_root(&root, raw)?;
+        let rel = relative_to(&root, &path).unwrap_or_else(|| path.display().to_string());
+        let related = related_files(&root, &json!({"path": rel, "limit": 20}))
+            .unwrap_or_else(|e| json!({ "error": e, "related": [] }));
+        for item in related["related"].as_array().into_iter().flatten() {
+            if let Some(path) = item["path"].as_str() {
+                if is_test_path(path) {
+                    tests.insert(path.to_string());
+                }
+                related_paths.insert(path.to_string());
+            }
+        }
+        let stem = path.file_stem().and_then(OsStr::to_str).unwrap_or("");
+        if !stem.is_empty() {
+            let symbol_hits = symbol_search(&root, &json!({"query": stem, "limit": 10}))
+                .unwrap_or_else(|e| json!({ "error": e, "symbols": [] }));
+            for symbol in symbol_hits["symbols"].as_array().into_iter().flatten() {
+                symbols.push(symbol.clone());
+            }
+        }
+        impacted.push(json!({
+            "path": rel,
+            "exists": path.exists(),
+            "related": related["related"].clone(),
+        }));
+    }
+    Ok(json!({
+        "engine": "native_fallback",
+        "changed_files": paths,
+        "impacted_files": impacted,
+        "likely_tests": tests.into_iter().collect::<Vec<_>>(),
+        "related_paths": related_paths.into_iter().take(limit).collect::<Vec<_>>(),
+        "symbols": symbols.into_iter().take(limit).collect::<Vec<_>>(),
+        "upstream_hint": "If codebase_memory__detect_changes is visible, use it for graph-backed blast radius and risk classification.",
+    }))
+}
+
+pub fn architecture_pack(root: &Path, args: &Value) -> Result<Value, String> {
+    let path = opt_str(args, "path").unwrap_or(".");
+    let dir = resolve_under_root(root, path)?;
+    if !dir.is_dir() {
+        return Err(format!("path is not a directory: {}", dir.display()));
+    }
+    let limit = args
+        .get("limit")
+        .and_then(Value::as_u64)
+        .map(|v| v as usize)
+        .unwrap_or(80)
+        .min(200);
+    let manifest = manifest(&dir, &json!({"limit": limit, "max_depth": 6}))?;
+    let analyze = analyze(&dir, &json!({}))?;
+    let hotspots = largest_files_from_manifest(&manifest, 12);
+    Ok(json!({
+        "engine": "native_fallback",
+        "root": dir.display().to_string(),
+        "stack": analyze["stack"].clone(),
+        "package_manager": analyze["package_manager"].clone(),
+        "scripts": analyze["scripts"].clone(),
+        "key_files": analyze["key_files"].clone(),
+        "git": analyze["git"].clone(),
+        "code_stats": analyze["code_stats"].clone(),
+        "manifest_summary": manifest["summary"].clone(),
+        "hotspots": hotspots,
+        "upstream_hint": "If codebase_memory__get_architecture is visible, use it for graph-backed routes, packages, layers, clusters, ADRs, and boundaries.",
+    }))
+}
+
+pub fn code_snippet(root: &Path, args: &Value) -> Result<Value, String> {
+    let root = canonical_root(root)?;
+    let context = args
+        .get("context_lines")
+        .and_then(Value::as_u64)
+        .map(|v| v as usize)
+        .unwrap_or(8)
+        .min(30);
+    let (path, center_line, symbol) = if let Some(path) = opt_str(args, "path") {
+        let path = resolve_under_root(&root, path)?;
+        let line = args.get("line").and_then(Value::as_u64).map(|v| v as usize);
+        (path, line, None)
+    } else {
+        let symbol = str_arg(args, "symbol")?;
+        let hits = symbol_search(&root, &json!({"query": symbol, "limit": 1}))?;
+        let first = hits["symbols"]
+            .as_array()
+            .and_then(|items| items.first())
+            .ok_or_else(|| format!("symbol not found: {symbol}"))?;
+        let path = first["path"]
+            .as_str()
+            .ok_or_else(|| "symbol search returned hit without path".to_string())?;
+        let line = first["line"].as_u64().map(|v| v as usize);
+        (resolve_under_root(&root, path)?, line, Some(first.clone()))
+    };
+    let start = args
+        .get("start_line")
+        .and_then(Value::as_u64)
+        .map(|v| v as usize);
+    let end = args
+        .get("end_line")
+        .and_then(Value::as_u64)
+        .map(|v| v as usize);
+    let snippet = read_line_window(&path, center_line, start, end, context)?;
+    Ok(json!({
+        "engine": "native_fallback",
+        "path": relative_to(&root, &path).unwrap_or_else(|| path.display().to_string()),
+        "symbol": symbol,
+        "start_line": snippet.0,
+        "end_line": snippet.1,
+        "content": snippet.2,
+        "upstream_hint": "If codebase_memory__get_code_snippet is visible and you have qualified_name from search_graph, use it for precise graph-backed symbol snippets.",
     }))
 }
 
@@ -1564,5 +1903,76 @@ mod tests {
             .unwrap()
             .iter()
             .any(|item| item["path"] == "tests/lib_test.rs"));
+    }
+
+    #[test]
+    fn code_graph_wrappers_return_bounded_native_fallbacks() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("src")).unwrap();
+        std::fs::create_dir_all(root.path().join("tests")).unwrap();
+        std::fs::write(
+            root.path().join("Cargo.toml"),
+            "[package]\nname = \"demo\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.path().join("src/lib.rs"),
+            "pub fn alpha_service() {\n    beta_helper();\n}\n\nfn beta_helper() {}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.path().join("tests/lib_test.rs"),
+            "use demo::alpha_service;\n",
+        )
+        .unwrap();
+        run_git(root.path(), &["init"], 4096).unwrap();
+
+        let indexed = code_graph_index(root.path(), &json!({})).unwrap();
+        assert_eq!(indexed["run"], false);
+        assert_eq!(indexed["engine"], "native-summary");
+
+        let search =
+            code_graph_search(root.path(), &json!({"query": "alpha", "limit": 5})).unwrap();
+        assert_eq!(search["engine"], "native_fallback");
+        assert!(search["symbols"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["name"] == "alpha_service"));
+
+        let snippet = code_snippet(
+            root.path(),
+            &json!({"symbol": "alpha_service", "context_lines": 1}),
+        )
+        .unwrap();
+        assert_eq!(snippet["path"], "src/lib.rs");
+        assert!(snippet["content"]
+            .as_str()
+            .unwrap()
+            .contains("alpha_service"));
+
+        std::fs::write(
+            root.path().join("src/lib.rs"),
+            "pub fn alpha_service() {\n    beta_helper();\n    beta_helper();\n}\n\nfn beta_helper() {}\n",
+        )
+        .unwrap();
+        let impact = change_impact(root.path(), &json!({"paths": ["src/lib.rs"]})).unwrap();
+        assert!(impact["likely_tests"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item == "tests/lib_test.rs"));
+
+        let pack = architecture_pack(root.path(), &json!({"limit": 20})).unwrap();
+        assert!(pack["stack"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item == "rust"));
+        assert!(pack["hotspots"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["path"] == "src/lib.rs"));
     }
 }

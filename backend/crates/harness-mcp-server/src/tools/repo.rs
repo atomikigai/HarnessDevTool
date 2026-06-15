@@ -424,10 +424,12 @@ pub fn git_commit(
         return Err("repo_git_commit requires a non-empty paths array".into());
     }
 
+    ensure_staged_paths_allowed(&root, write_paths, forbidden_paths)?;
     let resolved = resolve_git_paths(&root, &paths, write_paths, forbidden_paths)?;
     let mut add_args = vec![OsString::from("add"), OsString::from("--")];
     add_args.extend(resolved);
     let add_output = run_git_os(&root, &add_args, MAX_GIT_MUTATION_BYTES)?;
+    ensure_staged_paths_allowed(&root, write_paths, forbidden_paths)?;
 
     let mut commit_args = vec![
         OsString::from("commit"),
@@ -934,6 +936,42 @@ fn resolve_git_paths(
         .collect()
 }
 
+fn ensure_staged_paths_allowed(
+    root: &Path,
+    write_paths: &[String],
+    forbidden_paths: &[String],
+) -> Result<(), String> {
+    let raw = run_git_os(
+        root,
+        &[
+            OsString::from("diff"),
+            OsString::from("--cached"),
+            OsString::from("--name-only"),
+            OsString::from("-z"),
+        ],
+        MAX_GIT_BYTES,
+    )?;
+    let mut violations = Vec::new();
+    for rel in raw.split('\0').filter(|path| !path.is_empty()) {
+        let resolved = resolve_under_root(root, rel)?;
+        if let Err(reason) = ensure_write_allowed(root, &resolved, write_paths, forbidden_paths) {
+            violations.push(json!({
+                "path": rel,
+                "reason": reason,
+            }));
+        }
+    }
+
+    if violations.is_empty() {
+        return Ok(());
+    }
+
+    Err(format!(
+        "repo_git_commit denied: staged scope drift detected: {}",
+        serde_json::to_string(&violations).unwrap_or_else(|_| "[]".to_string())
+    ))
+}
+
 fn current_branch(root: &Path) -> Result<String, String> {
     let branch = run_git(root, &["branch", "--show-current"], 1024)?
         .trim()
@@ -1039,5 +1077,53 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.contains("non-empty paths array"));
+    }
+
+    #[test]
+    fn git_commit_denies_staged_paths_outside_task_scope() {
+        let root = tempfile::tempdir().unwrap();
+        run_git(root.path(), &["init"], 4096).unwrap();
+        std::fs::create_dir_all(root.path().join("src")).unwrap();
+        std::fs::write(root.path().join("src/lib.rs"), "pub fn ok() {}\n").unwrap();
+        std::fs::write(root.path().join("README.md"), "drift\n").unwrap();
+        run_git(root.path(), &["add", "README.md"], 4096).unwrap();
+
+        let err = git_commit(
+            root.path(),
+            &json!({
+                "message": "scoped commit",
+                "paths": ["src/lib.rs"]
+            }),
+            &["src".into()],
+            &[],
+        )
+        .unwrap_err();
+
+        assert!(err.contains("staged scope drift"));
+        assert!(err.contains("README.md"));
+    }
+
+    #[test]
+    fn git_commit_denies_staged_forbidden_subpath() {
+        let root = tempfile::tempdir().unwrap();
+        run_git(root.path(), &["init"], 4096).unwrap();
+        std::fs::create_dir_all(root.path().join("src/secrets")).unwrap();
+        std::fs::write(root.path().join("src/lib.rs"), "pub fn ok() {}\n").unwrap();
+        std::fs::write(root.path().join("src/secrets/token.txt"), "secret\n").unwrap();
+        run_git(root.path(), &["add", "src/secrets/token.txt"], 4096).unwrap();
+
+        let err = git_commit(
+            root.path(),
+            &json!({
+                "message": "scoped commit",
+                "paths": ["src/lib.rs"]
+            }),
+            &["src".into()],
+            &["src/secrets".into()],
+        )
+        .unwrap_err();
+
+        assert!(err.contains("staged scope drift"));
+        assert!(err.contains("src/secrets/token.txt"));
     }
 }

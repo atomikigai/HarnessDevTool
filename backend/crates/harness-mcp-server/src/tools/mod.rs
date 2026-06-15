@@ -2,6 +2,7 @@ pub mod attachments;
 pub mod capabilities;
 pub mod db;
 pub mod docs;
+pub mod evidence;
 pub mod knowledge;
 pub mod n8n;
 pub mod planning;
@@ -175,6 +176,23 @@ pub fn list_descriptors() -> Vec<ToolDescriptor> {
                     "paths": {
                         "type": "array",
                         "items": { "type": "string" }
+                    }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "evidence_pack".into(),
+            description: "Build a compact review/QA evidence pack with scoped git status/stat, task metadata, session metadata, artifacts, gaps, and next steps. Prefer this before transcript replay."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "task_id": { "type": "string", "description": "Optional task id. Defaults to the current MCP task scope when present." },
+                    "session_id": { "type": "string", "description": "Optional session id. Defaults to the current MCP session when present." },
+                    "paths": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Optional relative paths to scope git evidence."
                     }
                 }
             }),

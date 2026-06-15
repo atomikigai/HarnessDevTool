@@ -294,9 +294,14 @@ fn groups() -> Vec<ToolGroup> {
         },
         ToolGroup {
             id: "planning",
-            description: "Smart-loading task intake, focused test selection, and Harness contract guardrails.",
+            description: "Smart-loading task intake, focused test selection, Harness contract guardrails, and compact review/QA evidence.",
             includes: &[],
-            tools: &["planning_pack", "test_selector", "contract_guard"],
+            tools: &[
+                "planning_pack",
+                "test_selector",
+                "contract_guard",
+                "evidence_pack",
+            ],
         },
         ToolGroup {
             id: "context",

@@ -143,6 +143,7 @@ Estas son las MCP tools que expone `harness-bridge`. Patrón de namespace:
 | `capability.*` | `request`, `list_loaded` | Solicitar/listar capabilities en runtime |
 | `memory.*` | `search`, `get` | F5; FTS5 sobre events.jsonl |
 | `context.*` | `session_context_pack`, `context_status`, `context_search`, `context_checkpoint_request` | Contexto operacional compacto y búsqueda FTS5 de checkpoints sin replay de transcript |
+| `evidence.*` | `evidence_pack` | Paquete compacto para review/QA con git status/stat, task/session metadata, artifacts, gaps y next steps |
 | `repo.*` | `analyze`, `scan`, `find`, `read_file`, `git_status`, `git_log`, `git_diff`, `manifest`, `symbol_search`, `related_files`, `codebase_memory_status` | Read-only del workspace; primera lectura recomendada en repos desconocidos |
 | `repo_code_graph_*` | `status` implementado; `index/search/impact/architecture_pack/snippet` planificados | Acelerador opcional via `codebase-memory-mcp`; se carga bajo smart loading cuando hace falta grafo de codigo |
 | `budget.*` | `remaining` | Solo lectura |

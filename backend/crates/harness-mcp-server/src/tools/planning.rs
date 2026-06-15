@@ -169,6 +169,13 @@ pub fn pack(args: &Value) -> Result<Value, String> {
         guardrails.push("Keep behavior stable and scope the diff to the requested refactor.");
     }
 
+    if signals.review {
+        first_actions.push(action(
+            "evidence_pack",
+            "Collect scoped diff, task/session metadata, artifacts, and evidence gaps before review or QA.",
+        ));
+    }
+
     skills.insert("code-review-and-quality");
 
     Ok(json!({
@@ -318,6 +325,7 @@ struct Signals {
     diagram: bool,
     code_graph: bool,
     refactor: bool,
+    review: bool,
 }
 
 impl Signals {
@@ -395,6 +403,20 @@ impl Signals {
                 ],
             ),
             refactor: contains_any(text, &["refactor", "simplify", "cleanup", "clarity"]),
+            review: contains_any(
+                text,
+                &[
+                    "review",
+                    "qa",
+                    "evidence",
+                    "handoff",
+                    "verify",
+                    "verification",
+                    "before merge",
+                    "merge",
+                    "pr",
+                ],
+            ),
         }
     }
 

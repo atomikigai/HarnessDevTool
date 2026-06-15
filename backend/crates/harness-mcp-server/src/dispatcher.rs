@@ -16,9 +16,9 @@ use crate::protocol::{
 };
 use crate::tools::{
     self, attachments as attachment_tools, capabilities as capability_tools, db as db_tools,
-    docs as docs_tools, knowledge as knowledge_tools, n8n as n8n_tools, planning, repo,
-    session as session_tools, skills, spec, ssh as ssh_tools, tasks, toolsets::ToolRegistry,
-    wrap_error, wrap_text,
+    docs as docs_tools, evidence as evidence_tools, knowledge as knowledge_tools, n8n as n8n_tools,
+    planning, repo, session as session_tools, skills, spec, ssh as ssh_tools, tasks,
+    toolsets::ToolRegistry, wrap_error, wrap_text,
 };
 use harness_core::TaskStore;
 use harness_policy::{capability_default, is_sensitive_tool, Decision, PolicyEngine};
@@ -260,6 +260,16 @@ impl Dispatcher {
             "planning_pack" => planning::pack(&args),
             "test_selector" => planning::test_selector(&args),
             "contract_guard" => planning::contract_guard(&args),
+            "evidence_pack" => evidence_tools::pack(
+                &self.store,
+                &self.harness_home,
+                &self.profile,
+                &self.cwd,
+                &self.thread_id,
+                self.session_id.as_deref(),
+                self.task_id.as_deref(),
+                &args,
+            ),
             "session_context_pack" => session_tools::context_pack(
                 &self.store,
                 &self.harness_home,

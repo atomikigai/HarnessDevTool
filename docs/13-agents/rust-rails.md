@@ -99,6 +99,12 @@ Resultado: agentes **más precisos**, menos tokens en "explorar", menos retries.
 | `transcript_query` | `session_id, since?, limit?, kind?, role?` | pagina de transcript por seq desde indice derivado |
 | `evidence_pack` | `task_id?, session_id?, paths?` | diff resumido, archivos, comandos, tests, artifacts, riesgos y checks pendientes |
 
+Implementado hoy: `session_context_pack`, `context_status`, `context_search`,
+`context_checkpoint_request` y `evidence_pack`. `evidence_pack` devuelve git
+`status`/`name-status`/`stat` acotados, metadata de task/sesion, artifacts
+registrados, gaps conocidos y next steps; comandos corridos/tests quedan como
+gap explicito hasta que aterrice `transcript_index`.
+
 ### `repo.*`
 | Tool | Args | Devuelve |
 |---|---|---|

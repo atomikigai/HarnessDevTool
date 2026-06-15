@@ -315,8 +315,12 @@ Objetivo: que reviewers y QA reciban evidencia compacta y verificable.
 
 ### Criterios de aceptacion
 
+- `evidence_pack` existe como primer corte MCP y devuelve git
+  `status`/`name-status`/`stat`, task/session metadata, artifacts, gaps y
+  next steps en JSON acotado.
 - Un reviewer puede iniciar con un JSON pequeno de evidencia.
 - QA no necesita releer todo el transcript para saber que validar.
+- Comandos/tests ejecutados quedan como gap explicito hasta `transcript_index`.
 
 ## Orden recomendado
 

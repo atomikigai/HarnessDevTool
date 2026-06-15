@@ -189,7 +189,12 @@ fn categories(runtime: CapabilityRuntime) -> Vec<CapabilityCategory> {
                 "contract guardrails",
             ],
             mentions: &["plan", "planning", "smart loading", "checks", "tests", "guardrails"],
-            tools: &["planning_pack", "test_selector", "contract_guard"],
+            tools: &[
+                "planning_pack",
+                "test_selector",
+                "contract_guard",
+                "evidence_pack",
+            ],
             skills: &["code-review-and-quality"],
             status: if requested("planning") {
                 CapabilityStatus::Loaded

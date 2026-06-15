@@ -871,7 +871,20 @@ impl TaskStore {
         }
         let loaded = {
             let threads = lock_or_recover(&self.threads);
-            let mut loaded = threads.keys().cloned().collect::<Vec<_>>();
+            let mut loaded = threads
+                .keys()
+                .filter_map(|tid| match validate_thread_id(tid) {
+                    Ok(()) => Some(tid.clone()),
+                    Err(e) => {
+                        tracing::warn!(
+                            thread_id = %tid,
+                            error = %e,
+                            "skipping invalid in-memory thread during scheduler scan"
+                        );
+                        None
+                    }
+                })
+                .collect::<Vec<_>>();
             loaded.sort();
             loaded
         };
@@ -1420,6 +1433,32 @@ mod tests {
         s.create("thr-good", mk_draft("valid")).unwrap();
 
         assert_eq!(s.known_threads().unwrap(), vec!["thr-good".to_string()]);
+        assert_eq!(s.scheduler_threads().unwrap(), vec!["thr-good".to_string()]);
+    }
+
+    #[test]
+    fn scheduler_threads_skips_invalid_in_memory_keys() {
+        let (_dir, s) = store();
+        s.create("thr-good", mk_draft("valid")).unwrap();
+
+        let invalid_dir = s.threads_root().join("thread:bad").join("tasks");
+        std::fs::create_dir_all(&invalid_dir).unwrap();
+        let index = Arc::new(Mutex::new(
+            Index::open(&invalid_dir.join("index.db")).unwrap(),
+        ));
+        let tasks = Arc::new(Mutex::new(HashMap::new()));
+        let (bus, _) = broadcast::channel(BROADCAST_CAP);
+        let loading = Arc::new(Mutex::new(()));
+        lock_or_recover(&s.threads).insert(
+            "thread:bad".to_string(),
+            ThreadState {
+                index,
+                tasks,
+                bus,
+                loading,
+            },
+        );
+
         assert_eq!(s.scheduler_threads().unwrap(), vec!["thr-good".to_string()]);
     }
 

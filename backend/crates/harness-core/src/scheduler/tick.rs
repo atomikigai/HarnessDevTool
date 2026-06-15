@@ -605,7 +605,17 @@ fn run_assign_pass(
             );
             continue;
         }
-        let tasks = store.scheduler_snapshot(&tid)?;
+        let tasks = match store.scheduler_snapshot(&tid) {
+            Ok(tasks) => tasks,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    thread = %tid,
+                    "scheduler skipping thread after snapshot failed"
+                );
+                continue;
+            }
+        };
         let thread_max_concurrent = budget_store
             .and_then(|store| store.get(&tid).max_concurrent_workers)
             .unwrap_or(max_concurrent)

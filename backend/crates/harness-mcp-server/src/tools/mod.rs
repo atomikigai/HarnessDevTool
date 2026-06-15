@@ -1,3 +1,4 @@
+pub mod attachments;
 pub mod capabilities;
 pub mod db;
 pub mod docs;
@@ -100,6 +101,36 @@ pub fn list_descriptors() -> Vec<ToolDescriptor> {
                     "reason": {
                         "type": "string",
                         "description": "Short reason this category is needed now."
+                    }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "attach_list".into(),
+            description: "List files attached to this agent session from the Harness ChatView composer."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {}
+            }),
+        },
+        ToolDescriptor {
+            name: "attach_read".into(),
+            description: "Read one file attached to this agent session. Text files return UTF-8 content; binary/image files return base64."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["name"],
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Attachment filename from attach_list."
+                    },
+                    "max_bytes": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 5242880,
+                        "description": "Optional read cap. Defaults to 524288 bytes; hard cap 5 MiB."
                     }
                 }
             }),

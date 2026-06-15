@@ -69,20 +69,10 @@ fn parse_event_msg(session_id: &str, ts: &str, raw: &Value) -> Vec<TranscriptEve
             })
             .unwrap_or_default(),
         "token_count" => vec![event_token_count(session_id, ts, raw, payload)],
-        "task_complete" => payload
-            .get("last_agent_message")
-            .and_then(Value::as_str)
-            .map(|message| {
-                vec![event_message(
-                    session_id,
-                    ts,
-                    "assistant",
-                    message.to_string(),
-                    None,
-                    None,
-                )]
-            })
-            .unwrap_or_else(|| vec![event_meta(session_id, ts, raw)]),
+        // Codex emits the visible assistant answer as `agent_message`. The
+        // later `task_complete.last_agent_message` repeats that answer as a
+        // lifecycle summary; exposing both produces duplicated chat content.
+        "task_complete" => vec![event_meta(session_id, ts, raw)],
         _ => vec![event_meta(session_id, ts, raw)],
     }
 }
@@ -362,6 +352,18 @@ mod tests {
         let usage = events[0].usage.as_ref().unwrap();
         assert_eq!(usage["input_tokens"].as_u64(), Some(12076));
         assert_eq!(usage["model_context_window"].as_u64(), Some(258400));
+    }
+
+    #[test]
+    fn task_complete_last_agent_message_is_lifecycle_meta() {
+        let line = r#"{"timestamp":"2026-06-09T13:08:39.600Z","type":"event_msg","payload":{"type":"task_complete","last_agent_message":"**OK**"}}"#;
+
+        let events = parse_line(line, "sid");
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, TranscriptKind::Meta);
+        assert_eq!(events[0].role, None);
+        assert_eq!(events[0].content, None);
     }
 
     #[test]

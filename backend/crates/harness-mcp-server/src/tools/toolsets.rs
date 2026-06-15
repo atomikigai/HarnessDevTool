@@ -237,6 +237,8 @@ fn groups() -> Vec<ToolGroup> {
                 "tools_search",
                 "tools_load",
                 "tools_unload",
+                "attach_list",
+                "attach_read",
                 "task_create",
                 "task_propose",
                 "task_list",

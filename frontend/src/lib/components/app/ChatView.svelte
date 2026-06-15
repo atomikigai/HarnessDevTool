@@ -609,6 +609,16 @@
           inlineImages: []
         });
       } else if (ev.role === 'assistant') {
+        const content = ev.content ?? '';
+        const previousAssistant = lastAssistantTurn();
+        if (
+          content &&
+          previousAssistant &&
+          previousAssistant.content === content &&
+          previousAssistant.source === ev.source
+        ) {
+          return;
+        }
         const last = currentAssistantTurn(ev);
         // P1-A: always invalidate when new content arrives — whether renderedHtml is
         // already set (old check covered this) OR a render is in-flight (renderedHtml
@@ -621,7 +631,7 @@
           last.cleanedContent = undefined;
         }
         last.settled = false;
-        last.content += ev.content ?? '';
+        last.content += content;
         if (ev.model) last.model = ev.model;
         if (ev.usage) last.usage = ev.usage;
         scheduleSettleRender(last);
@@ -1135,7 +1145,11 @@
   async function sendInput() {
     if (!session || !input.trim() || sending || stopped) return;
     sending = true;
-    const payload = input;
+    const attachmentNames = attachments.map((file) => file.name);
+    const payload =
+      attachmentNames.length > 0
+        ? `${input}\n\n[Harness attachments available: ${attachmentNames.join(', ')}. Use MCP tools attach_list and attach_read to inspect them before answering.]`
+        : input;
     input = '';
     try {
       await api.sessions.input(session.id, encoder.encode(payload));

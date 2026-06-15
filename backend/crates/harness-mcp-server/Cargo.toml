@@ -13,6 +13,7 @@ thiserror = { workspace = true }
 chrono = { workspace = true }
 anyhow = { workspace = true }
 which = { workspace = true }
+base64 = { workspace = true }
 gix = { workspace = true }
 gix-hash = { workspace = true }
 tokei = { workspace = true }

@@ -15,9 +15,9 @@ use crate::protocol::{
     SERVER_NAME, SERVER_VERSION,
 };
 use crate::tools::{
-    self, capabilities as capability_tools, db as db_tools, docs as docs_tools,
-    knowledge as knowledge_tools, repo, session as session_tools, skills, spec, ssh as ssh_tools,
-    tasks, toolsets::ToolRegistry, wrap_error, wrap_text,
+    self, attachments as attachment_tools, capabilities as capability_tools, db as db_tools,
+    docs as docs_tools, knowledge as knowledge_tools, repo, session as session_tools, skills, spec,
+    ssh as ssh_tools, tasks, toolsets::ToolRegistry, wrap_error, wrap_text,
 };
 use harness_core::TaskStore;
 use harness_policy::{capability_default, is_sensitive_tool, Decision, PolicyEngine};
@@ -256,6 +256,10 @@ impl Dispatcher {
             "tools_search" => self.tools_search(&args),
             "tools_load" => self.tools_load(&args),
             "tools_unload" => self.tools_unload(&args),
+            "attach_list" => attachment_tools::list(&self.harness_home, self.session_id.as_deref()),
+            "attach_read" => {
+                attachment_tools::read(&self.harness_home, self.session_id.as_deref(), &args)
+            }
             "task_create" => tasks::create(
                 &self.store,
                 &self.thread_id,
@@ -1167,7 +1171,7 @@ mod tests {
         let tools = resp["result"]["tools"].as_array().unwrap();
         let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
         assert!(
-            names.len() <= 21,
+            names.len() <= 23,
             "base tools/list too large: {}",
             names.len()
         );
@@ -1178,6 +1182,8 @@ mod tests {
             "tools_search",
             "tools_load",
             "tools_unload",
+            "attach_list",
+            "attach_read",
             "task_create",
             "task_propose",
             "task_list",

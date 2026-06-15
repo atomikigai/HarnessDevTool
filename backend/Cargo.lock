@@ -2299,6 +2299,7 @@ name = "harness-mcp-server"
 version = "0.0.1"
 dependencies = [
  "anyhow",
+ "base64",
  "chrono",
  "gix",
  "gix-hash",

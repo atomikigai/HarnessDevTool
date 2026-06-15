@@ -146,6 +146,11 @@ combinarse con `transcript_tool_results` o `transcript_search`.
 | `repo_symbol_search` | `query, language?, limit?` | funciones/componentes/tipos/exports encontrados por indice simbolico |
 | `repo_related_files` | `path, limit?` | tests, componentes, estilos, rutas o archivos vecinos relevantes |
 
+`repo_manifest` y `repo_symbol_search` cachean resultados en
+`profiles/<profile>/repo-index/cache.sqlite`, invalidados por git HEAD, dirty
+hash y max `mtime` del arbol consultado. Las respuestas incluyen
+`cache.cache_hit`, `tree_mtime` y `cache_key`.
+
 ### `repo_code_graph_*` (opcional via `codebase-memory-mcp`)
 | Tool | Args | Devuelve |
 |---|---|---|

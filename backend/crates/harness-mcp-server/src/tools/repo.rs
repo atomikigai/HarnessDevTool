@@ -208,11 +208,41 @@ pub fn find(root: &Path, args: &Value) -> Result<Value, String> {
     }))
 }
 
-pub fn manifest(root: &Path, args: &Value) -> Result<Value, String> {
+pub fn manifest(
+    root: &Path,
+    harness_home: &Path,
+    profile: &str,
+    args: &Value,
+) -> Result<Value, String> {
     let dir = resolve_under_root(root, opt_str(args, "path").unwrap_or("."))?;
     if !dir.is_dir() {
         return Err(format!("path is not a directory: {}", dir.display()));
     }
+    let cache = RepoIndexCache::open(harness_home, profile)?;
+    let state = repo_cache_state(&dir)?;
+    let key = cache_key(args);
+    let tree_mtime = repo_tree_mtime(&dir)?;
+    if let Some(cached) = cache.read_query(&state, "repo_manifest", &key, tree_mtime)? {
+        return Ok(attach_repo_index_cache_meta(
+            cached,
+            &cache.path,
+            true,
+            tree_mtime,
+            &key,
+        ));
+    }
+    let result = manifest_uncached(&dir, args)?;
+    cache.write_query(&state, "repo_manifest", &key, tree_mtime, &result)?;
+    Ok(attach_repo_index_cache_meta(
+        result,
+        &cache.path,
+        false,
+        tree_mtime,
+        &key,
+    ))
+}
+
+fn manifest_uncached(dir: &Path, args: &Value) -> Result<Value, String> {
     let max_depth = args
         .get("max_depth")
         .and_then(Value::as_u64)
@@ -266,11 +296,41 @@ pub fn manifest(root: &Path, args: &Value) -> Result<Value, String> {
     }))
 }
 
-pub fn symbol_search(root: &Path, args: &Value) -> Result<Value, String> {
+pub fn symbol_search(
+    root: &Path,
+    harness_home: &Path,
+    profile: &str,
+    args: &Value,
+) -> Result<Value, String> {
     let dir = resolve_under_root(root, opt_str(args, "path").unwrap_or("."))?;
     if !dir.is_dir() {
         return Err(format!("path is not a directory: {}", dir.display()));
     }
+    let cache = RepoIndexCache::open(harness_home, profile)?;
+    let state = repo_cache_state(&dir)?;
+    let key = cache_key(args);
+    let tree_mtime = repo_tree_mtime(&dir)?;
+    if let Some(cached) = cache.read_query(&state, "repo_symbol_search", &key, tree_mtime)? {
+        return Ok(attach_repo_index_cache_meta(
+            cached,
+            &cache.path,
+            true,
+            tree_mtime,
+            &key,
+        ));
+    }
+    let result = symbol_search_uncached(&dir, args)?;
+    cache.write_query(&state, "repo_symbol_search", &key, tree_mtime, &result)?;
+    Ok(attach_repo_index_cache_meta(
+        result,
+        &cache.path,
+        false,
+        tree_mtime,
+        &key,
+    ))
+}
+
+fn symbol_search_uncached(dir: &Path, args: &Value) -> Result<Value, String> {
     let query = opt_str(args, "query").unwrap_or("").to_ascii_lowercase();
     let language = opt_str(args, "language").map(|s| s.to_ascii_lowercase());
     let limit = args
@@ -593,6 +653,110 @@ struct CodeGraphCache {
     conn: Connection,
 }
 
+struct RepoIndexCache {
+    path: PathBuf,
+    conn: Connection,
+}
+
+impl RepoIndexCache {
+    fn open(harness_home: &Path, profile: &str) -> Result<Self, String> {
+        validate_profile_id(profile).map_err(|e| format!("repo index profile: {e}"))?;
+        let dir = harness_home
+            .join("profiles")
+            .join(profile)
+            .join("repo-index");
+        std::fs::create_dir_all(&dir).map_err(|e| format!("create repo index cache dir: {e}"))?;
+        let path = dir.join("cache.sqlite");
+        let conn = Connection::open(&path).map_err(|e| format!("open repo index cache: {e}"))?;
+        conn.busy_timeout(std::time::Duration::from_millis(1000))
+            .map_err(|e| format!("repo index cache busy_timeout: {e}"))?;
+        conn.pragma_update(None, "journal_mode", "WAL")
+            .map_err(|e| format!("repo index cache wal: {e}"))?;
+        create_repo_index_cache_schema(&conn)?;
+        Ok(Self { path, conn })
+    }
+
+    fn read_query(
+        &self,
+        state: &RepoCacheState,
+        tool: &str,
+        cache_key: &str,
+        tree_mtime: i64,
+    ) -> Result<Option<Value>, String> {
+        let raw = self
+            .conn
+            .query_row(
+                "SELECT result_json FROM repo_index_query_cache
+                 WHERE repo_key = ?1 AND tool = ?2 AND cache_key = ?3
+                   AND head = ?4 AND dirty_hash = ?5 AND tree_mtime = ?6",
+                params![
+                    state.repo_key,
+                    tool,
+                    cache_key,
+                    state.head,
+                    state.dirty_hash,
+                    tree_mtime
+                ],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|e| format!("read repo index cache: {e}"))?;
+        raw.map(|text| {
+            serde_json::from_str(&text).map_err(|e| format!("parse repo index json: {e}"))
+        })
+        .transpose()
+    }
+
+    fn write_query(
+        &self,
+        state: &RepoCacheState,
+        tool: &str,
+        cache_key: &str,
+        tree_mtime: i64,
+        value: &Value,
+    ) -> Result<(), String> {
+        let now = now_secs();
+        let result_json =
+            serde_json::to_string(value).map_err(|e| format!("serialize repo index json: {e}"))?;
+        self.conn
+            .execute(
+                "INSERT OR REPLACE INTO repo_index_query_cache
+                    (repo_key, tool, cache_key, head, dirty_hash, tree_mtime, result_json, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    state.repo_key,
+                    tool,
+                    cache_key,
+                    state.head,
+                    state.dirty_hash,
+                    tree_mtime,
+                    result_json,
+                    now
+                ],
+            )
+            .map_err(|e| format!("write repo index cache: {e}"))?;
+        Ok(())
+    }
+}
+
+fn create_repo_index_cache_schema(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS repo_index_query_cache (
+            repo_key TEXT NOT NULL,
+            tool TEXT NOT NULL,
+            cache_key TEXT NOT NULL,
+            head TEXT NOT NULL,
+            dirty_hash TEXT NOT NULL,
+            tree_mtime INTEGER NOT NULL,
+            result_json TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            PRIMARY KEY (repo_key, tool, cache_key, head, dirty_hash, tree_mtime)
+         );
+         PRAGMA user_version = 1;",
+    )
+    .map_err(|e| format!("create repo index cache schema: {e}"))
+}
+
 impl CodeGraphCache {
     fn open(harness_home: &Path, profile: &str) -> Result<Self, String> {
         validate_profile_id(profile).map_err(|e| format!("repo code graph profile: {e}"))?;
@@ -883,6 +1047,24 @@ fn repo_cache_state(root: &Path) -> Result<RepoCacheState, String> {
     })
 }
 
+fn repo_tree_mtime(root: &Path) -> Result<i64, String> {
+    let files = collect_files(root, usize::MAX, DEFAULT_MANIFEST_LIMIT)?;
+    let mut max_mtime = 0i64;
+    for file in files {
+        let Ok(metadata) = std::fs::metadata(&file) else {
+            continue;
+        };
+        let modified = metadata
+            .modified()
+            .ok()
+            .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+            .map(|duration| duration.as_secs() as i64)
+            .unwrap_or(0);
+        max_mtime = max_mtime.max(modified);
+    }
+    Ok(max_mtime)
+}
+
 fn cache_key(args: &Value) -> String {
     short_hash(&serde_json::to_string(args).unwrap_or_else(|_| "{}".to_string()))
 }
@@ -916,6 +1098,27 @@ fn estimate_tokens(bytes: i64) -> i64 {
 fn attach_cache_meta(mut value: Value, telemetry: Value) -> Value {
     if let Some(obj) = value.as_object_mut() {
         obj.insert("cache".to_string(), telemetry);
+    }
+    value
+}
+
+fn attach_repo_index_cache_meta(
+    mut value: Value,
+    cache_path: &Path,
+    cache_hit: bool,
+    tree_mtime: i64,
+    cache_key: &str,
+) -> Value {
+    if let Some(obj) = value.as_object_mut() {
+        obj.insert(
+            "cache".to_string(),
+            json!({
+                "path": cache_path,
+                "cache_hit": cache_hit,
+                "tree_mtime": tree_mtime,
+                "cache_key": cache_key,
+            }),
+        );
     }
     value
 }
@@ -1287,7 +1490,7 @@ pub fn code_graph_index(
     } else {
         None
     };
-    let manifest = manifest(&root, &json!({"limit": 200, "max_depth": 4}))?;
+    let manifest = manifest_uncached(&root, &json!({"limit": 200, "max_depth": 4}))?;
     let result = json!({
         "root": root.display().to_string(),
         "run": run,
@@ -1365,7 +1568,7 @@ pub fn code_graph_search(
         "language": language,
         "limit": limit,
     });
-    let symbols = symbol_search(root, &symbol_args)?;
+    let symbols = symbol_search_uncached(&root_dir, &symbol_args)?;
     let files = find(
         root,
         &json!({
@@ -1455,7 +1658,7 @@ pub fn change_impact(
         }
         let stem = path.file_stem().and_then(OsStr::to_str).unwrap_or("");
         if !stem.is_empty() {
-            let symbol_hits = symbol_search(&root, &json!({"query": stem, "limit": 10}))
+            let symbol_hits = symbol_search_uncached(&root, &json!({"query": stem, "limit": 10}))
                 .unwrap_or_else(|e| json!({ "error": e, "symbols": [] }));
             for symbol in symbol_hits["symbols"].as_array().into_iter().flatten() {
                 symbols.push(symbol.clone());
@@ -1523,7 +1726,7 @@ pub fn architecture_pack(
         .map(|v| v as usize)
         .unwrap_or(80)
         .min(200);
-    let manifest = manifest(&dir, &json!({"limit": limit, "max_depth": 6}))?;
+    let manifest = manifest_uncached(&dir, &json!({"limit": limit, "max_depth": 6}))?;
     let analyze = analyze(&dir, &json!({}))?;
     let hotspots = largest_files_from_manifest(&manifest, 12);
     let result = json!({
@@ -1588,7 +1791,7 @@ pub fn code_snippet(
         (path, line, None)
     } else {
         let symbol = str_arg(args, "symbol")?;
-        let hits = symbol_search(&root, &json!({"query": symbol, "limit": 1}))?;
+        let hits = symbol_search_uncached(&root, &json!({"query": symbol, "limit": 1}))?;
         let first = hits["symbols"]
             .as_array()
             .and_then(|items| items.first())
@@ -2404,6 +2607,7 @@ mod tests {
     #[test]
     fn manifest_symbol_search_and_related_files_are_bounded() {
         let root = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(root.path().join("src")).unwrap();
         std::fs::create_dir_all(root.path().join("tests")).unwrap();
         std::fs::write(
@@ -2413,20 +2617,43 @@ mod tests {
         .unwrap();
         std::fs::write(root.path().join("tests/lib_test.rs"), "use app::alpha;\n").unwrap();
 
-        let manifest = manifest(root.path(), &json!({ "limit": 10 })).unwrap();
-        assert_eq!(manifest["summary"]["files"].as_u64(), Some(2));
-        assert!(manifest["files"]
+        let manifest_result =
+            manifest(root.path(), home.path(), "default", &json!({ "limit": 10 })).unwrap();
+        assert_eq!(manifest_result["summary"]["files"].as_u64(), Some(2));
+        assert_eq!(manifest_result["cache"]["cache_hit"], false);
+        assert!(manifest_result["files"]
             .as_array()
             .unwrap()
             .iter()
             .any(|item| item["path"] == "src/lib.rs"));
+        let manifest_cached =
+            manifest(root.path(), home.path(), "default", &json!({ "limit": 10 })).unwrap();
+        assert_eq!(manifest_cached["cache"]["cache_hit"], true);
 
-        let symbols = symbol_search(root.path(), &json!({ "query": "alpha" })).unwrap();
+        let symbols = symbol_search(
+            root.path(),
+            home.path(),
+            "default",
+            &json!({ "query": "alpha" }),
+        )
+        .unwrap();
         assert!(symbols["symbols"]
             .as_array()
             .unwrap()
             .iter()
             .any(|item| item["name"] == "alpha"));
+        let symbols_cached = symbol_search(
+            root.path(),
+            home.path(),
+            "default",
+            &json!({ "query": "alpha" }),
+        )
+        .unwrap();
+        assert_eq!(symbols_cached["cache"]["cache_hit"], true);
+        assert!(home
+            .path()
+            .join("profiles/default/repo-index/cache.sqlite")
+            .exists());
 
         let related = related_files(root.path(), &json!({ "path": "src/lib.rs" })).unwrap();
         assert!(related["related"]

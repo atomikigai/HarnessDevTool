@@ -300,9 +300,16 @@ Objetivo: reducir exploracion de repo y lecturas de archivos grandes.
 
 ### Criterios de aceptacion
 
-- `repo_find` puede usar cache cuando esta fresco.
-- El agente encuentra funciones/componentes sin abrir todo el archivo.
-- Invalida por git HEAD o mtime.
+- Implementado 2026-06-15: `repo_manifest` y `repo_symbol_search` usan cache
+  SQLite por profile en `profiles/<profile>/repo-index/cache.sqlite`.
+- Las entradas de cache se keyean por `repo_key`, tool, args hash, git HEAD,
+  dirty hash y max `mtime` del arbol consultado; cualquier cambio de HEAD,
+  dirty state o archivos invalida el hit.
+- El agente encuentra funciones/componentes sin abrir todo el archivo mediante
+  `repo_symbol_search`; los resultados incluyen metadata `cache.cache_hit`,
+  `tree_mtime` y `cache_key`.
+- `repo_find` sigue disponible como fallback acotado para nombre/contenido y
+  `repo_related_files` para tests/vecinos.
 
 ## Workstream R9 — Code graph MCP adapter
 

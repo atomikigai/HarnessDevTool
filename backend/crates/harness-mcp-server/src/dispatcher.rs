@@ -467,8 +467,10 @@ impl Dispatcher {
             "repo_git_push" => repo::git_push(&self.cwd, &args),
             "repo_github_pr_create" => repo::git_pr_create(&self.cwd, &args),
             "repo_codebase_memory_status" => repo::codebase_memory_status(&self.cwd, &args),
-            "repo_manifest" => repo::manifest(&self.cwd, &args),
-            "repo_symbol_search" => repo::symbol_search(&self.cwd, &args),
+            "repo_manifest" => repo::manifest(&self.cwd, &self.harness_home, &self.profile, &args),
+            "repo_symbol_search" => {
+                repo::symbol_search(&self.cwd, &self.harness_home, &self.profile, &args)
+            }
             "repo_related_files" => repo::related_files(&self.cwd, &args),
             "repo_code_graph_status" => {
                 repo::code_graph_status(&self.cwd, &self.harness_home, &self.profile, &args)

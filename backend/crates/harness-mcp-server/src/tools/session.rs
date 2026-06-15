@@ -452,6 +452,54 @@ pub fn context_checkpoint_request(
         .map_err(|e| e.to_string())
 }
 
+pub fn timeline_query(
+    current_thread_id: &str,
+    server_url: Option<&str>,
+    api_token: Option<&str>,
+    args: &Value,
+) -> Result<Value, String> {
+    let thread_id = opt_str(args, "thread_id").unwrap_or(current_thread_id);
+    let server = server_url.ok_or_else(|| "timeline_query needs --server-url".to_string())?;
+    let mut params = Vec::<(String, String)>::new();
+    if let Some(after) = args.get("after").and_then(Value::as_u64) {
+        params.push(("after".into(), after.to_string()));
+    }
+    if let Some(limit) = args.get("limit").and_then(Value::as_u64) {
+        params.push(("limit".into(), limit.clamp(1, 1000).to_string()));
+    }
+    for key in ["event_type", "actor", "task_id", "session_id"] {
+        if let Some(value) = opt_str(args, key).filter(|value| !value.trim().is_empty()) {
+            params.push((key.to_string(), value.to_string()));
+        }
+    }
+    let query = opt_str(args, "q")
+        .or_else(|| opt_str(args, "query"))
+        .filter(|value| !value.trim().is_empty());
+    if let Some(query) = query {
+        params.push(("q".into(), query.to_string()));
+    }
+
+    let mut url = format!(
+        "{}/api/threads/{}/timeline",
+        server.trim_end_matches('/'),
+        encode_query(thread_id)
+    );
+    if !params.is_empty() {
+        let query = params
+            .iter()
+            .map(|(key, value)| format!("{}={}", encode_query(key), encode_query(value)))
+            .collect::<Vec<_>>()
+            .join("&");
+        url.push('?');
+        url.push_str(&query);
+    }
+    let req = harness_request(ureq::get(&url).timeout(Duration::from_secs(5)), api_token);
+    req.call()
+        .map_err(|e| e.to_string())?
+        .into_json::<Value>()
+        .map_err(|e| e.to_string())
+}
+
 fn read_session_meta(
     harness_home: &Path,
     profile: &str,
@@ -660,6 +708,38 @@ mod tests {
         let captured = rx.recv().expect("captured request");
         assert!(captured.starts_with(
             "GET /api/sessions/sid-context/context/search?q=next+action&limit=5 HTTP/1.1"
+        ));
+        assert!(captured
+            .to_ascii_lowercase()
+            .contains("x-protocol-version: 1.0"));
+    }
+
+    #[test]
+    fn timeline_query_uses_protocol_header_and_encoded_filters() {
+        let Some((server_url, rx)) = spawn_http_capture_server() else {
+            return;
+        };
+
+        let result = timeline_query(
+            "thr-current",
+            Some(&server_url),
+            None,
+            &json!({
+                "after": 10,
+                "limit": 5,
+                "event_type": "task.updated",
+                "actor": "agent:codex",
+                "task_id": "T-0001",
+                "session_id": "sid-1",
+                "query": "next action"
+            }),
+        )
+        .expect("timeline query response");
+
+        assert_eq!(result["session_id"], "child-1");
+        let captured = rx.recv().expect("captured request");
+        assert!(captured.starts_with(
+            "GET /api/threads/thr-current/timeline?after=10&limit=5&event_type=task.updated&actor=agent%3Acodex&task_id=T-0001&session_id=sid-1&q=next+action HTTP/1.1"
         ));
         assert!(captured
             .to_ascii_lowercase()

@@ -296,6 +296,12 @@ impl Dispatcher {
                 self.api_token.as_deref(),
                 &args,
             ),
+            "timeline_query" => session_tools::timeline_query(
+                &self.thread_id,
+                self.server_url.as_deref(),
+                self.api_token.as_deref(),
+                &args,
+            ),
             "attach_list" => attachment_tools::list(&self.harness_home, self.session_id.as_deref()),
             "attach_read" => {
                 attachment_tools::read(&self.harness_home, self.session_id.as_deref(), &args)

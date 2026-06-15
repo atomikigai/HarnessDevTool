@@ -87,6 +87,17 @@ pub struct TimelineReport {
     pub items: Vec<TimelineItem>,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct TimelineQueryOptions {
+    pub after: Option<u64>,
+    pub limit: Option<usize>,
+    pub event_type: Option<String>,
+    pub actor: Option<String>,
+    pub task_id: Option<String>,
+    pub session_id: Option<String>,
+    pub q: Option<String>,
+}
+
 impl TimelineItem {
     pub fn from_event(event: Event) -> Self {
         let entity = event_entity(&event);

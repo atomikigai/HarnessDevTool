@@ -314,6 +314,7 @@ fn groups() -> Vec<ToolGroup> {
                 "context_status",
                 "context_search",
                 "context_checkpoint_request",
+                "timeline_query",
             ],
         },
         ToolGroup {

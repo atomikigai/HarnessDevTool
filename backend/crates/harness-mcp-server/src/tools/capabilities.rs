@@ -221,6 +221,7 @@ fn categories(runtime: CapabilityRuntime) -> Vec<CapabilityCategory> {
                 "context_status",
                 "context_search",
                 "context_checkpoint_request",
+                "timeline_query",
             ],
             skills: &[],
             status: if requested("context") {

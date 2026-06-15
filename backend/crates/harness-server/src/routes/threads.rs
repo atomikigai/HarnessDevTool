@@ -10,7 +10,7 @@ use axum::{Json, Router};
 use chrono::Utc;
 use harness_core::{
     AutonomyProfile, Event, ExecutionMode, Item, ReadinessIssue, ReadinessReport, ReconcileReport,
-    ReconcileSessionRef, Thread,
+    ReconcileSessionRef, Thread, TimelineQueryOptions,
 };
 use harness_session::{SessionMeta, SessionStatus};
 use serde::{Deserialize, Serialize};
@@ -58,6 +58,16 @@ pub struct TimelineQuery {
     pub after: Option<u64>,
     #[serde(default)]
     pub limit: Option<usize>,
+    #[serde(default)]
+    pub event_type: Option<String>,
+    #[serde(default)]
+    pub actor: Option<String>,
+    #[serde(default)]
+    pub task_id: Option<String>,
+    #[serde(default)]
+    pub session_id: Option<String>,
+    #[serde(default)]
+    pub q: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -164,18 +174,36 @@ async fn get_timeline(
     AxumPath(id): AxumPath<String>,
     Query(q): Query<TimelineQuery>,
 ) -> Result<Json<harness_core::TimelineReport>, ApiError> {
-    let mut report = state.store.read_timeline(&id)?;
-    if q.after.is_some() || q.limit.is_some() {
-        let after = q.after.unwrap_or(0);
-        let limit = q.limit.unwrap_or(200).clamp(1, 1000);
-        report.items = report
-            .items
-            .into_iter()
-            .filter(|item| q.after.is_none_or(|_| item.seq > after))
-            .take(limit)
-            .collect();
-        report.event_count = report.items.len();
-    }
+    let has_query = q.after.is_some()
+        || q.limit.is_some()
+        || q.event_type.as_ref().is_some_and(|v| !v.trim().is_empty())
+        || q.actor.as_ref().is_some_and(|v| !v.trim().is_empty())
+        || q.task_id.as_ref().is_some_and(|v| !v.trim().is_empty())
+        || q.session_id.as_ref().is_some_and(|v| !v.trim().is_empty())
+        || q.q.as_ref().is_some_and(|v| !v.trim().is_empty());
+    let limit = if has_query {
+        Some(q.limit.unwrap_or(200).clamp(1, 1000))
+    } else {
+        None
+    };
+    let items = state.store.query_timeline(
+        &id,
+        TimelineQueryOptions {
+            after: q.after,
+            limit,
+            event_type: q.event_type,
+            actor: q.actor,
+            task_id: q.task_id,
+            session_id: q.session_id,
+            q: q.q,
+        },
+    )?;
+    let report = harness_core::TimelineReport {
+        thread_id: id,
+        generated_at: Utc::now().timestamp_millis(),
+        event_count: items.len(),
+        items,
+    };
     Ok(Json(report))
 }
 

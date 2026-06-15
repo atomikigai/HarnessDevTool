@@ -5,11 +5,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use chrono::Utc;
+use rusqlite::{params, Connection};
 use serde::de::DeserializeOwned;
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::events::{Event, TimelineItem, TimelineReport};
+use crate::events::{Event, TimelineEntity, TimelineItem, TimelineQueryOptions, TimelineReport};
 use crate::repos::RepoContext;
 use crate::threads::{AutonomyProfile, ExecutionMode, Handoff, ReadinessReport, Thread};
 use crate::{validate_profile_id, validate_task_id, validate_thread_id};
@@ -20,6 +21,8 @@ pub enum StoreError {
     Io(#[from] std::io::Error),
     #[error("json error: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("sqlite error: {0}")]
+    Sqlite(#[from] rusqlite::Error),
     #[error("not found: {0}")]
     NotFound(String),
     #[error("validation: {0}")]
@@ -270,6 +273,14 @@ impl Store {
         f.write_all(line.as_bytes())?;
         f.write_all(b"\n")?;
         f.sync_data()?;
+        if let Err(e) = self.index_event(thread_id, &event) {
+            tracing::warn!(
+                thread_id,
+                seq,
+                error = %e,
+                "failed to update derived events index"
+            );
+        }
         Ok(seq)
     }
 
@@ -284,9 +295,7 @@ impl Store {
 
     pub fn read_timeline(&self, thread_id: &str) -> Result<TimelineReport, StoreError> {
         self.get_thread(thread_id)?;
-        let mut events = self.read_events(thread_id)?;
-        events.sort_by_key(|event| event.seq);
-        let items: Vec<TimelineItem> = events.into_iter().map(TimelineItem::from_event).collect();
+        let items = self.query_timeline(thread_id, TimelineQueryOptions::default())?;
         Ok(TimelineReport {
             thread_id: thread_id.to_string(),
             generated_at: Utc::now().timestamp_millis(),
@@ -294,6 +303,274 @@ impl Store {
             items,
         })
     }
+
+    pub fn query_timeline(
+        &self,
+        thread_id: &str,
+        options: TimelineQueryOptions,
+    ) -> Result<Vec<TimelineItem>, StoreError> {
+        self.get_thread(thread_id)?;
+        let dir = self.thread_dir(thread_id)?;
+        self.ensure_events_index(thread_id, &dir)?;
+        let conn = open_events_index(&dir)?;
+        query_events_index(&conn, options)
+    }
+
+    fn ensure_events_index(&self, thread_id: &str, dir: &Path) -> Result<(), StoreError> {
+        let conn = open_events_index(dir)?;
+        let has_offset = conn
+            .query_row(
+                "SELECT value FROM index_meta WHERE key = 'last_seq'",
+                [],
+                |_row| Ok(()),
+            )
+            .is_ok();
+        if has_offset {
+            return Ok(());
+        }
+        drop(conn);
+        let events = self.read_events(thread_id)?;
+        let conn = open_events_index(dir)?;
+        rebuild_events_index(&conn, &events)?;
+        Ok(())
+    }
+
+    fn index_event(&self, thread_id: &str, event: &Event) -> Result<(), StoreError> {
+        let dir = self.thread_dir(thread_id)?;
+        let conn = open_events_index(&dir)?;
+        upsert_event_index(&conn, event)?;
+        Ok(())
+    }
+}
+
+fn events_index_path(thread_dir: &Path) -> PathBuf {
+    thread_dir.join("events_index.sqlite")
+}
+
+fn open_events_index(thread_dir: &Path) -> Result<Connection, StoreError> {
+    let conn = Connection::open(events_index_path(thread_dir))?;
+    conn.execute_batch(
+        r#"
+        PRAGMA journal_mode=WAL;
+        CREATE TABLE IF NOT EXISTS events (
+            seq INTEGER PRIMARY KEY,
+            at INTEGER NOT NULL,
+            event_type TEXT NOT NULL,
+            actor TEXT,
+            entity_kind TEXT,
+            entity_id TEXT,
+            session_id TEXT,
+            task_id TEXT,
+            summary TEXT NOT NULL,
+            payload_json TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_events_type ON events(event_type);
+        CREATE INDEX IF NOT EXISTS idx_events_actor ON events(actor);
+        CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id);
+        CREATE INDEX IF NOT EXISTS idx_events_task ON events(task_id);
+        CREATE VIRTUAL TABLE IF NOT EXISTS events_fts
+            USING fts5(summary, payload_json, event_type UNINDEXED, actor UNINDEXED, session_id UNINDEXED, task_id UNINDEXED);
+        CREATE TABLE IF NOT EXISTS index_meta (
+            key TEXT PRIMARY KEY,
+            value INTEGER NOT NULL
+        );
+        "#,
+    )?;
+    Ok(conn)
+}
+
+fn rebuild_events_index(conn: &Connection, events: &[Event]) -> Result<(), StoreError> {
+    conn.execute("DELETE FROM events", [])?;
+    conn.execute("DELETE FROM events_fts", [])?;
+    conn.execute("DELETE FROM index_meta", [])?;
+    let mut max_seq = None;
+    for event in events {
+        upsert_event_index(conn, event)?;
+        max_seq = Some(max_seq.map_or(event.seq, |seq: u64| seq.max(event.seq)));
+    }
+    let indexed_seq = max_seq.map(|seq| seq as i64).unwrap_or(-1);
+    conn.execute(
+        "INSERT OR REPLACE INTO index_meta(key, value) VALUES ('last_seq', ?1)",
+        params![indexed_seq],
+    )?;
+    Ok(())
+}
+
+fn upsert_event_index(conn: &Connection, event: &Event) -> Result<(), StoreError> {
+    let item = TimelineItem::from_event(event.clone());
+    let payload_json = item
+        .payload
+        .as_ref()
+        .map(serde_json::to_string)
+        .transpose()?;
+    let (session_id, task_id) = payload_ids(item.payload.as_ref(), item.entity.as_ref());
+    let entity_kind = item.entity.as_ref().map(|entity| entity.kind.as_str());
+    let entity_id = item.entity.as_ref().map(|entity| entity.id.as_str());
+    conn.execute(
+        r#"
+        INSERT INTO events(seq, at, event_type, actor, entity_kind, entity_id, session_id, task_id, summary, payload_json)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+        ON CONFLICT(seq) DO UPDATE SET
+            at=excluded.at,
+            event_type=excluded.event_type,
+            actor=excluded.actor,
+            entity_kind=excluded.entity_kind,
+            entity_id=excluded.entity_id,
+            session_id=excluded.session_id,
+            task_id=excluded.task_id,
+            summary=excluded.summary,
+            payload_json=excluded.payload_json
+        "#,
+        params![
+            item.seq as i64,
+            item.at,
+            item.event_type.as_str(),
+            item.actor.as_deref(),
+            entity_kind,
+            entity_id,
+            session_id.as_deref(),
+            task_id.as_deref(),
+            item.summary.as_str(),
+            payload_json.as_deref(),
+        ],
+    )?;
+    conn.execute(
+        "DELETE FROM events_fts WHERE rowid = ?1",
+        params![event.seq as i64],
+    )?;
+    conn.execute(
+        r#"
+        INSERT INTO events_fts(rowid, summary, payload_json, event_type, actor, session_id, task_id)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+        "#,
+        params![
+            event.seq as i64,
+            item.summary.as_str(),
+            payload_json.as_deref(),
+            item.event_type.as_str(),
+            item.actor.as_deref(),
+            session_id.as_deref(),
+            task_id.as_deref(),
+        ],
+    )?;
+    conn.execute(
+        r#"
+        INSERT INTO index_meta(key, value) VALUES ('last_seq', ?1)
+        ON CONFLICT(key) DO UPDATE SET
+            value = CASE WHEN excluded.value > index_meta.value THEN excluded.value ELSE index_meta.value END
+        "#,
+        params![event.seq as i64],
+    )?;
+    Ok(())
+}
+
+fn payload_ids(
+    payload: Option<&serde_json::Value>,
+    entity: Option<&TimelineEntity>,
+) -> (Option<String>, Option<String>) {
+    let payload_session = payload
+        .and_then(|payload| payload.get("session_id"))
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let payload_task = payload
+        .and_then(|payload| payload.get("task_id"))
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let entity_session = entity
+        .filter(|entity| entity.kind == "session")
+        .map(|entity| entity.id.clone());
+    let entity_task = entity
+        .filter(|entity| entity.kind == "task")
+        .map(|entity| entity.id.clone());
+    (
+        payload_session.or(entity_session),
+        payload_task.or(entity_task),
+    )
+}
+
+fn query_events_index(
+    conn: &Connection,
+    options: TimelineQueryOptions,
+) -> Result<Vec<TimelineItem>, StoreError> {
+    let mut sql = String::from(
+        "SELECT e.seq, e.at, e.event_type, e.actor, e.entity_kind, e.entity_id, e.summary, e.payload_json \
+         FROM events e",
+    );
+    let mut args = Vec::<rusqlite::types::Value>::new();
+    if options.q.as_ref().is_some_and(|q| !q.trim().is_empty()) {
+        sql.push_str(" JOIN events_fts ON events_fts.rowid = e.seq");
+    }
+    sql.push_str(" WHERE 1=1");
+    if let Some(after) = options.after {
+        sql.push_str(" AND e.seq > ?");
+        args.push(rusqlite::types::Value::Integer(after as i64));
+    }
+    if let Some(event_type) = options.event_type.filter(|v| !v.trim().is_empty()) {
+        sql.push_str(" AND e.event_type = ?");
+        args.push(rusqlite::types::Value::Text(event_type));
+    }
+    if let Some(actor) = options.actor.filter(|v| !v.trim().is_empty()) {
+        sql.push_str(" AND e.actor = ?");
+        args.push(rusqlite::types::Value::Text(actor));
+    }
+    if let Some(task_id) = options.task_id.filter(|v| !v.trim().is_empty()) {
+        sql.push_str(" AND e.task_id = ?");
+        args.push(rusqlite::types::Value::Text(task_id));
+    }
+    if let Some(session_id) = options.session_id.filter(|v| !v.trim().is_empty()) {
+        sql.push_str(" AND e.session_id = ?");
+        args.push(rusqlite::types::Value::Text(session_id));
+    }
+    if let Some(q) = options.q.filter(|q| !q.trim().is_empty()) {
+        sql.push_str(" AND events_fts MATCH ?");
+        args.push(rusqlite::types::Value::Text(fts_query(&q)));
+    }
+    sql.push_str(" ORDER BY e.seq ASC LIMIT ?");
+    let limit = options.limit.unwrap_or(usize::MAX).min(i64::MAX as usize) as i64;
+    args.push(rusqlite::types::Value::Integer(limit));
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(args.iter()), |row| {
+        let entity_kind: Option<String> = row.get(4)?;
+        let entity_id: Option<String> = row.get(5)?;
+        let payload_json: Option<String> = row.get(7)?;
+        let payload = payload_json
+            .as_deref()
+            .and_then(|raw| serde_json::from_str(raw).ok());
+        Ok(TimelineItem {
+            seq: row.get::<_, i64>(0)? as u64,
+            at: row.get(1)?,
+            event_type: row.get(2)?,
+            actor: row.get(3)?,
+            entity: entity_kind
+                .zip(entity_id)
+                .map(|(kind, id)| TimelineEntity { kind, id }),
+            summary: row.get(6)?,
+            payload,
+        })
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row?);
+    }
+    Ok(out)
+}
+
+fn fts_query(query: &str) -> String {
+    query
+        .split_whitespace()
+        .filter_map(|term| {
+            let clean = term
+                .chars()
+                .filter(|ch| ch.is_alphanumeric() || *ch == '_' || *ch == '-')
+                .collect::<String>();
+            if clean.is_empty() {
+                None
+            } else {
+                Some(format!("\"{clean}\""))
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn max_jsonl_seq(path: &Path) -> Result<Option<u64>, StoreError> {
@@ -615,6 +892,120 @@ mod tests {
         assert_eq!(report.items[0].summary, "Created task T-0001");
         assert_eq!(report.items[1].seq, 1);
         assert_eq!(report.items[1].summary, "Updated task T-0001: status");
+    }
+
+    #[test]
+    fn query_timeline_filters_from_index_without_events_jsonl() {
+        let home = tmp_home();
+        let store = Store::new(home.path()).unwrap();
+        let t = store.create_thread(None).unwrap();
+
+        for (event_type, actor, payload) in [
+            (
+                "session.spawned",
+                "agent:codex",
+                serde_json::json!({ "session_id": "S-0001", "task_id": "T-0001", "note": "boot alpha" }),
+            ),
+            (
+                "task.updated",
+                "agent:codex",
+                serde_json::json!({ "type": "task.updated", "task_id": "T-0001", "fields": ["status"], "note": "alpha done" }),
+            ),
+            (
+                "task.updated",
+                "agent:qa",
+                serde_json::json!({ "type": "task.updated", "task_id": "T-0002", "fields": ["status"], "note": "beta done" }),
+            ),
+        ] {
+            store
+                .append_event(
+                    &t.id,
+                    &Event {
+                        seq: 999,
+                        at: 123,
+                        event_type: event_type.into(),
+                        items: vec![],
+                        thread_id: Some(t.id.clone()),
+                        actor: Some(actor.into()),
+                        payload: Some(payload),
+                    },
+                )
+                .unwrap();
+        }
+
+        let events_path = store.threads_dir().join(&t.id).join("events.jsonl");
+        std::fs::rename(&events_path, events_path.with_extension("jsonl.off")).unwrap();
+
+        let task_hits = store
+            .query_timeline(
+                &t.id,
+                TimelineQueryOptions {
+                    task_id: Some("T-0001".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            task_hits.iter().map(|item| item.seq).collect::<Vec<_>>(),
+            vec![0, 1]
+        );
+
+        let search_hits = store
+            .query_timeline(
+                &t.id,
+                TimelineQueryOptions {
+                    q: Some("beta".into()),
+                    limit: Some(5),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(search_hits.len(), 1);
+        assert_eq!(search_hits[0].actor.as_deref(), Some("agent:qa"));
+    }
+
+    #[test]
+    fn query_timeline_rebuilds_index_when_missing() {
+        let home = tmp_home();
+        let store = Store::new(home.path()).unwrap();
+        let t = store.create_thread(None).unwrap();
+        store
+            .append_event(
+                &t.id,
+                &Event {
+                    seq: 999,
+                    at: 123,
+                    event_type: "task.created".into(),
+                    items: vec![],
+                    thread_id: Some(t.id.clone()),
+                    actor: Some("human".into()),
+                    payload: Some(serde_json::json!({
+                        "type": "task.created",
+                        "task_id": "T-0001"
+                    })),
+                },
+            )
+            .unwrap();
+
+        let thread_dir = store.threads_dir().join(&t.id);
+        for suffix in ["", "-wal", "-shm"] {
+            let path = thread_dir.join(format!("events_index.sqlite{suffix}"));
+            if path.exists() {
+                std::fs::remove_file(path).unwrap();
+            }
+        }
+
+        let items = store
+            .query_timeline(
+                &t.id,
+                TimelineQueryOptions {
+                    event_type: Some("task.created".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].summary, "Created task T-0001");
     }
 
     #[test]

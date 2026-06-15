@@ -25,7 +25,7 @@ pub use budget::{
     TaskCost, Usage,
 };
 pub use docs::{infer_docs_backend, DocsBackend};
-pub use events::{Event, Item, TimelineEntity, TimelineItem, TimelineReport};
+pub use events::{Event, Item, TimelineEntity, TimelineItem, TimelineQueryOptions, TimelineReport};
 pub use ids::{validate_path_id, validate_profile_id, validate_task_id, validate_thread_id};
 pub use knowledge::{
     ingest_data, ingest_office, ingest_pdf, ingest_text, knowledge_search, KnowledgeIngestRequest,

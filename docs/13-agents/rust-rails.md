@@ -97,15 +97,18 @@ Resultado: agentes **más precisos**, menos tokens en "explorar", menos retries.
 | `context_search` | `session_id?, query, limit?` | snippets de checkpoints/eventos de contexto via FTS5 |
 | `context_status` | `session_id?` | estado del context governor e indice derivado para la sesion |
 | `context_checkpoint_request` | `session_id?` | solicita checkpoint compacto a una sesion running |
-| `timeline_query` | `thread_id, after?, limit?, event_type?, task_id?, session_id?` | pagina de eventos desde indice SQLite sin leer todo el JSONL |
+| `timeline_query` | `thread_id, after?, limit?, event_type?, actor?, task_id?, session_id?, q?` | pagina/busqueda de eventos desde `events_index.sqlite` sin leer todo el JSONL |
 | `transcript_query` | `session_id, since?, limit?, kind?, role?` | pagina de transcript por seq desde indice derivado |
 | `evidence_pack` | `task_id?, session_id?, paths?` | diff resumido, archivos, comandos, tests, artifacts, riesgos y checks pendientes |
 
 Implementado hoy: `session_context_pack`, `context_status`, `context_search`,
-`context_checkpoint_request` y `evidence_pack`. `evidence_pack` devuelve git
-`status`/`name-status`/`stat` acotados, metadata de task/sesion, artifacts
-registrados, gaps conocidos y next steps; comandos corridos/tests quedan como
-gap explicito hasta que aterrice `transcript_index`.
+`context_checkpoint_request`, `evidence_pack` y `timeline_query`.
+`timeline_query` pagina por `seq`, filtra por tipo/actor/task/session y usa
+FTS5 (`q`) sobre summary/payload; el indice es derivado y se reconstruye desde
+`events.jsonl`. `evidence_pack` devuelve git `status`/`name-status`/`stat`
+acotados, metadata de task/sesion, artifacts registrados, gaps conocidos y
+next steps; comandos corridos/tests quedan como gap explicito hasta que
+aterrice `transcript_index`.
 
 ### `repo.*`
 | Tool | Args | Devuelve |

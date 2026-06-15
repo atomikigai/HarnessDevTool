@@ -247,6 +247,25 @@ pub fn list_descriptors() -> Vec<ToolDescriptor> {
             }),
         },
         ToolDescriptor {
+            name: "timeline_query".into(),
+            description: "Query a thread timeline from the backend events_index.sqlite with pagination, filters, and optional FTS search over summary/payload."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "thread_id": { "type": "string", "description": "Defaults to the current MCP thread id." },
+                    "after": { "type": "integer", "minimum": 0, "description": "Return events with seq greater than this value." },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 1000 },
+                    "event_type": { "type": "string" },
+                    "actor": { "type": "string" },
+                    "task_id": { "type": "string" },
+                    "session_id": { "type": "string" },
+                    "q": { "type": "string", "description": "Optional FTS query over timeline summary/payload." },
+                    "query": { "type": "string", "description": "Alias for q." }
+                }
+            }),
+        },
+        ToolDescriptor {
             name: "attach_list".into(),
             description: "List files attached to this agent session from the Harness ChatView composer."
                 .into(),

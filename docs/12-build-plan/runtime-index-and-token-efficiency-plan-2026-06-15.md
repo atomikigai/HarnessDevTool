@@ -154,9 +154,19 @@ Objetivo: paginar timeline y depurar eventos sin cargar el log completo.
 
 ### Criterios de aceptacion
 
+- Implementado 2026-06-15: `Store::query_timeline` usa
+  `events_index.sqlite` por thread con WAL, tabla `events`, FTS5
+  `events_fts` y `index_meta.last_seq`; `append_event` actualiza el indice
+  derivado write-through y `read_timeline` delega en la query indexada.
+- El endpoint `/api/threads/:id/timeline` acepta `after`, `limit`,
+  `event_type`, `actor`, `task_id`, `session_id` y `q`; sin query params
+  mantiene respuesta completa compatible, con params pagina desde SQLite.
 - `/api/threads/:id/timeline?after=&limit=` no llama `read_timeline` completo.
 - Query por task/session/event_type es O(log n + page).
 - Indice es reconstruible desde `events.jsonl`.
+- Tests verifican que una consulta filtrada sigue respondiendo desde SQLite
+  aunque `events.jsonl` no este disponible, y que el indice se reconstruye si
+  falta.
 
 ## Workstream R4 — Task index extendido
 
@@ -189,6 +199,9 @@ Objetivo: evitar leer todos los TOML para vistas y planning.
 - Listar tasks para dashboard/scheduler no relee cada TOML.
 - `task_list` completo sigue disponible cuando el agente necesita detalles.
 - Scheduler usa summaries donde no necesita task completo.
+- Implementado 2026-06-15: el scheduler descarta `thread_id` invalidos antes
+  de pausa/presupuesto/snapshot para que una fila/directorio legacy no tumbe
+  todo el pass de asignacion.
 
 ## Workstream R5 — Transcript index y compact replay
 

@@ -15,6 +15,7 @@ use crate::tasks::{
     ClaimResult, SchedulerDecisionKind, SchedulerExplanation, Task, TaskEvent, TaskPatch,
     TaskStatus, TaskStore,
 };
+use crate::validate_thread_id;
 
 use super::spawner::{NoopSpawner, SessionSpawner, SpawnRequest, SpawnResult};
 use super::MAX_CONCURRENT_DEFAULT;
@@ -588,6 +589,14 @@ fn run_assign_pass(
     let mut next_snapshot: StatusSnapshot = HashMap::new();
 
     for tid in store.scheduler_threads()? {
+        if let Err(e) = validate_thread_id(&tid) {
+            tracing::warn!(
+                thread_id = %tid,
+                error = %e,
+                "scheduler skipping invalid thread id"
+            );
+            continue;
+        }
         if pause.is_thread_paused(&tid) {
             tracing::debug!(
                 target: "scheduling",

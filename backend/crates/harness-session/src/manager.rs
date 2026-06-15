@@ -965,6 +965,7 @@ mod tests {
             status,
             started_at: 1_700_000_000_000,
             exit_code: None,
+            result: None,
             role: None,
             owner_session_id: None,
             task_id: None,
@@ -1544,6 +1545,10 @@ mod tests {
         assert_eq!(code, Some(0));
         assert_eq!(meta.status, SessionStatus::Exited);
         assert_eq!(meta.exit_code, Some(0));
+        let result = meta.result.expect("session result");
+        assert_eq!(result.exit_code, Some(0));
+        assert!(result.process_success);
+        assert!(result.completed_at >= meta.started_at);
 
         let persisted: SessionMeta = serde_json::from_slice(
             &std::fs::read(sessions_root.join("quick-exit").join("meta.json"))
@@ -1552,6 +1557,10 @@ mod tests {
         .expect("parse persisted meta");
         assert_eq!(persisted.status, SessionStatus::Exited);
         assert_eq!(persisted.exit_code, Some(0));
+        let persisted_result = persisted.result.expect("persisted result");
+        assert_eq!(persisted_result.exit_code, Some(0));
+        assert!(persisted_result.process_success);
+        assert!(persisted_result.completed_at >= persisted.started_at);
 
         let _ = std::fs::remove_dir_all(root);
     }

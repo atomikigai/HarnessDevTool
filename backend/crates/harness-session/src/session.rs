@@ -13,7 +13,8 @@ use crate::errors::SessionError;
 use crate::kind::AgentKind;
 use crate::manager::SessionEvent;
 use crate::meta::{
-    LoadedCapabilities, ProcessIdentity, SessionMeta, SessionRepoContext, SessionStatus,
+    LoadedCapabilities, ProcessIdentity, SessionMeta, SessionRepoContext, SessionResult,
+    SessionStatus,
 };
 use crate::output::OutputWriter;
 
@@ -225,6 +226,7 @@ impl AgentSession {
             status: SessionStatus::Running,
             started_at: Utc::now().timestamp_millis(),
             exit_code: None,
+            result: None,
             role: role.clone(),
             owner_session_id: owner_session_id.clone(),
             task_id: task_id.clone(),
@@ -381,6 +383,13 @@ impl AgentSession {
                     m.status = SessionStatus::Exited;
                 }
                 m.exit_code = Some(code);
+                let completed_at = Utc::now().timestamp_millis();
+                m.result = Some(SessionResult {
+                    completed_at,
+                    duration_ms: completed_at.saturating_sub(m.started_at) as u64,
+                    exit_code: Some(code),
+                    process_success: code == 0,
+                });
                 let _ = persist_meta(&dir, &m);
             });
 

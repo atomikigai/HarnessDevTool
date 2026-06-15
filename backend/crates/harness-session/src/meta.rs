@@ -54,6 +54,23 @@ impl LoadedCapabilities {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
 #[cfg_attr(feature = "ts-export", ts(export, export_to = "../../../bindings/"))]
+pub struct SessionResult {
+    /// Unix epoch ms when the child process finished.
+    pub completed_at: i64,
+    /// Wall-clock runtime derived from `started_at` and `completed_at`.
+    pub duration_ms: u64,
+    /// Final process exit code observed by the PTY manager.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-export", ts(optional = nullable))]
+    pub exit_code: Option<i32>,
+    /// Coarse process-level success. Higher-level evaluator results can refine
+    /// this without rewriting the conversation log.
+    pub process_success: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export, export_to = "../../../bindings/"))]
 pub struct ProcessIdentity {
     /// Linux `/proc/<pid>/stat` field 22. Strong guard against PID reuse.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -92,6 +109,11 @@ pub struct SessionMeta {
     pub started_at: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exit_code: Option<i32>,
+    /// Derived terminal result for dashboards/evaluators. This is metadata
+    /// only; the conversation log remains append-only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-export", ts(optional = nullable))]
+    pub result: Option<SessionResult>,
     /// Name of the role template that seeded this session, if any. Carried as
     /// metadata only — the prompt itself is written to the PTY at spawn time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -165,6 +187,7 @@ mod tests {
         assert_eq!(meta.kind, AgentKind::Codex);
         assert!(meta.loaded_capabilities.is_empty());
         assert!(meta.process_identity.is_none());
+        assert!(meta.result.is_none());
     }
 
     #[test]
@@ -179,6 +202,7 @@ mod tests {
             status: SessionStatus::Running,
             started_at: 1_700_000_000_000,
             exit_code: None,
+            result: None,
             role: None,
             owner_session_id: None,
             task_id: None,

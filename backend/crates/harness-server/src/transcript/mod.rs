@@ -17,7 +17,10 @@ pub mod store;
 pub mod watcher;
 
 pub use event::TranscriptEvent;
-pub use store::TranscriptStore;
+pub use store::{
+    query_transcript_events, transcript_tool_results, TranscriptQueryOptions, TranscriptStore,
+    TranscriptToolResultsOptions,
+};
 pub use watcher::{
     spawn_codex_transcript_watcher, spawn_transcript_watcher, TranscriptParser, WatcherHandle,
 };

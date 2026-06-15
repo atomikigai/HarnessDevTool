@@ -99,16 +99,21 @@ Resultado: agentes **más precisos**, menos tokens en "explorar", menos retries.
 | `context_checkpoint_request` | `session_id?` | solicita checkpoint compacto a una sesion running |
 | `timeline_query` | `thread_id, after?, limit?, event_type?, actor?, task_id?, session_id?, q?` | pagina/busqueda de eventos desde `events_index.sqlite` sin leer todo el JSONL |
 | `transcript_query` | `session_id, since?, limit?, kind?, role?` | pagina de transcript por seq desde indice derivado |
+| `transcript_search` | `session_id?, query, since?, limit?, kind?, role?` | busqueda FTS5 sobre contenido, tool args/results y raw payload sin replay completo |
+| `transcript_tool_results` | `session_id?, since?, limit?, tool_name?, errors_only?` | resultados de tools recientes filtrables por tool/error desde `transcript_index.sqlite` |
 | `evidence_pack` | `task_id?, session_id?, paths?` | diff resumido, archivos, comandos, tests, artifacts, riesgos y checks pendientes |
 
 Implementado hoy: `session_context_pack`, `context_status`, `context_search`,
-`context_checkpoint_request`, `evidence_pack` y `timeline_query`.
+`context_checkpoint_request`, `evidence_pack`, `timeline_query`,
+`transcript_query`, `transcript_search` y `transcript_tool_results`.
 `timeline_query` pagina por `seq`, filtra por tipo/actor/task/session y usa
 FTS5 (`q`) sobre summary/payload; el indice es derivado y se reconstruye desde
-`events.jsonl`. `evidence_pack` devuelve git `status`/`name-status`/`stat`
-acotados, metadata de task/sesion, artifacts registrados, gaps conocidos y
-next steps; comandos corridos/tests quedan como gap explicito hasta que
-aterrice `transcript_index`.
+`events.jsonl`. Las rails de transcript leen `transcript_index.sqlite`,
+reconstruible desde `transcript.jsonl`, para recuperar comandos, resultados y
+errores sin replay completo. `evidence_pack` devuelve git
+`status`/`name-status`/`stat` acotados, metadata de task/sesion, artifacts
+registrados, gaps conocidos y next steps; para evidencia de comandos/tests debe
+combinarse con `transcript_tool_results` o `transcript_search`.
 
 ### `repo.*`
 | Tool | Args | Devuelve |

@@ -302,6 +302,24 @@ impl Dispatcher {
                 self.api_token.as_deref(),
                 &args,
             ),
+            "transcript_query" => session_tools::transcript_query(
+                self.session_id.as_deref(),
+                self.server_url.as_deref(),
+                self.api_token.as_deref(),
+                &args,
+            ),
+            "transcript_search" => session_tools::transcript_search(
+                self.session_id.as_deref(),
+                self.server_url.as_deref(),
+                self.api_token.as_deref(),
+                &args,
+            ),
+            "transcript_tool_results" => session_tools::transcript_tool_results(
+                self.session_id.as_deref(),
+                self.server_url.as_deref(),
+                self.api_token.as_deref(),
+                &args,
+            ),
             "attach_list" => attachment_tools::list(&self.harness_home, self.session_id.as_deref()),
             "attach_read" => {
                 attachment_tools::read(&self.harness_home, self.session_id.as_deref(), &args)

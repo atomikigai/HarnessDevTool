@@ -22,14 +22,19 @@ use std::time::Duration;
 use axum::extract::{Path, Query, State};
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::routing::get;
+use axum::Json;
 use axum::Router;
 use futures::stream::{Stream, StreamExt};
 use serde::Deserialize;
 use serde_json::json;
 use tokio::sync::broadcast;
 
+use crate::error::ApiError;
 use crate::state::AppState;
-use crate::transcript::{read_events_since_helper, TranscriptEvent};
+use crate::transcript::{
+    query_transcript_events, read_events_since_helper, transcript_tool_results, TranscriptEvent,
+    TranscriptQueryOptions, TranscriptToolResultsOptions,
+};
 
 /// How often we re-check for a missing watcher slot.
 const SLOT_POLL_INTERVAL: Duration = Duration::from_millis(250);
@@ -38,13 +43,63 @@ const SLOT_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const SLOT_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub fn router() -> Router<Arc<AppState>> {
-    Router::new().route("/api/sessions/:sid/transcript", get(transcript_stream))
+    Router::new()
+        .route("/api/sessions/:sid/transcript", get(transcript_stream))
+        .route("/api/sessions/:sid/transcript/query", get(transcript_query))
+        .route(
+            "/api/sessions/:sid/transcript/search",
+            get(transcript_search),
+        )
+        .route(
+            "/api/sessions/:sid/transcript/tool-results",
+            get(transcript_tool_results_route),
+        )
 }
 
 #[derive(Debug, Default, Deserialize)]
 struct Query_ {
     #[serde(default)]
     since: u64,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct TranscriptQuery {
+    #[serde(default)]
+    since: u64,
+    #[serde(default)]
+    limit: Option<usize>,
+    #[serde(default)]
+    kind: Option<String>,
+    #[serde(default)]
+    role: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct TranscriptSearchQuery {
+    #[serde(default)]
+    q: Option<String>,
+    #[serde(default)]
+    query: Option<String>,
+    #[serde(default)]
+    since: u64,
+    #[serde(default)]
+    limit: Option<usize>,
+    #[serde(default)]
+    kind: Option<String>,
+    #[serde(default)]
+    role: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct TranscriptToolResultsQuery {
+    #[serde(default)]
+    since: u64,
+    #[serde(default)]
+    limit: Option<usize>,
+    #[serde(default)]
+    tool_name: Option<String>,
+    #[serde(default)]
+    errors_only: bool,
 }
 
 /// Structured items produced by [`transcript_item_stream`] before SSE
@@ -79,6 +134,81 @@ async fn transcript_stream(
             .interval(Duration::from_secs(15))
             .text("keep-alive"),
     )
+}
+
+async fn transcript_query(
+    State(state): State<Arc<AppState>>,
+    Path(sid): Path<String>,
+    Query(q): Query<TranscriptQuery>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let events = query_transcript_events(
+        &session_dir(&state, &sid),
+        TranscriptQueryOptions {
+            since: q.since,
+            limit: q.limit.map(|limit| limit.clamp(1, 1000)),
+            kind: q.kind,
+            role: q.role,
+            q: None,
+        },
+    )
+    .await
+    .map_err(|e| ApiError::Internal(format!("query transcript: {e}")))?;
+    Ok(Json(json!({
+        "session_id": sid,
+        "event_count": events.len(),
+        "events": events,
+    })))
+}
+
+async fn transcript_search(
+    State(state): State<Arc<AppState>>,
+    Path(sid): Path<String>,
+    Query(q): Query<TranscriptSearchQuery>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let query = q.query.or(q.q).unwrap_or_default();
+    if query.trim().is_empty() {
+        return Err(ApiError::BadRequest("q is required".into()));
+    }
+    let events = query_transcript_events(
+        &session_dir(&state, &sid),
+        TranscriptQueryOptions {
+            since: q.since,
+            limit: Some(q.limit.unwrap_or(50).clamp(1, 200)),
+            kind: q.kind,
+            role: q.role,
+            q: Some(query),
+        },
+    )
+    .await
+    .map_err(|e| ApiError::Internal(format!("search transcript: {e}")))?;
+    Ok(Json(json!({
+        "session_id": sid,
+        "event_count": events.len(),
+        "events": events,
+    })))
+}
+
+async fn transcript_tool_results_route(
+    State(state): State<Arc<AppState>>,
+    Path(sid): Path<String>,
+    Query(q): Query<TranscriptToolResultsQuery>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let events = transcript_tool_results(
+        &session_dir(&state, &sid),
+        TranscriptToolResultsOptions {
+            since: q.since,
+            limit: Some(q.limit.unwrap_or(50).clamp(1, 200)),
+            tool_name: q.tool_name,
+            errors_only: q.errors_only,
+        },
+    )
+    .await
+    .map_err(|e| ApiError::Internal(format!("query transcript tool results: {e}")))?;
+    Ok(Json(json!({
+        "session_id": sid,
+        "event_count": events.len(),
+        "events": events,
+    })))
 }
 
 /// Replay + live tail as one ordered stream of [`StreamItem`]s.

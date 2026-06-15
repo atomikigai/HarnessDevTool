@@ -221,9 +221,21 @@ Objetivo: replay y busqueda de transcript sin leer todo el JSONL.
 
 ### Criterios de aceptacion
 
+- Implementado 2026-06-15: cada session mantiene
+  `transcript_index.sqlite` junto a `transcript.jsonl`; `TranscriptStore::ingest`
+  indexa write-through y `read_events_since` prefiere query SQLite para replay
+  con `since`.
+- La API expone `/api/sessions/:sid/transcript/query`,
+  `/api/sessions/:sid/transcript/search` y
+  `/api/sessions/:sid/transcript/tool-results`.
+- El MCP expone `transcript_query`, `transcript_search` y
+  `transcript_tool_results` bajo el grupo `context`, con
+  `X-Protocol-Version` al llamar al backend.
 - SSE reconnect con `since` usa query por seq.
 - Busqueda de errores/tool results no lee todo transcript.
 - JSONL sigue siendo canonico y exportable.
+- Tests verifican query desde SQLite sin `transcript.jsonl`, rebuild desde
+  JSONL cuando falta el indice, SSE/replay existente y URL/header de MCP.
 
 ## Workstream R6 — Skills/memory FTS real en MCP
 

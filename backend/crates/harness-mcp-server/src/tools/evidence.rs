@@ -78,7 +78,7 @@ pub fn pack(
         "task": task,
         "session": session,
         "evidence_gaps": [
-            "Commands run are not indexed yet; include them explicitly in handoff until transcript_index lands.",
+            "Use transcript_tool_results or transcript_search for indexed command/tool evidence when session transcript is available.",
             "Screenshots/artifacts appear only when attached to the task artifact list."
         ],
         "next_steps": hints,

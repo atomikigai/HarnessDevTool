@@ -500,6 +500,103 @@ pub fn timeline_query(
         .map_err(|e| e.to_string())
 }
 
+pub fn transcript_query(
+    current_session_id: Option<&str>,
+    server_url: Option<&str>,
+    api_token: Option<&str>,
+    args: &Value,
+) -> Result<Value, String> {
+    let sid = opt_str(args, "session_id")
+        .or(current_session_id)
+        .ok_or_else(|| "transcript_query requires session_id or --session-id".to_string())?;
+    let server = server_url.ok_or_else(|| "transcript_query needs --server-url".to_string())?;
+    let mut params = Vec::<(String, String)>::new();
+    push_u64_param(&mut params, args, "since");
+    push_limited_param(&mut params, args, "limit", 1, 1000);
+    push_string_param(&mut params, args, "kind");
+    push_string_param(&mut params, args, "role");
+    let url = url_with_params(
+        &format!(
+            "{}/api/sessions/{}/transcript/query",
+            server.trim_end_matches('/'),
+            encode_query(sid)
+        ),
+        &params,
+    );
+    let req = harness_request(ureq::get(&url).timeout(Duration::from_secs(5)), api_token);
+    req.call()
+        .map_err(|e| e.to_string())?
+        .into_json::<Value>()
+        .map_err(|e| e.to_string())
+}
+
+pub fn transcript_search(
+    current_session_id: Option<&str>,
+    server_url: Option<&str>,
+    api_token: Option<&str>,
+    args: &Value,
+) -> Result<Value, String> {
+    let sid = opt_str(args, "session_id")
+        .or(current_session_id)
+        .ok_or_else(|| "transcript_search requires session_id or --session-id".to_string())?;
+    let query = opt_str(args, "query")
+        .or_else(|| opt_str(args, "q"))
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| "transcript_search requires query".to_string())?;
+    let server = server_url.ok_or_else(|| "transcript_search needs --server-url".to_string())?;
+    let mut params = vec![("q".to_string(), query.to_string())];
+    push_u64_param(&mut params, args, "since");
+    push_limited_param(&mut params, args, "limit", 1, 200);
+    push_string_param(&mut params, args, "kind");
+    push_string_param(&mut params, args, "role");
+    let url = url_with_params(
+        &format!(
+            "{}/api/sessions/{}/transcript/search",
+            server.trim_end_matches('/'),
+            encode_query(sid)
+        ),
+        &params,
+    );
+    let req = harness_request(ureq::get(&url).timeout(Duration::from_secs(5)), api_token);
+    req.call()
+        .map_err(|e| e.to_string())?
+        .into_json::<Value>()
+        .map_err(|e| e.to_string())
+}
+
+pub fn transcript_tool_results(
+    current_session_id: Option<&str>,
+    server_url: Option<&str>,
+    api_token: Option<&str>,
+    args: &Value,
+) -> Result<Value, String> {
+    let sid = opt_str(args, "session_id")
+        .or(current_session_id)
+        .ok_or_else(|| "transcript_tool_results requires session_id or --session-id".to_string())?;
+    let server =
+        server_url.ok_or_else(|| "transcript_tool_results needs --server-url".to_string())?;
+    let mut params = Vec::<(String, String)>::new();
+    push_u64_param(&mut params, args, "since");
+    push_limited_param(&mut params, args, "limit", 1, 200);
+    push_string_param(&mut params, args, "tool_name");
+    if let Some(errors_only) = args.get("errors_only").and_then(Value::as_bool) {
+        params.push(("errors_only".into(), errors_only.to_string()));
+    }
+    let url = url_with_params(
+        &format!(
+            "{}/api/sessions/{}/transcript/tool-results",
+            server.trim_end_matches('/'),
+            encode_query(sid)
+        ),
+        &params,
+    );
+    let req = harness_request(ureq::get(&url).timeout(Duration::from_secs(5)), api_token);
+    req.call()
+        .map_err(|e| e.to_string())?
+        .into_json::<Value>()
+        .map_err(|e| e.to_string())
+}
+
 fn read_session_meta(
     harness_home: &Path,
     profile: &str,
@@ -571,6 +668,42 @@ fn encode_query(input: &str) -> String {
         }
     }
     out
+}
+
+fn push_u64_param(params: &mut Vec<(String, String)>, args: &Value, key: &str) {
+    if let Some(value) = args.get(key).and_then(Value::as_u64) {
+        params.push((key.to_string(), value.to_string()));
+    }
+}
+
+fn push_limited_param(
+    params: &mut Vec<(String, String)>,
+    args: &Value,
+    key: &str,
+    min: u64,
+    max: u64,
+) {
+    if let Some(value) = args.get(key).and_then(Value::as_u64) {
+        params.push((key.to_string(), value.clamp(min, max).to_string()));
+    }
+}
+
+fn push_string_param(params: &mut Vec<(String, String)>, args: &Value, key: &str) {
+    if let Some(value) = opt_str(args, key).filter(|value| !value.trim().is_empty()) {
+        params.push((key.to_string(), value.to_string()));
+    }
+}
+
+fn url_with_params(base: &str, params: &[(String, String)]) -> String {
+    if params.is_empty() {
+        return base.to_string();
+    }
+    let query = params
+        .iter()
+        .map(|(key, value)| format!("{}={}", encode_query(key), encode_query(value)))
+        .collect::<Vec<_>>()
+        .join("&");
+    format!("{base}?{query}")
 }
 
 #[cfg(test)]
@@ -740,6 +873,65 @@ mod tests {
         let captured = rx.recv().expect("captured request");
         assert!(captured.starts_with(
             "GET /api/threads/thr-current/timeline?after=10&limit=5&event_type=task.updated&actor=agent%3Acodex&task_id=T-0001&session_id=sid-1&q=next+action HTTP/1.1"
+        ));
+        assert!(captured
+            .to_ascii_lowercase()
+            .contains("x-protocol-version: 1.0"));
+    }
+
+    #[test]
+    fn transcript_search_uses_protocol_header_and_encoded_filters() {
+        let Some((server_url, rx)) = spawn_http_capture_server() else {
+            return;
+        };
+
+        let result = transcript_search(
+            Some("sid-current"),
+            Some(&server_url),
+            None,
+            &json!({
+                "query": "cargo test",
+                "since": 7,
+                "limit": 12,
+                "kind": "tool_result",
+                "role": "assistant"
+            }),
+        )
+        .expect("transcript search response");
+
+        assert_eq!(result["session_id"], "child-1");
+        let captured = rx.recv().expect("captured request");
+        assert!(captured.starts_with(
+            "GET /api/sessions/sid-current/transcript/search?q=cargo+test&since=7&limit=12&kind=tool_result&role=assistant HTTP/1.1"
+        ));
+        assert!(captured
+            .to_ascii_lowercase()
+            .contains("x-protocol-version: 1.0"));
+    }
+
+    #[test]
+    fn transcript_tool_results_uses_protocol_header_and_filters() {
+        let Some((server_url, rx)) = spawn_http_capture_server() else {
+            return;
+        };
+
+        let result = transcript_tool_results(
+            Some("sid-current"),
+            Some(&server_url),
+            None,
+            &json!({
+                "since": 3,
+                "limit": 9,
+                "tool_name": "shell.exec",
+                "errors_only": true
+            }),
+        )
+        .expect("transcript tool results response");
+
+        assert_eq!(result["session_id"], "child-1");
+        let captured = rx.recv().expect("captured request");
+        assert!(captured.starts_with(
+            "GET /api/sessions/sid-current/transcript/tool-results?since=3&limit=9&tool_name=shell.exec&errors_only=true HTTP/1.1"
         ));
         assert!(captured
             .to_ascii_lowercase()

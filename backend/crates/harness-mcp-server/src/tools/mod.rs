@@ -266,6 +266,54 @@ pub fn list_descriptors() -> Vec<ToolDescriptor> {
             }),
         },
         ToolDescriptor {
+            name: "transcript_query".into(),
+            description: "Query normalized transcript events from transcript_index.sqlite by seq/kind/role without replaying the full JSONL."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "session_id": { "type": "string", "description": "Defaults to the current MCP session id." },
+                    "since": { "type": "integer", "minimum": 0 },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 1000 },
+                    "kind": { "type": "string", "description": "message, thinking, tool_call, tool_result, system_note, meta, or unknown." },
+                    "role": { "type": "string" }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "transcript_search".into(),
+            description: "Search normalized transcript events via transcript_index.sqlite FTS5 over content, tool args/results, and raw payload."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["query"],
+                "properties": {
+                    "session_id": { "type": "string", "description": "Defaults to the current MCP session id." },
+                    "query": { "type": "string" },
+                    "q": { "type": "string", "description": "Alias for query." },
+                    "since": { "type": "integer", "minimum": 0 },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 200 },
+                    "kind": { "type": "string" },
+                    "role": { "type": "string" }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "transcript_tool_results".into(),
+            description: "Return recent transcript tool_result events, optionally filtered by tool_name or errors_only, without scanning the full transcript."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "session_id": { "type": "string", "description": "Defaults to the current MCP session id." },
+                    "since": { "type": "integer", "minimum": 0 },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 200 },
+                    "tool_name": { "type": "string" },
+                    "errors_only": { "type": "boolean" }
+                }
+            }),
+        },
+        ToolDescriptor {
             name: "attach_list".into(),
             description: "List files attached to this agent session from the Harness ChatView composer."
                 .into(),

@@ -411,6 +411,20 @@ mod tests {
         }
     }
 
+    async fn wait_for_checkpoint_offset(store_dir: &Path, expected: u64) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            if read_checkpoint(store_dir).is_some_and(|checkpoint| checkpoint.offset == expected) {
+                return;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "timed out waiting for checkpoint offset {expected}"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
     #[tokio::test]
     async fn restarted_watcher_resumes_from_checkpoint_without_duplicates() {
         let dir = tempfile::tempdir().unwrap();
@@ -430,6 +444,7 @@ mod tests {
         );
         let events = wait_for_events(&store_dir, 1).await;
         assert_eq!(events[0].content.as_deref(), Some("uno"));
+        wait_for_checkpoint_offset(&store_dir, (LINE_ONE.len() + 1) as u64).await;
         handle.stop();
 
         let cp = read_checkpoint(&store_dir).expect("checkpoint persisted");

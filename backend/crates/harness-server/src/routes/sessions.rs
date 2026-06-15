@@ -1226,17 +1226,11 @@ fn build_spawn_opts(
         cwd.display().to_string(),
     ];
     let mut mcp_args = mcp_args;
-    if load_crawl4ai {
+    let load_code_graph = smart_tool_groups.iter().any(|group| group == "code_graph");
+    let upstreams = upstream_mcp_configs(load_crawl4ai, load_code_graph);
+    if !upstreams.is_empty() {
         let upstream_path = configs_dir.join(format!("{mcp_id}.upstreams.json"));
-        let crawl = crawl4ai_mcp_server();
-        let upstreams = json!([
-            {
-                "name": crawl.name,
-                "command": crawl.command,
-                "args": crawl.args,
-            }
-        ]);
-        write_private_json(&upstream_path, &upstreams)
+        write_private_json(&upstream_path, &Value::Array(upstreams))
             .map_err(|e| ApiError::Internal(format!("write upstream MCP config: {e}")))?;
         mcp_args.push("--upstream-config".to_string());
         mcp_args.push(upstream_path.display().to_string());
@@ -1343,6 +1337,39 @@ pub(crate) fn crawl4ai_mcp_server() -> McpServerConfig {
     }
 }
 
+pub(crate) fn codebase_memory_mcp_server() -> Option<McpServerConfig> {
+    let binary = which::which("codebase-memory-mcp").ok()?;
+    Some(McpServerConfig {
+        name: "codebase_memory".to_string(),
+        command: binary.display().to_string(),
+        args: Vec::new(),
+    })
+}
+
+pub(crate) fn upstream_mcp_configs(load_crawl4ai: bool, load_code_graph: bool) -> Vec<Value> {
+    let mut upstreams = Vec::new();
+    if load_crawl4ai {
+        let crawl = crawl4ai_mcp_server();
+        upstreams.push(json!({
+            "name": crawl.name,
+            "command": crawl.command,
+            "args": crawl.args,
+        }));
+    }
+    if load_code_graph {
+        if let Some(codebase_memory) = codebase_memory_mcp_server() {
+            upstreams.push(json!({
+                "name": codebase_memory.name,
+                "command": codebase_memory.command,
+                "args": codebase_memory.args,
+                "persistent": true,
+                "idle_timeout_ms": 120000,
+            }));
+        }
+    }
+    upstreams
+}
+
 pub(crate) fn crawl4ai_context_intro() -> &'static str {
     "[harness] The current request appears to reference external documentation. \
      The `crawl4ai` MCP server is loaded for this session. Use the bundled \
@@ -1367,6 +1394,9 @@ pub(crate) fn loaded_mcp_capabilities_with_skills(
         push_unique(&mut loaded.skills, skill);
     }
     for tool_group in smart_tool_groups {
+        if tool_group == "code_graph" && codebase_memory_mcp_server().is_some() {
+            push_unique(&mut loaded.mcp_servers, "codebase_memory".to_string());
+        }
         push_unique(&mut loaded.tool_groups, tool_group);
     }
     loaded
@@ -1404,6 +1434,16 @@ pub(crate) fn spawn_capability_intro(
             "[harness] Native data loader is available for CSV/XLSX work. Prefer the harness \
              API endpoints `POST /api/data/inspect` and `POST /api/data/write` for deterministic \
              spreadsheet parsing/writing instead of asking the model to parse table files from raw text."
+                .to_string(),
+        );
+    }
+    if tool_groups.iter().any(|group| group == "code_graph") {
+        parts.push(
+            "[harness] Code graph tools are available for architecture, symbol, and impact work. \
+             Prefer `repo_code_graph_status`, `repo_manifest`, `repo_symbol_search`, and \
+             `repo_related_files` before broad file reads. If `codebase-memory-mcp` is installed, \
+             Harness exposes it through a persistent upstream MCP process; otherwise use the local \
+             fallback tools and keep context narrow."
                 .to_string(),
         );
     }
@@ -1726,6 +1766,29 @@ pub(crate) fn resolve_smart_tool_groups<'a>(
         push_unique(&mut tool_groups, "repo".to_string());
     }
 
+    let code_graph_terms = [
+        "architecture",
+        "arquitectura",
+        "symbol",
+        "symbols",
+        "simbolo",
+        "simbolos",
+        "símbolo",
+        "símbolos",
+        "call graph",
+        "callers",
+        "callees",
+        "impact",
+        "blast radius",
+        "large refactor",
+        "refactor amplio",
+        "dependency graph",
+        "graph",
+    ];
+    if signals.distinct_hit_count(&code_graph_terms) >= 2 || signals.matches(&code_graph_terms, 4) {
+        push_unique(&mut tool_groups, "code_graph".to_string());
+    }
+
     if signals.hit_count(&[
         "database",
         "db",
@@ -1834,6 +1897,13 @@ impl SmartCapabilitySignals {
 
     fn hit_count(&self, terms: &[&str]) -> u16 {
         self.score(terms)
+    }
+
+    fn distinct_hit_count(&self, terms: &[&str]) -> usize {
+        terms
+            .iter()
+            .filter(|term| self.signals.iter().any(|signal| signal.matches(term)))
+            .count()
     }
 }
 
@@ -3739,6 +3809,17 @@ mod tests {
             CapabilityProfile::Auto,
         );
         assert_eq!(repo_groups, vec!["repo".to_string()]);
+
+        let code_graph_groups = resolve_smart_tool_groups(
+            Some("backend"),
+            Some(std::path::Path::new("/repo/backend/crates/harness-server")),
+            [Some(
+                "Analyze architecture impact and symbol callers before a large refactor",
+            )],
+            &[],
+            CapabilityProfile::Auto,
+        );
+        assert!(code_graph_groups.contains(&"code_graph".to_string()));
     }
 
     #[test]

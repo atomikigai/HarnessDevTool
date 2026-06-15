@@ -30,6 +30,17 @@ revisar, aprobar y ejecutar sin mezclar scopes.
 > MCP). Agnosticismo: M16 (`AgentAdapter` + descriptor), M17 (Cursor/Antigravity + degradación).
 > Roadmap M1–M17, matriz de paridad §1·B y principio agnóstico §1·C en el doc.
 
+> **Plan de optimización runtime (2026-06-15):**
+> [[build-plan/runtime-index-and-token-efficiency-plan-2026-06-15]] — plan ejecutable para
+> convertir IO repetitivo y contexto crudo en indices SQLite/FTS5 y rails Rust compactas.
+> Prioridad recomendada: `agent_ledger` + `session_context_pack`, context index incremental,
+> task summaries en SQLite, timeline/event index, transcript index, memory/skills FTS,
+> repo symbol index, adapter persistente para `codebase-memory-mcp` y evidence pack.
+> Objetivo: menos relectura de JSONL/TOML, menos tokens, mejor memoria operacional de
+> subagentes y consultas mas rapidas. Decision 2026-06-15: no copiar la base C de
+> `codebase-memory-mcp`; tomar patrones de indexado/grafo y usarlo como MCP opcional
+> para code intelligence bajo smart loading.
+
 ## Orden recomendado
 
 1. **Tab Agents con sesiones hijas reales** — ejecutada; corrige el bug observado y valida la base de sub-agentes.
@@ -43,7 +54,7 @@ revisar, aprobar y ejecutar sin mezclar scopes.
 9. **Task A1: Readiness check + execution mode** — ejecutada; readiness cubre repo/commands/cli_auth/env/deps/ports/budget/external resources, persiste evento append-only y ajusta `execution_mode`.
 10. **Task A2: Autonomy profile + approvals policy** — base ejecutada; follow-up: allowlists por project.toml/policy y selector editable en thread activo.
 11. **Task A3: Team handoff schema** — base ejecutada; follow-up: enforcement obligatorio `generator -> evaluator` antes de `pending_verify`.
-12. **Task A4: Repo intelligence + codebase-memory-mcp** — base ejecutada; follow-up: index orchestration/cache y wrappers profundos de grafo.
+12. **Task A4: Repo intelligence + codebase-memory-mcp** — base ejecutada; follow-up: index orchestration/cache, upstream MCP persistente para procesos pesados y wrappers compactos de grafo (`status`, `index`, `search`, `impact`, `architecture_pack`, `snippet`) cargados solo por smart loading.
 13. **Task 12: TaskBrief first-class** — ejecutada; brief estructurado (objective/context/tasks/rules/expected_result) como campo propio del Task, fuera de acceptance checks, con compat de brief string legacy. Rebaseada sobre el batch de hardening de seguridad y pusheada a main.
 14. **Task 13: Separar `task.create` y `task.propose`** — ejecutada; `TaskStatus::Proposed`, `task_propose` (cualquier rol) crea en `proposed`, `task_create` con gate mínimo de rol en el dispatcher (deny FUERA de `harness-policy`, confirmado por audit: el `PolicyEngine` es ciego al rol → el middleware completo es Task 14). `role: Option<String>` hilado por dispatcher/server (default `None` permisivo; match exacto fail-closed). Transición `Proposed→Queued`; `Proposed` no reclamable ni agendable. Tipos `ts-rs` regenerados. Follow-up SSE/UI cerrado por Task 27.
 15. **Task 14: Capability policy middleware mínimo** — ejecutada: matriz `capability_default` en `harness-policy`, reglas role-aware, dispatcher MCP consulta `/api/approvals/check` con `role`, offline fail-closed para tools sensibles sin rol confiable, deny claro al modelo y audit append-only `capability.decided`. Follow-ups de hardening cerrados por Task 29.

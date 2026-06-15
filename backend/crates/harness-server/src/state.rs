@@ -689,19 +689,15 @@ impl SessionSpawner for ManagerSpawner {
                     "--cwd".to_string(),
                     cwd.display().to_string(),
                 ];
-                if load_crawl4ai {
+                let load_code_graph = smart_tool_groups.iter().any(|group| group == "code_graph");
+                let upstreams =
+                    crate::routes::sessions::upstream_mcp_configs(load_crawl4ai, load_code_graph);
+                if !upstreams.is_empty() {
                     let upstream_path = configs_dir.join(format!("{mcp_id}.upstreams.json"));
-                    let crawl = crate::routes::sessions::crawl4ai_mcp_server();
-                    let upstreams = json!([
-                        {
-                            "name": crawl.name,
-                            "command": crawl.command,
-                            "args": crawl.args,
-                        }
-                    ]);
-                    if let Err(e) =
-                        crate::routes::sessions::write_private_json(&upstream_path, &upstreams)
-                    {
+                    if let Err(e) = crate::routes::sessions::write_private_json(
+                        &upstream_path,
+                        &serde_json::Value::Array(upstreams),
+                    ) {
                         return SpawnResult::Failed(format!("write upstream MCP config: {e}"));
                     }
                     mcp_args.push("--upstream-config".to_string());

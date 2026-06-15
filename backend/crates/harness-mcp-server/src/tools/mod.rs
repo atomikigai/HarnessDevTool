@@ -4,6 +4,7 @@ pub mod db;
 pub mod docs;
 pub mod knowledge;
 pub mod n8n;
+pub mod planning;
 pub mod repo;
 pub mod session;
 pub mod skills;
@@ -103,6 +104,127 @@ pub fn list_descriptors() -> Vec<ToolDescriptor> {
                         "type": "string",
                         "description": "Short reason this category is needed now."
                     }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "planning_pack".into(),
+            description: "Create a lightweight task intake for smart loading: domains, recommended tool groups/capabilities/skills, first actions, checks, and guardrails."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["objective"],
+                "properties": {
+                    "objective": { "type": "string", "description": "User goal or task summary." },
+                    "files": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Optional known or changed workspace-relative files."
+                    },
+                    "changed_files": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Alias for files."
+                    },
+                    "paths": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Alias for files."
+                    }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "test_selector".into(),
+            description: "Select focused validation commands from changed files and objective, including frontend QA and contract checks when needed."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "objective": { "type": "string" },
+                    "files": {
+                        "type": "array",
+                        "items": { "type": "string" }
+                    },
+                    "changed_files": {
+                        "type": "array",
+                        "items": { "type": "string" }
+                    },
+                    "paths": {
+                        "type": "array",
+                        "items": { "type": "string" }
+                    }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "contract_guard".into(),
+            description: "Check Harness repo conventions for touched paths: ts-rs generated types, X-Protocol-Version, frontend real-user QA, DESIGN.md, and versioned .env."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "files": {
+                        "type": "array",
+                        "items": { "type": "string" }
+                    },
+                    "changed_files": {
+                        "type": "array",
+                        "items": { "type": "string" }
+                    },
+                    "paths": {
+                        "type": "array",
+                        "items": { "type": "string" }
+                    }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "session_context_pack".into(),
+            description: "Return a compact operational context pack for a session: meta, task summary, latest handoff, children, loaded capabilities, and next actions."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "session_id": { "type": "string", "description": "Defaults to the current MCP session id." },
+                    "task_id": { "type": "string", "description": "Optional task override; defaults to SessionMeta.task_id." },
+                    "limit": { "type": "integer", "minimum": 1, "description": "Reserved for future child/handoff pagination." }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "context_status".into(),
+            description: "Return context-governor status for a session, indexing session.context events into the derived SQLite index when needed."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "session_id": { "type": "string", "description": "Defaults to the current MCP session id." }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "context_search".into(),
+            description: "Search indexed session.context checkpoints/events for the current or selected session using the backend SQLite/FTS5 context index."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["query"],
+                "properties": {
+                    "session_id": { "type": "string", "description": "Defaults to the current MCP session id." },
+                    "query": { "type": "string" },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 50 }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "context_checkpoint_request".into(),
+            description: "Ask a running session to produce a compact context checkpoint through the backend context governor."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "session_id": { "type": "string", "description": "Defaults to the current MCP session id." }
                 }
             }),
         },
@@ -1488,6 +1610,52 @@ pub fn list_descriptors() -> Vec<ToolDescriptor> {
         ToolDescriptor {
             name: "repo_codebase_memory_status".into(),
             description: "Report whether codebase-memory-mcp is installed and whether a local index marker exists for this workspace. The harness treats it as an optional code-intelligence accelerator."
+                .into(),
+            input_schema: json!({ "type": "object", "properties": {} }),
+        },
+        ToolDescriptor {
+            name: "repo_manifest".into(),
+            description: "Return a bounded workspace manifest with file sizes, extensions, git status hints, important files, and stack summary. Use before broad repo exploration."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string" },
+                    "max_depth": { "type": "integer", "minimum": 0 },
+                    "limit": { "type": "integer", "minimum": 1 }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "repo_symbol_search".into(),
+            description: "Search lightweight local source symbols (functions, classes, types, components) without opening every file. Falls back to pattern parsing; load code_graph for deep callers/callees."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string" },
+                    "language": { "type": "string" },
+                    "path": { "type": "string" },
+                    "limit": { "type": "integer", "minimum": 1 }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "repo_related_files".into(),
+            description: "Find likely tests, neighboring source files, styles, and same-stem files related to one workspace path."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["path"],
+                "properties": {
+                    "path": { "type": "string" },
+                    "limit": { "type": "integer", "minimum": 1 }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "repo_code_graph_status".into(),
+            description: "Report code graph acceleration status for this workspace: codebase-memory-mcp availability, local index marker, and native fallback rails."
                 .into(),
             input_schema: json!({ "type": "object", "properties": {} }),
         },

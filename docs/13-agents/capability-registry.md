@@ -23,7 +23,7 @@ sources: []
 | **playwright** | stdio (npm) | `browser.*`, `e2e.*` | On-demand | Regresiones browser estables y E2E. Para exploración QA/frontend, preferir `agent-browser`. |
 | **fetch** | stdio (npm) | `http.get`, `http.post` (allow-listed) | On-demand | Llamadas HTTP simples; sandboxed allowlist. |
 | **github** | http (oauth) | `gh.repo.*`, `gh.pr.*`, `gh.issue.*` | On-demand | F4+; auth con token del usuario. |
-| **codebase-memory** | stdio (external) | structural graph queries, symbols, callers/callees, blast radius | On-demand | Opcional. El harness lo detecta como `codebase-memory-mcp` y lo usa como acelerador de repo intelligence; wrappers propios viven en `repo.*`. |
+| **codebase-memory** | stdio (external) | structural graph queries, symbols, callers/callees, blast radius | On-demand | Opcional. El harness lo detecta como `codebase-memory-mcp` y lo monta como upstream MCP persistente bajo `code_graph`; wrappers propios viven en `repo.*`. |
 | **filesystem** | stdio (npm) | `fs.read`, `fs.write`, `fs.tree` | Mediado | En desuso: usamos `shell.exec` sandboxed para FS. |
 
 ### Reglas
@@ -142,7 +142,9 @@ Estas son las MCP tools que expone `harness-bridge`. Patrón de namespace:
 | `skills.*` | `search`, `get`, `manage` | F5; antes de F5 devuelven `[]` |
 | `capability.*` | `request`, `list_loaded` | Solicitar/listar capabilities en runtime |
 | `memory.*` | `search`, `get` | F5; FTS5 sobre events.jsonl |
-| `repo.*` | `analyze`, `scan`, `read_file`, `git_status`, `git_log`, `git_diff`, `codebase_memory_status` | Read-only del workspace; primera lectura recomendada en repos desconocidos |
+| `context.*` | `session_context_pack`, `context_status`, `context_search`, `context_checkpoint_request` | Contexto operacional compacto y búsqueda FTS5 de checkpoints sin replay de transcript |
+| `repo.*` | `analyze`, `scan`, `find`, `read_file`, `git_status`, `git_log`, `git_diff`, `manifest`, `symbol_search`, `related_files`, `codebase_memory_status` | Read-only del workspace; primera lectura recomendada en repos desconocidos |
+| `repo_code_graph_*` | `status` implementado; `index/search/impact/architecture_pack/snippet` planificados | Acelerador opcional via `codebase-memory-mcp`; se carga bajo smart loading cuando hace falta grafo de codigo |
 | `budget.*` | `remaining` | Solo lectura |
 | `agents.*` | `list`, `describe` | Para el orchestrator |
 | `mcps.*` | `list_available`, `describe` | Inspección del catálogo |

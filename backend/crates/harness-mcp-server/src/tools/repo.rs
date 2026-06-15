@@ -3,7 +3,7 @@
 //! These tools intentionally expose a small, typed view of the workspace so
 //! agents do not have to rediscover structure by reading files blindly.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{OsStr, OsString};
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
@@ -18,6 +18,9 @@ const DEFAULT_MAX_DEPTH: usize = 4;
 const DEFAULT_MAX_BYTES: usize = 64 * 1024;
 const DEFAULT_FIND_LIMIT: usize = 80;
 const DEFAULT_FIND_MAX_BYTES: usize = 256 * 1024;
+const DEFAULT_MANIFEST_LIMIT: usize = 1000;
+const DEFAULT_SYMBOL_LIMIT: usize = 80;
+const SYMBOL_MAX_FILE_BYTES: u64 = 512 * 1024;
 const MAX_GIT_BYTES: usize = 128 * 1024;
 const MAX_GIT_MUTATION_BYTES: usize = 64 * 1024;
 
@@ -197,6 +200,206 @@ pub fn find(root: &Path, args: &Value) -> Result<Value, String> {
         },
         "scanned_content_files": scanned_content_files,
         "matches": matches,
+    }))
+}
+
+pub fn manifest(root: &Path, args: &Value) -> Result<Value, String> {
+    let dir = resolve_under_root(root, opt_str(args, "path").unwrap_or("."))?;
+    if !dir.is_dir() {
+        return Err(format!("path is not a directory: {}", dir.display()));
+    }
+    let max_depth = args
+        .get("max_depth")
+        .and_then(Value::as_u64)
+        .map(|v| v as usize)
+        .unwrap_or(usize::MAX);
+    let limit = args
+        .get("limit")
+        .and_then(Value::as_u64)
+        .map(|v| v as usize)
+        .unwrap_or(DEFAULT_MANIFEST_LIMIT)
+        .min(DEFAULT_MANIFEST_LIMIT);
+    let files = collect_files(&dir, max_depth, limit)?;
+    let git_status = git_status_map(&dir);
+    let mut extensions: BTreeMap<String, usize> = BTreeMap::new();
+    let mut total_bytes = 0u64;
+    let mut entries = Vec::new();
+
+    for file in files {
+        let rel = relative_to(&dir, &file).unwrap_or_else(|| file.display().to_string());
+        let metadata =
+            std::fs::metadata(&file).map_err(|e| format!("metadata {}: {e}", file.display()))?;
+        let ext = file
+            .extension()
+            .and_then(OsStr::to_str)
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if !ext.is_empty() {
+            *extensions.entry(ext.clone()).or_insert(0) += 1;
+        }
+        total_bytes = total_bytes.saturating_add(metadata.len());
+        entries.push(json!({
+            "path": rel,
+            "extension": ext,
+            "bytes": metadata.len(),
+            "git_status": git_status.get(&relative_to(&dir, &file).unwrap_or_default()).cloned(),
+        }));
+    }
+
+    Ok(json!({
+        "root": dir.display().to_string(),
+        "limit": limit,
+        "truncated": entries.len() >= limit,
+        "summary": {
+            "files": entries.len(),
+            "total_bytes": total_bytes,
+            "extensions": extensions,
+            "important_files": important_files(&dir),
+            "git": git_summary(&dir),
+        },
+        "files": entries,
+    }))
+}
+
+pub fn symbol_search(root: &Path, args: &Value) -> Result<Value, String> {
+    let dir = resolve_under_root(root, opt_str(args, "path").unwrap_or("."))?;
+    if !dir.is_dir() {
+        return Err(format!("path is not a directory: {}", dir.display()));
+    }
+    let query = opt_str(args, "query").unwrap_or("").to_ascii_lowercase();
+    let language = opt_str(args, "language").map(|s| s.to_ascii_lowercase());
+    let limit = args
+        .get("limit")
+        .and_then(Value::as_u64)
+        .map(|v| v as usize)
+        .unwrap_or(DEFAULT_SYMBOL_LIMIT)
+        .min(DEFAULT_SYMBOL_LIMIT);
+    let files = collect_files(&dir, usize::MAX, DEFAULT_MANIFEST_LIMIT)?;
+    let mut symbols = Vec::new();
+
+    for file in files {
+        if symbols.len() >= limit {
+            break;
+        }
+        if !is_symbol_file(&file, language.as_deref()) {
+            continue;
+        }
+        if std::fs::metadata(&file)
+            .map(|m| m.len() > SYMBOL_MAX_FILE_BYTES)
+            .unwrap_or(true)
+        {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&file) else {
+            continue;
+        };
+        let rel = relative_to(&dir, &file).unwrap_or_else(|| file.display().to_string());
+        for (idx, line) in text.lines().enumerate() {
+            if symbols.len() >= limit {
+                break;
+            }
+            let Some(symbol) = parse_symbol(line, &file) else {
+                continue;
+            };
+            if !query.is_empty()
+                && !symbol.name.to_ascii_lowercase().contains(&query)
+                && !rel.to_ascii_lowercase().contains(&query)
+            {
+                continue;
+            }
+            symbols.push(json!({
+                "name": symbol.name,
+                "kind": symbol.kind,
+                "language": symbol.language,
+                "path": rel,
+                "line": idx + 1,
+                "preview": truncate_preview(line),
+            }));
+        }
+    }
+
+    Ok(json!({
+        "root": dir.display().to_string(),
+        "query": query,
+        "language": language,
+        "limit": limit,
+        "total": symbols.len(),
+        "has_more": symbols.len() >= limit,
+        "symbols": symbols,
+        "engine": "lightweight-patterns",
+        "hint": "For deep callers/callees and cross-language resolution, load code_graph and use codebase-memory-mcp when available.",
+    }))
+}
+
+pub fn related_files(root: &Path, args: &Value) -> Result<Value, String> {
+    let path = resolve_under_root(root, str_arg(args, "path")?)?;
+    let root = canonical_root(root)?;
+    if !path.exists() {
+        return Err(format!("path does not exist: {}", path.display()));
+    }
+    let limit = args
+        .get("limit")
+        .and_then(Value::as_u64)
+        .map(|v| v as usize)
+        .unwrap_or(40)
+        .min(80);
+    let rel = relative_to(&root, &path).unwrap_or_else(|| path.display().to_string());
+    let stem = path
+        .file_stem()
+        .and_then(OsStr::to_str)
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let ext = path.extension().and_then(OsStr::to_str).unwrap_or("");
+    let files = collect_files(&root, usize::MAX, DEFAULT_MANIFEST_LIMIT)?;
+    let mut related = Vec::new();
+    let mut seen = BTreeSet::new();
+
+    for file in files {
+        if related.len() >= limit {
+            break;
+        }
+        if file == path {
+            continue;
+        }
+        let candidate_rel = relative_to(&root, &file).unwrap_or_else(|| file.display().to_string());
+        if !seen.insert(candidate_rel.clone()) {
+            continue;
+        }
+        let name = file
+            .file_name()
+            .and_then(OsStr::to_str)
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        let candidate_stem = file
+            .file_stem()
+            .and_then(OsStr::to_str)
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        let reason = if !stem.is_empty()
+            && (candidate_stem == stem
+                || candidate_stem.contains(&stem)
+                || stem.contains(&candidate_stem))
+        {
+            "matching_stem"
+        } else if is_test_path(&candidate_rel) && !stem.is_empty() && name.contains(&stem) {
+            "test_for_file"
+        } else if same_parent(&path, &file) {
+            "same_directory"
+        } else if related_extension(ext, file.extension().and_then(OsStr::to_str).unwrap_or("")) {
+            "related_extension"
+        } else {
+            continue;
+        };
+        related.push(json!({
+            "path": candidate_rel,
+            "reason": reason,
+        }));
+    }
+
+    Ok(json!({
+        "path": rel,
+        "limit": limit,
+        "related": related,
     }))
 }
 
@@ -538,6 +741,25 @@ pub fn codebase_memory_status(root: &Path, _args: &Value) -> Result<Value, Strin
     }))
 }
 
+pub fn code_graph_status(root: &Path, args: &Value) -> Result<Value, String> {
+    let codebase_memory = codebase_memory_status(root, args)?;
+    Ok(json!({
+        "available": codebase_memory["installed"].as_bool().unwrap_or(false),
+        "engine": "codebase-memory-mcp",
+        "upstream_mode": "planned_persistent_mcp",
+        "persistent_upstream": false,
+        "codebase_memory": codebase_memory,
+        "native_fallbacks": [
+            "repo_manifest",
+            "repo_symbol_search",
+            "repo_related_files",
+            "repo_find",
+            "repo_read_file"
+        ],
+        "next_step": "Use native fallbacks now; persistent MCP-backed graph calls land in the code_graph adapter slice.",
+    }))
+}
+
 fn str_arg<'a>(args: &'a Value, key: &str) -> Result<&'a str, String> {
     args.get(key)
         .and_then(Value::as_str)
@@ -756,6 +978,188 @@ fn key_files(file_names: &[String], relative_files: &[String]) -> Vec<String> {
 fn read_json_if_exists(path: &Path) -> Option<Value> {
     let text = std::fs::read_to_string(path).ok()?;
     serde_json::from_str(&text).ok()
+}
+
+fn important_files(root: &Path) -> Vec<String> {
+    let candidates = [
+        "AGENTS.md",
+        "DESIGN.md",
+        "README.md",
+        "Cargo.toml",
+        "package.json",
+        "pnpm-lock.yaml",
+        "Justfile",
+        "docker-compose.yml",
+        ".env",
+        ".env.example",
+    ];
+    candidates
+        .iter()
+        .filter(|path| root.join(path).exists())
+        .map(|path| (*path).to_string())
+        .collect()
+}
+
+fn git_status_map(root: &Path) -> BTreeMap<String, String> {
+    let Ok(status) = run_git(root, &["status", "--porcelain"], MAX_GIT_BYTES) else {
+        return BTreeMap::new();
+    };
+    status
+        .lines()
+        .filter_map(|line| {
+            if line.len() < 4 {
+                return None;
+            }
+            let status = line[..2].trim().to_string();
+            let path = line[3..].split(" -> ").last()?.to_string();
+            Some((path, status))
+        })
+        .collect()
+}
+
+#[derive(Debug)]
+struct SymbolHit {
+    name: String,
+    kind: &'static str,
+    language: &'static str,
+}
+
+fn is_symbol_file(path: &Path, language: Option<&str>) -> bool {
+    let ext = path
+        .extension()
+        .and_then(OsStr::to_str)
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let inferred = match ext.as_str() {
+        "rs" => "rust",
+        "ts" | "tsx" => "typescript",
+        "js" | "jsx" => "javascript",
+        "svelte" => "svelte",
+        "py" => "python",
+        "go" => "go",
+        _ => return false,
+    };
+    match language {
+        Some(wanted) => wanted == inferred || wanted == ext,
+        None => true,
+    }
+}
+
+fn parse_symbol(line: &str, path: &Path) -> Option<SymbolHit> {
+    let ext = path.extension().and_then(OsStr::to_str).unwrap_or("");
+    let trimmed = line.trim_start();
+    match ext {
+        "rs" => parse_after_keywords(
+            trimmed,
+            "rust",
+            &[
+                ("fn ", "function"),
+                ("struct ", "struct"),
+                ("enum ", "enum"),
+                ("trait ", "trait"),
+                ("mod ", "module"),
+            ],
+        ),
+        "ts" | "tsx" | "js" | "jsx" => parse_after_keywords(
+            trimmed,
+            if ext.starts_with('t') {
+                "typescript"
+            } else {
+                "javascript"
+            },
+            &[
+                ("export function ", "function"),
+                ("function ", "function"),
+                ("export class ", "class"),
+                ("class ", "class"),
+                ("export const ", "const"),
+                ("const ", "const"),
+                ("export let ", "let"),
+                ("let ", "let"),
+                ("export type ", "type"),
+                ("type ", "type"),
+                ("export interface ", "interface"),
+                ("interface ", "interface"),
+            ],
+        ),
+        "svelte" => parse_after_keywords(
+            trimmed,
+            "svelte",
+            &[
+                ("export let ", "prop"),
+                ("let ", "state"),
+                ("const ", "const"),
+                ("function ", "function"),
+            ],
+        ),
+        "py" => parse_after_keywords(
+            trimmed,
+            "python",
+            &[("def ", "function"), ("class ", "class")],
+        ),
+        "go" => parse_after_keywords(trimmed, "go", &[("func ", "function"), ("type ", "type")]),
+        _ => None,
+    }
+}
+
+fn parse_after_keywords(
+    line: &str,
+    language: &'static str,
+    patterns: &[(&'static str, &'static str)],
+) -> Option<SymbolHit> {
+    for (prefix, kind) in patterns {
+        let line = line
+            .strip_prefix("pub ")
+            .or_else(|| line.strip_prefix("pub(crate) "))
+            .unwrap_or(line);
+        let Some(rest) = line.strip_prefix(prefix) else {
+            continue;
+        };
+        let name = rest
+            .trim_start()
+            .trim_start_matches("async ")
+            .trim_start_matches('*')
+            .chars()
+            .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '$')
+            .collect::<String>();
+        if !name.is_empty() {
+            return Some(SymbolHit {
+                name,
+                kind,
+                language,
+            });
+        }
+    }
+    None
+}
+
+fn is_test_path(path: &str) -> bool {
+    let path = path.to_ascii_lowercase();
+    path.contains("/test")
+        || path.contains("/tests/")
+        || path.contains("__tests__")
+        || path.ends_with("_test.rs")
+        || path.ends_with(".test.ts")
+        || path.ends_with(".spec.ts")
+        || path.ends_with(".test.js")
+        || path.ends_with(".spec.js")
+}
+
+fn same_parent(a: &Path, b: &Path) -> bool {
+    a.parent().is_some() && a.parent() == b.parent()
+}
+
+fn related_extension(a: &str, b: &str) -> bool {
+    matches!(
+        (a, b),
+        ("svelte", "ts")
+            | ("svelte", "css")
+            | ("ts", "svelte")
+            | ("ts", "tsx")
+            | ("tsx", "ts")
+            | ("rs", "toml")
+            | ("toml", "rs")
+    )
 }
 
 fn git_summary(root: &Path) -> Value {
@@ -1125,5 +1529,40 @@ mod tests {
 
         assert!(err.contains("staged scope drift"));
         assert!(err.contains("src/secrets/token.txt"));
+    }
+
+    #[test]
+    fn manifest_symbol_search_and_related_files_are_bounded() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("src")).unwrap();
+        std::fs::create_dir_all(root.path().join("tests")).unwrap();
+        std::fs::write(
+            root.path().join("src/lib.rs"),
+            "pub fn alpha() {}\nstruct Beta;\n",
+        )
+        .unwrap();
+        std::fs::write(root.path().join("tests/lib_test.rs"), "use app::alpha;\n").unwrap();
+
+        let manifest = manifest(root.path(), &json!({ "limit": 10 })).unwrap();
+        assert_eq!(manifest["summary"]["files"].as_u64(), Some(2));
+        assert!(manifest["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["path"] == "src/lib.rs"));
+
+        let symbols = symbol_search(root.path(), &json!({ "query": "alpha" })).unwrap();
+        assert!(symbols["symbols"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["name"] == "alpha"));
+
+        let related = related_files(root.path(), &json!({ "path": "src/lib.rs" })).unwrap();
+        assert!(related["related"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["path"] == "tests/lib_test.rs"));
     }
 }

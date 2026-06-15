@@ -134,9 +134,93 @@ fn categories(runtime: CapabilityRuntime) -> Vec<CapabilityCategory> {
                 "repo_git_status",
                 "repo_git_diff",
                 "repo_write_file",
+                "repo_manifest",
+                "repo_symbol_search",
+                "repo_related_files",
             ],
             skills: &["rust-tooling", "ast-grep", "code-simplification"],
             status: CapabilityStatus::Always,
+        },
+        CapabilityCategory {
+            id: "code_graph",
+            title: "Code graph intelligence",
+            description: "Use optional codebase-memory-mcp acceleration plus native fallbacks for architecture, symbol, impact, and related-file exploration.",
+            use_when: &[
+                "architecture analysis",
+                "symbol lookup",
+                "call graph",
+                "impact analysis",
+                "large refactor",
+                "routes and cross-service links",
+            ],
+            mentions: &[
+                "architecture",
+                "symbol",
+                "callers",
+                "callees",
+                "impact",
+                "blast radius",
+                "code graph",
+                "route",
+            ],
+            tools: &[
+                "repo_code_graph_status",
+                "repo_manifest",
+                "repo_symbol_search",
+                "repo_related_files",
+            ],
+            skills: &["ast-grep"],
+            status: if requested("code_graph") {
+                CapabilityStatus::Loaded
+            } else {
+                CapabilityStatus::AvailableOnRequest
+            },
+        },
+        CapabilityCategory {
+            id: "planning",
+            title: "Smart planning rails",
+            description: "Classify a task, recommend the minimal tool groups/capabilities/skills to load, select focused checks, and apply Harness contract guardrails.",
+            use_when: &[
+                "task intake",
+                "plan work",
+                "choose tools",
+                "smart loading",
+                "test selection",
+                "contract guardrails",
+            ],
+            mentions: &["plan", "planning", "smart loading", "checks", "tests", "guardrails"],
+            tools: &["planning_pack", "test_selector", "contract_guard"],
+            skills: &["code-review-and-quality"],
+            status: if requested("planning") {
+                CapabilityStatus::Loaded
+            } else {
+                CapabilityStatus::AvailableOnRequest
+            },
+        },
+        CapabilityCategory {
+            id: "context",
+            title: "Operational context",
+            description: "Read compact session/task/handoff context packs so agents can resume work without replaying transcripts.",
+            use_when: &[
+                "resume session",
+                "handoff",
+                "subagent status",
+                "what next",
+                "loaded capabilities",
+            ],
+            mentions: &["context", "handoff", "resume", "next action", "child summary", "ledger"],
+            tools: &[
+                "session_context_pack",
+                "context_status",
+                "context_search",
+                "context_checkpoint_request",
+            ],
+            skills: &[],
+            status: if requested("context") {
+                CapabilityStatus::Loaded
+            } else {
+                CapabilityStatus::AvailableOnRequest
+            },
         },
         CapabilityCategory {
             id: "docs_web",

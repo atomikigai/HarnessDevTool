@@ -69,6 +69,9 @@
     name: string;
     args: unknown;
     result?: unknown;
+    resultText?: string;
+    resultExcalidrawScenes: ExcalidrawScene[];
+    resultInlineImages: string[];
     isError: boolean;
     expanded: boolean;
   };
@@ -225,7 +228,27 @@
   function isExcalidrawJson(val: unknown): boolean {
     if (!val || typeof val !== 'object') return false;
     const obj = val as Record<string, unknown>;
-    return obj.type === 'excalidraw' && Array.isArray(obj.elements);
+    return (obj.type === undefined || obj.type === 'excalidraw') && Array.isArray(obj.elements);
+  }
+
+  function normalizedExcalidrawScene(raw: string): string | null {
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      if (isExcalidrawJson(parsed)) return JSON.stringify(parsed);
+      if (Array.isArray(parsed)) {
+        return JSON.stringify({
+          type: 'excalidraw',
+          version: 2,
+          source: 'harness',
+          elements: parsed,
+          appState: {},
+          files: null
+        });
+      }
+    } catch {
+      // Not JSON; callers will keep it as normal text.
+    }
+    return null;
   }
 
   // Cached excalidraw module promise (loaded once)
@@ -327,6 +350,67 @@
       const obj = item as Record<string, unknown>;
       return obj.type !== 'image' && obj.type !== 'image_url';
     });
+  }
+
+  function extractToolResultTextParts(result: unknown): string[] {
+    if (result == null) return [];
+    if (typeof result === 'string') return [result];
+    if (Array.isArray(result)) {
+      const parts: string[] = [];
+      for (const item of result) parts.push(...extractToolResultTextParts(item));
+      return parts;
+    }
+    if (typeof result === 'object') {
+      const obj = result as Record<string, unknown>;
+      if (obj.type === 'text' && typeof obj.text === 'string') return [obj.text];
+      if (obj.text && typeof obj.text === 'string') return [obj.text];
+      if (obj.content !== undefined) return extractToolResultTextParts(obj.content);
+      if (obj.resource && typeof obj.resource === 'object') {
+        const resource = obj.resource as Record<string, unknown>;
+        if (typeof resource.text === 'string') return [resource.text];
+      }
+    }
+    return [];
+  }
+
+  function hydrateToolResult(block: ToolBlock): void {
+    const textParts = extractToolResultTextParts(block.result);
+    const scenes: ExcalidrawScene[] = [];
+    const visibleText: string[] = [];
+
+    const directScene =
+      typeof block.result === 'string'
+        ? normalizedExcalidrawScene(block.result.trim())
+        : isExcalidrawJson(block.result)
+          ? JSON.stringify(block.result)
+          : null;
+
+    if (directScene) {
+      scenes.push({ raw: directScene });
+    }
+
+    for (const part of textParts) {
+      const { cleaned, scenes: fencedScenes } = extractExcalidrawBlocks(part);
+      for (const rawScene of fencedScenes) {
+        scenes.push({ raw: normalizedExcalidrawScene(rawScene) ?? rawScene });
+      }
+
+      const trimmed = cleaned.trim();
+      const scene = trimmed ? normalizedExcalidrawScene(trimmed) : null;
+      if (scene) {
+        scenes.push({ raw: scene });
+      } else if (trimmed) {
+        visibleText.push(cleaned);
+      }
+    }
+
+    block.resultText = visibleText.join('\n\n').trim();
+    block.resultExcalidrawScenes = scenes;
+    block.resultInlineImages = block.resultText ? extractStandaloneImages(block.resultText) : [];
+
+    for (const scene of block.resultExcalidrawScenes) {
+      void renderExcalidraw(scene);
+    }
   }
 
   // ---- Syntax highlighting (highlight.js, dynamic import) -------------------
@@ -661,6 +745,8 @@
         id: ev.tool_use_id ?? String(ev.seq),
         name: ev.tool_name ?? '(unknown)',
         args: ev.tool_args,
+        resultExcalidrawScenes: [],
+        resultInlineImages: [],
         isError: false,
         expanded: true
       });
@@ -675,7 +761,8 @@
           if (block) {
             block.result = ev.tool_result;
             block.isError = ev.is_error ?? false;
-            block.expanded = block.isError;
+            hydrateToolResult(block);
+            block.expanded = true;
             break;
           }
         }
@@ -1429,6 +1516,7 @@
                 {#each turn.toolBlocks as block (block.id)}
                   {@const state = toolState(block)}
                   {@const resultImages = block.result !== undefined ? extractToolResultImages(block.result) : []}
+                  {@const hasRichResult = block.resultExcalidrawScenes.length > 0 || resultImages.length > 0 || block.resultInlineImages.length > 0 || Boolean(block.resultText)}
                   <div
                     class="action-block tool-block"
                     class:tool-error={state === 'error'}
@@ -1465,8 +1553,29 @@
                         <!-- Result (if available) -->
                         {#if block.result !== undefined}
                           <div class="action-label">{block.isError ? 'Error' : 'Result'}</div>
+                          {#if block.resultExcalidrawScenes.length > 0}
+                            {#each block.resultExcalidrawScenes as scene, i (i)}
+                              {#if scene.svgHtml}
+                                <div class="excalidraw-container tool-result-diagram">
+                                  <!-- eslint-disable-next-line svelte/no-at-html-tags -->
+                                  {@html scene.svgHtml}
+                                </div>
+                              {:else if scene.failed}
+                                <details class="excalidraw-fallback">
+                                  <summary class="excalidraw-fallback-summary">
+                                    Excalidraw scene (SVG render unavailable)
+                                  </summary>
+                                  <pre class="action-json">{scene.raw}</pre>
+                                </details>
+                              {:else}
+                                <div class="excalidraw-loading">
+                                  <Loader2 size={14} class="animate-spin" />
+                                  <span>Rendering diagram…</span>
+                                </div>
+                              {/if}
+                            {/each}
+                          {/if}
                           {#if resultImages.length > 0}
-                            <!-- Show extracted images instead of raw JSON -->
                             <div class="tool-result-images">
                               {#each resultImages as imgSrc (imgSrc)}
                                 <button
@@ -1479,11 +1588,29 @@
                                 </button>
                               {/each}
                             </div>
-                            {#if hasNonImageContent(block.result)}
+                          {/if}
+                          {#if block.resultInlineImages.length > 0}
+                            <div class="tool-result-images">
+                              {#each block.resultInlineImages as imgSrc (imgSrc)}
+                                <button
+                                  type="button"
+                                  class="img-button"
+                                  onclick={() => openLightbox(imgSrc)}
+                                  title="Click to view full size"
+                                >
+                                  <img src={imgSrc} alt="Tool result" class="tool-result-image" />
+                                </button>
+                              {/each}
+                            </div>
+                          {/if}
+                          {#if block.resultText}
+                            <pre class="tool-result-text" class:error-json={block.isError}>{block.resultText}</pre>
+                          {/if}
+                          {#if !hasRichResult || (hasNonImageContent(block.result) && !block.resultText && block.resultExcalidrawScenes.length === 0)}
+                            <details class="tool-raw-result" open={!hasRichResult}>
+                              <summary class="tool-raw-summary">Raw result</summary>
                               <pre class="action-json" class:error-json={block.isError}>{prettyJson(block.result)}</pre>
-                            {/if}
-                          {:else}
-                            <pre class="action-json" class:error-json={block.isError}>{prettyJson(block.result)}</pre>
+                            </details>
                           {/if}
                         {/if}
                       </div>
@@ -2103,6 +2230,44 @@
 
   .error-json {
     color: #fca5a5;
+  }
+
+  .tool-result-text {
+    background: var(--surface-canvas);
+    border: 1px solid var(--border-subtle);
+    border-radius: 0.45rem;
+    color: var(--fg-default);
+    font-family:
+      ui-sans-serif,
+      system-ui,
+      -apple-system,
+      BlinkMacSystemFont,
+      "Segoe UI",
+      sans-serif;
+    font-size: 0.82rem;
+    line-height: 1.65;
+    margin: 0;
+    max-height: 420px;
+    overflow: auto;
+    padding: 0.72rem 0.8rem;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
+  .tool-raw-result {
+    margin-top: 0.7rem;
+  }
+
+  .tool-raw-summary {
+    color: var(--fg-muted);
+    cursor: pointer;
+    font-size: 0.68rem;
+    font-weight: 600;
+    margin-bottom: 0.45rem;
+  }
+
+  .tool-result-diagram {
+    margin-bottom: 0.7rem;
   }
 
   /* ---- Tool result images ------------------------------------------------ */

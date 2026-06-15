@@ -16,7 +16,7 @@ use crate::protocol::{
 };
 use crate::tools::{
     self, attachments as attachment_tools, capabilities as capability_tools, db as db_tools,
-    docs as docs_tools, knowledge as knowledge_tools, n8n as n8n_tools, repo,
+    docs as docs_tools, knowledge as knowledge_tools, n8n as n8n_tools, planning, repo,
     session as session_tools, skills, spec, ssh as ssh_tools, tasks, toolsets::ToolRegistry,
     wrap_error, wrap_text,
 };
@@ -257,6 +257,35 @@ impl Dispatcher {
             "tools_search" => self.tools_search(&args),
             "tools_load" => self.tools_load(&args),
             "tools_unload" => self.tools_unload(&args),
+            "planning_pack" => planning::pack(&args),
+            "test_selector" => planning::test_selector(&args),
+            "contract_guard" => planning::contract_guard(&args),
+            "session_context_pack" => session_tools::context_pack(
+                &self.store,
+                &self.harness_home,
+                &self.profile,
+                self.session_id.as_deref(),
+                &self.thread_id,
+                &args,
+            ),
+            "context_status" => session_tools::context_status(
+                self.session_id.as_deref(),
+                self.server_url.as_deref(),
+                self.api_token.as_deref(),
+                &args,
+            ),
+            "context_search" => session_tools::context_search(
+                self.session_id.as_deref(),
+                self.server_url.as_deref(),
+                self.api_token.as_deref(),
+                &args,
+            ),
+            "context_checkpoint_request" => session_tools::context_checkpoint_request(
+                self.session_id.as_deref(),
+                self.server_url.as_deref(),
+                self.api_token.as_deref(),
+                &args,
+            ),
             "attach_list" => attachment_tools::list(&self.harness_home, self.session_id.as_deref()),
             "attach_read" => {
                 attachment_tools::read(&self.harness_home, self.session_id.as_deref(), &args)
@@ -367,6 +396,10 @@ impl Dispatcher {
             "repo_git_push" => repo::git_push(&self.cwd, &args),
             "repo_github_pr_create" => repo::git_pr_create(&self.cwd, &args),
             "repo_codebase_memory_status" => repo::codebase_memory_status(&self.cwd, &args),
+            "repo_manifest" => repo::manifest(&self.cwd, &args),
+            "repo_symbol_search" => repo::symbol_search(&self.cwd, &args),
+            "repo_related_files" => repo::related_files(&self.cwd, &args),
+            "repo_code_graph_status" => repo::code_graph_status(&self.cwd, &args),
             "docs_build" => docs_tools::build(&self.cwd, &args),
             "db_query" => db_tools::query(&self.db, &args),
             "db_context_refresh" => db_tools::context_refresh(&self.db, &args),
@@ -503,8 +536,15 @@ impl Dispatcher {
                 Vec::new()
             }
         };
+        let mut gateway_names = Vec::new();
         if self.should_list_crawl4ai_gateway(&active) {
-            descriptors.extend(self.gateway.list_descriptors());
+            gateway_names.push("crawl4ai");
+        }
+        if self.should_list_codebase_memory_gateway(&active) {
+            gateway_names.push("codebase_memory");
+        }
+        if !gateway_names.is_empty() {
+            descriptors.extend(self.gateway.list_descriptors_for(&gateway_names));
         }
         *self
             .descriptor_cache
@@ -645,6 +685,12 @@ impl Dispatcher {
             && (self.seeded_mcp_servers.contains("crawl4ai")
                 || active.contains("knowledge")
                 || active.contains("docs"))
+    }
+
+    fn should_list_codebase_memory_gateway(&self, active: &HashSet<String>) -> bool {
+        self.gateway.has_upstream("codebase_memory")
+            && (self.seeded_mcp_servers.contains("codebase_memory")
+                || active.contains("code_graph"))
     }
 
     fn invalidate_tool_descriptor_cache(&self) {
@@ -1234,6 +1280,9 @@ mod tests {
             "capability_list",
             "capability_describe",
             "capability_request",
+            "planning_pack",
+            "test_selector",
+            "contract_guard",
             "skills_search",
             "spec_write",
             "knowledge_pdf_ingest",
@@ -1352,6 +1401,52 @@ mod tests {
             .unwrap()
             .iter()
             .any(|tool| { tool["name"] == "db_export_table" && tool["group"] == "db" }));
+    }
+
+    #[test]
+    fn tools_search_finds_planning_group_without_loading_it() {
+        let (d, _) = mk("t1", "agent:1");
+        let search = r#"{"jsonrpc":"2.0","id":23,"method":"tools/call","params":{"name":"tools_search","arguments":{"query":"planning guardrails"}}}"#;
+        let resp = d.handle(parse_request(search).unwrap()).unwrap();
+        let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+        let value: serde_json::Value = serde_json::from_str(text).unwrap();
+        let groups = value["groups"].as_array().unwrap();
+        let tools = value["tools"].as_array().unwrap();
+        assert!(groups.iter().any(|group| group["group"] == "planning"));
+        let planning_pack = tools
+            .iter()
+            .find(|tool| tool["name"] == "planning_pack")
+            .expect("planning_pack should be discoverable");
+        assert_eq!(planning_pack["group"], "planning");
+        assert_eq!(planning_pack["loaded"], false);
+    }
+
+    #[test]
+    fn planning_pack_auto_loads_and_returns_checks() {
+        let (d, _) = mk("t1", "agent:1");
+        let call = r#"{"jsonrpc":"2.0","id":24,"method":"tools/call","params":{"name":"planning_pack","arguments":{"objective":"Fix frontend/backend API contract bug","files":["backend/crates/harness-server/src/routes/sessions.rs","frontend/src/lib/api/client.ts"]}}}"#;
+        let resp = d.handle(parse_request(call).unwrap()).unwrap();
+        assert_ne!(resp["result"]["isError"], true);
+        let content = resp["result"]["content"].as_array().unwrap();
+        assert!(content.iter().any(|item| item["text"]
+            .as_str()
+            .is_some_and(|text| text.contains("auto-loaded tool group `planning`"))));
+        let payload_text = content
+            .iter()
+            .filter_map(|item| item["text"].as_str())
+            .find(|text| text.contains("recommended_tool_groups"))
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_str(payload_text).unwrap();
+        assert!(value["recommended_tool_groups"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item == "repo"));
+        assert!(value["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["command"] == "just gen-types"));
     }
 
     #[test]

@@ -8,8 +8,11 @@
 //! The current session id is bound at MCP-server start via `--session-id`
 //! and stored on the dispatcher; we never trust the caller to pass it.
 
+use std::path::Path;
 use std::time::Duration;
 
+use harness_core::TaskStore;
+use harness_session::SessionMeta;
 use serde_json::{json, Value};
 
 const HARNESS_PROTOCOL_VERSION_HEADER: &str = "X-Protocol-Version";
@@ -285,6 +288,243 @@ pub fn mailbox_ack(
         .map_err(|e| e.to_string())
 }
 
+pub fn context_pack(
+    store: &TaskStore,
+    harness_home: &Path,
+    profile: &str,
+    current_session_id: Option<&str>,
+    thread_id: &str,
+    args: &Value,
+) -> Result<Value, String> {
+    let session_id = opt_str(args, "session_id")
+        .or(current_session_id)
+        .ok_or_else(|| "session_context_pack requires session_id or --session-id".to_string())?;
+    let meta = read_session_meta(harness_home, profile, session_id)?;
+    let task_id = opt_str(args, "task_id")
+        .map(str::to_string)
+        .or_else(|| meta.task_id.clone());
+
+    let task = task_id
+        .as_deref()
+        .and_then(|task_id| store.get(thread_id, task_id).ok())
+        .map(|task| {
+            json!({
+                "id": task.id,
+                "title": task.title,
+                "status": task.status,
+                "assignee": task.assignee,
+                "labels": task.labels,
+                "write_paths": task.write_paths,
+                "forbidden_paths": task.forbidden_paths,
+                "brief": task.brief,
+                "updated_at": task.updated_at,
+            })
+        });
+    let latest_handoff = task_id
+        .as_deref()
+        .and_then(|task_id| store.read_handoffs(thread_id, task_id).ok())
+        .and_then(|handoffs| handoffs.into_iter().max_by_key(|handoff| handoff.at))
+        .map(|handoff| {
+            json!({
+                "at": handoff.at,
+                "from": handoff.from,
+                "to_role": handoff.to_role,
+                "status": handoff.status,
+                "goal": handoff.goal,
+                "blocked_on": handoff.blocked_on,
+                "files_changed": handoff.files_changed,
+                "commands_run": handoff.commands_run,
+                "verification_passed": handoff.verification_passed,
+                "verification_not_run": handoff.verification_not_run,
+                "next_agent_action": handoff.next_agent_action,
+            })
+        });
+    let children = read_session_metas(harness_home, profile)?
+        .into_iter()
+        .filter(|child| child.parent_session_id.as_deref() == Some(session_id))
+        .map(|child| {
+            json!({
+                "session_id": child.id,
+                "role": child.role,
+                "task_id": child.task_id,
+                "status": child.status,
+                "detected_state": child.detected_state,
+                "started_at": child.started_at,
+            })
+        })
+        .collect::<Vec<_>>();
+    let next_actions = compact_next_actions(latest_handoff.as_ref(), task.is_some());
+
+    Ok(json!({
+        "session": {
+            "session_id": meta.id,
+            "thread_id": meta.thread_id,
+            "role": meta.role,
+            "task_id": meta.task_id,
+            "scopes": meta.scopes,
+            "status": meta.status,
+            "detected_state": meta.detected_state,
+            "parent_session_id": meta.parent_session_id,
+            "root_session_id": meta.root_session_id,
+            "cwd": meta.cwd,
+            "loaded_capabilities": meta.loaded_capabilities,
+            "has_transcript": meta.has_transcript,
+        },
+        "task": task,
+        "latest_handoff": latest_handoff,
+        "children": children,
+        "next_actions": next_actions,
+    }))
+}
+
+pub fn context_status(
+    session_id: Option<&str>,
+    server_url: Option<&str>,
+    api_token: Option<&str>,
+    args: &Value,
+) -> Result<Value, String> {
+    let sid = opt_str(args, "session_id")
+        .or(session_id)
+        .ok_or_else(|| "context_status requires session_id or --session-id".to_string())?;
+    let server = server_url.ok_or_else(|| "context_status needs --server-url".to_string())?;
+    let url = format!(
+        "{}/api/sessions/{}/context",
+        server.trim_end_matches('/'),
+        sid
+    );
+    let req = harness_request(ureq::get(&url).timeout(Duration::from_secs(5)), api_token);
+    req.call()
+        .map_err(|e| e.to_string())?
+        .into_json::<Value>()
+        .map_err(|e| e.to_string())
+}
+
+pub fn context_search(
+    session_id: Option<&str>,
+    server_url: Option<&str>,
+    api_token: Option<&str>,
+    args: &Value,
+) -> Result<Value, String> {
+    let sid = opt_str(args, "session_id")
+        .or(session_id)
+        .ok_or_else(|| "context_search requires session_id or --session-id".to_string())?;
+    let query = str_arg(args, "query")?;
+    let limit = args
+        .get("limit")
+        .and_then(Value::as_u64)
+        .map(|limit| limit.clamp(1, 50))
+        .unwrap_or(10);
+    let server = server_url.ok_or_else(|| "context_search needs --server-url".to_string())?;
+    let url = format!(
+        "{}/api/sessions/{}/context/search?q={}&limit={}",
+        server.trim_end_matches('/'),
+        sid,
+        encode_query(query),
+        limit
+    );
+    let req = harness_request(ureq::get(&url).timeout(Duration::from_secs(5)), api_token);
+    req.call()
+        .map_err(|e| e.to_string())?
+        .into_json::<Value>()
+        .map_err(|e| e.to_string())
+}
+
+pub fn context_checkpoint_request(
+    session_id: Option<&str>,
+    server_url: Option<&str>,
+    api_token: Option<&str>,
+    args: &Value,
+) -> Result<Value, String> {
+    let sid = opt_str(args, "session_id").or(session_id).ok_or_else(|| {
+        "context_checkpoint_request requires session_id or --session-id".to_string()
+    })?;
+    let server =
+        server_url.ok_or_else(|| "context_checkpoint_request needs --server-url".to_string())?;
+    let url = format!(
+        "{}/api/sessions/{}/context/checkpoint",
+        server.trim_end_matches('/'),
+        sid
+    );
+    let req = harness_request(ureq::post(&url).timeout(Duration::from_secs(5)), api_token);
+    req.call()
+        .map_err(|e| e.to_string())?
+        .into_json::<Value>()
+        .map_err(|e| e.to_string())
+}
+
+fn read_session_meta(
+    harness_home: &Path,
+    profile: &str,
+    session_id: &str,
+) -> Result<SessionMeta, String> {
+    let path = harness_home
+        .join("profiles")
+        .join(profile)
+        .join("sessions")
+        .join(session_id)
+        .join("meta.json");
+    let bytes = std::fs::read(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
+    serde_json::from_slice(&bytes).map_err(|e| format!("parse {}: {e}", path.display()))
+}
+
+fn read_session_metas(harness_home: &Path, profile: &str) -> Result<Vec<SessionMeta>, String> {
+    let dir = harness_home.join("profiles").join(profile).join("sessions");
+    let read = match std::fs::read_dir(&dir) {
+        Ok(read) => read,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(format!("read_dir {}: {e}", dir.display())),
+    };
+    let mut out = Vec::new();
+    for entry in read.filter_map(Result::ok) {
+        let path = entry.path().join("meta.json");
+        if !path.exists() {
+            continue;
+        }
+        match std::fs::read(&path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<SessionMeta>(&bytes).ok())
+        {
+            Some(meta) => out.push(meta),
+            None => tracing::warn!(path = %path.display(), "skipping unreadable session meta"),
+        }
+    }
+    Ok(out)
+}
+
+fn compact_next_actions(latest_handoff: Option<&Value>, has_task: bool) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Some(action) = latest_handoff
+        .and_then(|handoff| handoff.get("next_agent_action"))
+        .and_then(Value::as_str)
+        .filter(|action| !action.trim().is_empty())
+    {
+        out.push(action.to_string());
+    }
+    if has_task {
+        out.push(
+            "Use task_get for full task detail only if this compact pack is insufficient.".into(),
+        );
+    }
+    if out.is_empty() {
+        out.push("No handoff next action found; inspect mailbox or task state before broad transcript reads.".into());
+    }
+    out
+}
+
+fn encode_query(input: &str) -> String {
+    let mut out = String::new();
+    for byte in input.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(byte as char)
+            }
+            b' ' => out.push('+'),
+            other => out.push_str(&format!("%{other:02X}")),
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -324,6 +564,106 @@ mod tests {
         assert_eq!(body["initial_prompt"], "build the backend");
         assert_eq!(body["cwd"], "/tmp/work");
         assert_eq!(body["scopes"], json!(["task:T-0001"]));
+    }
+
+    #[test]
+    fn context_pack_returns_session_meta_and_children() {
+        let home = tempfile::tempdir().unwrap();
+        let sessions = home.path().join("profiles/default/sessions");
+        std::fs::create_dir_all(sessions.join("sid-parent")).unwrap();
+        std::fs::create_dir_all(sessions.join("sid-child")).unwrap();
+        std::fs::write(
+            sessions.join("sid-parent/meta.json"),
+            serde_json::to_vec(&json!({
+                "id": "sid-parent",
+                "kind": "codex",
+                "thread_id": "thr",
+                "cwd": ".",
+                "pid": 0,
+                "status": "running",
+                "started_at": 1,
+                "role": "orchestrator",
+                "scopes": ["backend"],
+                "root_session_id": "sid-parent",
+                "loaded_capabilities": {
+                    "mcp_servers": ["harness"],
+                    "skills": [],
+                    "tool_groups": ["planning"]
+                },
+                "has_transcript": true
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            sessions.join("sid-child/meta.json"),
+            serde_json::to_vec(&json!({
+                "id": "sid-child",
+                "kind": "codex",
+                "thread_id": "thr",
+                "cwd": ".",
+                "pid": 0,
+                "status": "exited",
+                "started_at": 2,
+                "role": "generator",
+                "parent_session_id": "sid-parent",
+                "root_session_id": "sid-parent",
+                "loaded_capabilities": {
+                    "mcp_servers": [],
+                    "skills": [],
+                    "tool_groups": []
+                },
+                "has_transcript": false
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let store = TaskStore::with_profile(home.path(), "default").unwrap();
+        let pack = context_pack(
+            &store,
+            home.path(),
+            "default",
+            Some("sid-parent"),
+            "thr",
+            &json!({}),
+        )
+        .unwrap();
+
+        assert_eq!(pack["session"]["session_id"], "sid-parent");
+        assert_eq!(
+            pack["session"]["loaded_capabilities"]["tool_groups"][0],
+            "planning"
+        );
+        assert!(pack["children"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|child| child["session_id"] == "sid-child"));
+    }
+
+    #[test]
+    fn context_search_uses_protocol_header_and_encoded_query() {
+        let Some((server_url, rx)) = spawn_http_capture_server() else {
+            return;
+        };
+
+        let result = context_search(
+            Some("sid-context"),
+            Some(&server_url),
+            None,
+            &json!({ "query": "next action", "limit": 5 }),
+        )
+        .expect("context search response");
+
+        assert_eq!(result["session_id"], "child-1");
+        let captured = rx.recv().expect("captured request");
+        assert!(captured.starts_with(
+            "GET /api/sessions/sid-context/context/search?q=next+action&limit=5 HTTP/1.1"
+        ));
+        assert!(captured
+            .to_ascii_lowercase()
+            .contains("x-protocol-version: 1.0"));
     }
 
     fn spawn_http_capture_server() -> Option<(String, mpsc::Receiver<String>)> {

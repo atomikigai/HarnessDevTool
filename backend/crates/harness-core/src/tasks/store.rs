@@ -819,7 +819,14 @@ impl TaskStore {
             let e = e?;
             if e.file_type()?.is_dir() && e.path().join("tasks").exists() {
                 if let Some(n) = e.file_name().to_str() {
-                    out.push(n.to_string());
+                    match validate_thread_id(n) {
+                        Ok(()) => out.push(n.to_string()),
+                        Err(e) => tracing::warn!(
+                            thread_id = %n,
+                            error = %e,
+                            "skipping invalid thread directory during scheduler scan"
+                        ),
+                    }
                 }
             }
         }
@@ -1346,6 +1353,23 @@ mod tests {
             .open(path)
             .unwrap();
         writeln!(file, "{}", serde_json::to_string(&handoff).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn known_threads_skips_invalid_thread_directories() {
+        let (dir, s) = store();
+        let invalid_tasks = dir
+            .path()
+            .join("profiles")
+            .join("default")
+            .join("threads")
+            .join("thread:bad")
+            .join("tasks");
+        std::fs::create_dir_all(&invalid_tasks).unwrap();
+        s.create("thr-good", mk_draft("valid")).unwrap();
+
+        assert_eq!(s.known_threads().unwrap(), vec!["thr-good".to_string()]);
+        assert_eq!(s.scheduler_threads().unwrap(), vec!["thr-good".to_string()]);
     }
 
     #[test]

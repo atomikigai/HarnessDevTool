@@ -71,19 +71,23 @@ Resultado: agentes **más precisos**, menos tokens en "explorar", menos retries.
 | `spec.set_section` | `thread, slug, body` | edita sección específica (planner only) |
 | `spec.toc` | `thread` | tabla de contenidos |
 
-### `skills.*` (F5)
+### `skills.*`
 | Tool | Args | Devuelve |
 |---|---|---|
-| `skills.search` | `query, top_k, tags?` | FTS5 results (antes de F5 devuelve `[]`) |
-| `skills.get` | `id` | skill MD + frontmatter |
-| `skills.manage` | `action, id, body?, patch?` | create/patch/edit/archive |
-| `skills.history` | `id` | git log entries de esa skill |
+| `skills_search` | `query, top_k?` | skills activas/propuestas rankeadas por relevancia, uso y freshness |
+| `skill_propose` | `title, body, tags?, reason` | propuesta Markdown; no activa el skill |
+| `skill_promote` | `id, reason` | promueve skill revisada a activa |
+| `skill_archive` | `id, reason` | archiva skill con snapshot |
+| `skill_record_usage` | `skill_id, outcome, session_id?, task_id?, loaded?, used?, duration_ms?` | telemetria de uso para ranking/curator |
+| `evolve_observe` / `evolve_run` / `curator_run` | varios | learner/curator batch para proponer o limpiar skills |
 
-### `memory.*` (F5)
+### `memory.*`
 | Tool | Args | Devuelve |
 |---|---|---|
-| `memory.search` | `query, scope, top_k` | items relevantes de `events.jsonl` |
-| `memory.get` | `item_id` | item completo |
+| `memory_search` | `query, top_k?, kind?, status?, tags?` | snippets desde `memory_fts.sqlite` por profile |
+| `memory_read` | `id` | entrada completa seleccionada despues de search |
+| `memory_continuity` | `limit?` | conteos y anclas recientes para retomar contexto |
+| `memory_note_propose` | `title, body, tags?, reason?` | propuesta Markdown revisable; no activa memoria libre |
 | `memory.continuity` | `thread_id?` | snapshot compacto de continuidad del thread/profile |
 
 ### `context.*` / `ledger.*` (plan 2026-06-15)
@@ -158,8 +162,11 @@ trazabilidad de simbolos. Si `codebase-memory-mcp` no esta disponible, Harness
 degrada a `repo_manifest`, `repo_symbol_search` ligero y `repo_related_files`.
 Cuando esta instalado, el gateway lo reutiliza como upstream persistente con
 idle timeout para evitar spawn/handshake por cada consulta.
-Pendiente R9 restante: cache SQLite propio de arquitectura/impacto y spans de
-latencia/origen para consultas de grafo.
+Los wrappers registran cache y telemetria en
+`profiles/<profile>/repo-code-graph/cache.sqlite`: estado por repo/head/dirty
+hash, query-cache por tool/cache key, snapshots compactos de arquitectura e
+impacto, y spans con `origin`, `cache_hit`, `latency_us`, `bytes_estimate` y
+`tokens_estimate`.
 
 ### `budget.*`
 | Tool | Args | Devuelve |

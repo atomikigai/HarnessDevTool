@@ -470,12 +470,24 @@ impl Dispatcher {
             "repo_manifest" => repo::manifest(&self.cwd, &args),
             "repo_symbol_search" => repo::symbol_search(&self.cwd, &args),
             "repo_related_files" => repo::related_files(&self.cwd, &args),
-            "repo_code_graph_status" => repo::code_graph_status(&self.cwd, &args),
-            "repo_code_graph_index" => repo::code_graph_index(&self.cwd, &args),
-            "repo_code_graph_search" => repo::code_graph_search(&self.cwd, &args),
-            "repo_change_impact" => repo::change_impact(&self.cwd, &args),
-            "repo_architecture_pack" => repo::architecture_pack(&self.cwd, &args),
-            "repo_code_snippet" => repo::code_snippet(&self.cwd, &args),
+            "repo_code_graph_status" => {
+                repo::code_graph_status(&self.cwd, &self.harness_home, &self.profile, &args)
+            }
+            "repo_code_graph_index" => {
+                repo::code_graph_index(&self.cwd, &self.harness_home, &self.profile, &args)
+            }
+            "repo_code_graph_search" => {
+                repo::code_graph_search(&self.cwd, &self.harness_home, &self.profile, &args)
+            }
+            "repo_change_impact" => {
+                repo::change_impact(&self.cwd, &self.harness_home, &self.profile, &args)
+            }
+            "repo_architecture_pack" => {
+                repo::architecture_pack(&self.cwd, &self.harness_home, &self.profile, &args)
+            }
+            "repo_code_snippet" => {
+                repo::code_snippet(&self.cwd, &self.harness_home, &self.profile, &args)
+            }
             "docs_build" => docs_tools::build(&self.cwd, &args),
             "db_query" => db_tools::query(&self.db, &args),
             "db_context_refresh" => db_tools::context_refresh(&self.db, &args),

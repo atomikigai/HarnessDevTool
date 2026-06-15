@@ -353,9 +353,15 @@ de git basicos.
   acotados.
 - Las respuestas devuelven JSON compacto con limites, no dumps de grafo.
 - El proceso upstream se reutiliza entre calls y se cierra por idle timeout.
-- Pendiente de cierre R9: materializar cache SQLite propio para arquitectura/
-  impacto y registrar spans con latencia, bytes/tokens estimados y origen
-  cache/upstream/fallback.
+- Implementado 2026-06-15: cache SQLite propio en
+  `profiles/<profile>/repo-code-graph/cache.sqlite` con estado por repo
+  (`repo_key`, root, head, dirty hash, index status), query-cache por
+  `tool/cache_key/head/dirty_hash`, snapshots compactos de arquitectura/
+  impacto y spans persistidos.
+- Cada wrapper registra telemetria compacta (`origin`, `cache_hit`,
+  `latency_us`, `bytes_estimate`, `tokens_estimate`, `cache_key`,
+  `cache_path`) en la respuesta, SQLite y `tracing` bajo
+  `repo_code_graph.query`.
 
 ## Workstream R8 — Evidence pack para review/QA
 

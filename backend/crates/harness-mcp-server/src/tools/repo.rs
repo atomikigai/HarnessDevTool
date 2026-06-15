@@ -8,9 +8,13 @@ use std::ffi::{OsStr, OsString};
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use gix;
+use harness_core::validate_profile_id;
+use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use tokei::{Config, Languages};
 
 const DEFAULT_SCAN_LIMIT: usize = 400;
@@ -23,6 +27,7 @@ const DEFAULT_SYMBOL_LIMIT: usize = 80;
 const SYMBOL_MAX_FILE_BYTES: u64 = 512 * 1024;
 const MAX_GIT_BYTES: usize = 128 * 1024;
 const MAX_GIT_MUTATION_BYTES: usize = 64 * 1024;
+const CODE_GRAPH_CACHE_SCHEMA: i64 = 1;
 
 pub fn analyze(root: &Path, args: &Value) -> Result<Value, String> {
     let dir = resolve_under_root(root, opt_str(args, "path").unwrap_or("."))?;
@@ -575,6 +580,346 @@ fn read_line_window(
     Ok((start, end, content))
 }
 
+#[derive(Debug, Clone)]
+struct RepoCacheState {
+    repo_key: String,
+    root: String,
+    head: String,
+    dirty_hash: String,
+}
+
+struct CodeGraphCache {
+    path: PathBuf,
+    conn: Connection,
+}
+
+impl CodeGraphCache {
+    fn open(harness_home: &Path, profile: &str) -> Result<Self, String> {
+        validate_profile_id(profile).map_err(|e| format!("repo code graph profile: {e}"))?;
+        let dir = harness_home
+            .join("profiles")
+            .join(profile)
+            .join("repo-code-graph");
+        std::fs::create_dir_all(&dir).map_err(|e| format!("create code graph cache dir: {e}"))?;
+        let path = dir.join("cache.sqlite");
+        let conn = Connection::open(&path).map_err(|e| format!("open code graph cache: {e}"))?;
+        conn.busy_timeout(std::time::Duration::from_millis(1000))
+            .map_err(|e| format!("code graph cache busy_timeout: {e}"))?;
+        conn.pragma_update(None, "journal_mode", "WAL")
+            .map_err(|e| format!("code graph cache wal: {e}"))?;
+        create_code_graph_cache_schema(&conn)?;
+        Ok(Self { path, conn })
+    }
+
+    fn read_query(
+        &self,
+        state: &RepoCacheState,
+        tool: &str,
+        cache_key: &str,
+    ) -> Result<Option<Value>, String> {
+        let raw = self
+            .conn
+            .query_row(
+                "SELECT result_json FROM code_graph_query_cache
+                 WHERE repo_key = ?1 AND tool = ?2 AND cache_key = ?3
+                   AND head = ?4 AND dirty_hash = ?5",
+                params![
+                    state.repo_key,
+                    tool,
+                    cache_key,
+                    state.head,
+                    state.dirty_hash
+                ],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|e| format!("read code graph query cache: {e}"))?;
+        raw.map(|text| serde_json::from_str(&text).map_err(|e| format!("parse cache json: {e}")))
+            .transpose()
+    }
+
+    fn write_query(
+        &self,
+        state: &RepoCacheState,
+        tool: &str,
+        cache_key: &str,
+        value: &Value,
+    ) -> Result<(), String> {
+        self.upsert_repo_state(state, None)?;
+        let now = now_secs();
+        let result_json =
+            serde_json::to_string(value).map_err(|e| format!("serialize cache json: {e}"))?;
+        self.conn
+            .execute(
+                "INSERT OR REPLACE INTO code_graph_query_cache
+                    (repo_key, tool, cache_key, head, dirty_hash, result_json, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    state.repo_key,
+                    tool,
+                    cache_key,
+                    state.head,
+                    state.dirty_hash,
+                    result_json,
+                    now
+                ],
+            )
+            .map_err(|e| format!("write code graph query cache: {e}"))?;
+        Ok(())
+    }
+
+    fn upsert_repo_state(
+        &self,
+        state: &RepoCacheState,
+        index_status: Option<&Value>,
+    ) -> Result<(), String> {
+        let now = now_secs();
+        let index_status_json = index_status
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|e| format!("serialize index status: {e}"))?;
+        self.conn
+            .execute(
+                "INSERT INTO code_graph_repos
+                    (repo_key, root, head, dirty_hash, index_status_json, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                 ON CONFLICT(repo_key) DO UPDATE SET
+                    root = excluded.root,
+                    head = excluded.head,
+                    dirty_hash = excluded.dirty_hash,
+                    index_status_json = COALESCE(excluded.index_status_json, code_graph_repos.index_status_json),
+                    updated_at = excluded.updated_at",
+                params![
+                    state.repo_key,
+                    state.root,
+                    state.head,
+                    state.dirty_hash,
+                    index_status_json,
+                    now
+                ],
+            )
+            .map_err(|e| format!("write code graph repo state: {e}"))?;
+        Ok(())
+    }
+
+    fn update_architecture(&self, state: &RepoCacheState, value: &Value) -> Result<(), String> {
+        self.update_repo_json(state, "architecture_json", "architecture_at", value)
+    }
+
+    fn update_impact(&self, state: &RepoCacheState, value: &Value) -> Result<(), String> {
+        self.update_repo_json(state, "impact_json", "impact_at", value)
+    }
+
+    fn update_repo_json(
+        &self,
+        state: &RepoCacheState,
+        json_col: &str,
+        at_col: &str,
+        value: &Value,
+    ) -> Result<(), String> {
+        self.upsert_repo_state(state, None)?;
+        let now = now_secs();
+        let result_json =
+            serde_json::to_string(value).map_err(|e| format!("serialize repo cache json: {e}"))?;
+        let sql = format!(
+            "UPDATE code_graph_repos SET {json_col} = ?1, {at_col} = ?2, updated_at = ?2 WHERE repo_key = ?3"
+        );
+        self.conn
+            .execute(&sql, params![result_json, now, state.repo_key])
+            .map_err(|e| format!("update code graph repo cache: {e}"))?;
+        Ok(())
+    }
+
+    fn record_span(
+        &self,
+        state: &RepoCacheState,
+        tool: &str,
+        origin: &str,
+        cache_hit: bool,
+        latency_us: u128,
+        cache_key: &str,
+        value: &Value,
+    ) -> Result<Value, String> {
+        let bytes = serde_json::to_string(value)
+            .map(|text| text.len() as i64)
+            .unwrap_or_default();
+        let tokens = estimate_tokens(bytes);
+        self.conn
+            .execute(
+                "INSERT INTO code_graph_spans
+                    (repo_key, tool, origin, cache_hit, latency_us, bytes_estimate,
+                     tokens_estimate, cache_key, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    state.repo_key,
+                    tool,
+                    origin,
+                    if cache_hit { 1 } else { 0 },
+                    latency_us as i64,
+                    bytes,
+                    tokens,
+                    cache_key,
+                    now_secs()
+                ],
+            )
+            .map_err(|e| format!("record code graph span: {e}"))?;
+        let span = tracing::info_span!(
+            "repo_code_graph.query",
+            tool = %tool,
+            origin = %origin,
+            cache_hit = cache_hit,
+            latency_us = latency_us as i64,
+            bytes_estimate = bytes,
+            tokens_estimate = tokens,
+            repo_key = %state.repo_key,
+        );
+        let _entered = span.enter();
+        tracing::info!("repo_code_graph.query_done");
+        Ok(json!({
+            "origin": origin,
+            "cache_hit": cache_hit,
+            "latency_us": latency_us,
+            "bytes_estimate": bytes,
+            "tokens_estimate": tokens,
+            "cache_key": cache_key,
+            "cache_path": self.path,
+        }))
+    }
+
+    fn latest_spans(&self, state: &RepoCacheState, limit: i64) -> Result<Vec<Value>, String> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT tool, origin, cache_hit, latency_us, bytes_estimate,
+                        tokens_estimate, cache_key, created_at
+                 FROM code_graph_spans
+                 WHERE repo_key = ?1
+                 ORDER BY created_at DESC, id DESC
+                 LIMIT ?2",
+            )
+            .map_err(|e| format!("prepare code graph spans: {e}"))?;
+        let rows = stmt
+            .query_map(params![state.repo_key, limit], |row| {
+                Ok(json!({
+                    "tool": row.get::<_, String>(0)?,
+                    "origin": row.get::<_, String>(1)?,
+                    "cache_hit": row.get::<_, i64>(2)? == 1,
+                    "latency_us": row.get::<_, i64>(3)?,
+                    "bytes_estimate": row.get::<_, i64>(4)?,
+                    "tokens_estimate": row.get::<_, i64>(5)?,
+                    "cache_key": row.get::<_, String>(6)?,
+                    "created_at": row.get::<_, i64>(7)?,
+                }))
+            })
+            .map_err(|e| format!("query code graph spans: {e}"))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("collect code graph spans: {e}"))
+    }
+}
+
+fn create_code_graph_cache_schema(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS code_graph_repos (
+            repo_key TEXT PRIMARY KEY,
+            root TEXT NOT NULL,
+            head TEXT NOT NULL,
+            dirty_hash TEXT NOT NULL,
+            index_status_json TEXT,
+            architecture_json TEXT,
+            architecture_at INTEGER,
+            impact_json TEXT,
+            impact_at INTEGER,
+            updated_at INTEGER NOT NULL
+         );
+         CREATE TABLE IF NOT EXISTS code_graph_query_cache (
+            repo_key TEXT NOT NULL,
+            tool TEXT NOT NULL,
+            cache_key TEXT NOT NULL,
+            head TEXT NOT NULL,
+            dirty_hash TEXT NOT NULL,
+            result_json TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            PRIMARY KEY (repo_key, tool, cache_key, head, dirty_hash)
+         );
+         CREATE TABLE IF NOT EXISTS code_graph_spans (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            repo_key TEXT NOT NULL,
+            tool TEXT NOT NULL,
+            origin TEXT NOT NULL,
+            cache_hit INTEGER NOT NULL,
+            latency_us INTEGER NOT NULL,
+            bytes_estimate INTEGER NOT NULL,
+            tokens_estimate INTEGER NOT NULL,
+            cache_key TEXT NOT NULL,
+            created_at INTEGER NOT NULL
+         );
+         PRAGMA user_version = 1;",
+    )
+    .map_err(|e| format!("create code graph cache schema: {e}"))?;
+    let version = conn
+        .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+        .map_err(|e| format!("read code graph cache schema version: {e}"))?;
+    if version != CODE_GRAPH_CACHE_SCHEMA {
+        return Err(format!(
+            "unsupported code graph cache schema version: {version}"
+        ));
+    }
+    Ok(())
+}
+
+fn repo_cache_state(root: &Path) -> Result<RepoCacheState, String> {
+    let root = canonical_root(root)?;
+    let root_text = root.display().to_string();
+    let head = run_git(&root, &["rev-parse", "HEAD"], 4096)
+        .map(|head| head.trim().to_string())
+        .unwrap_or_else(|_| "no-git-head".to_string());
+    let status = run_git(&root, &["status", "--porcelain"], MAX_GIT_BYTES).unwrap_or_default();
+    let dirty_hash = short_hash(&status);
+    Ok(RepoCacheState {
+        repo_key: short_hash(&root_text),
+        root: root_text,
+        head,
+        dirty_hash,
+    })
+}
+
+fn cache_key(args: &Value) -> String {
+    short_hash(&serde_json::to_string(args).unwrap_or_else(|_| "{}".to_string()))
+}
+
+fn short_hash(text: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(text.as_bytes());
+    let digest = hasher.finalize();
+    digest
+        .iter()
+        .flat_map(|byte| [byte >> 4, byte & 0x0f])
+        .take(16)
+        .map(|nibble| match nibble {
+            0..=9 => (b'0' + nibble) as char,
+            _ => (b'a' + (nibble - 10)) as char,
+        })
+        .collect()
+}
+
+fn now_secs() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+fn estimate_tokens(bytes: i64) -> i64 {
+    ((bytes.max(0) + 3) / 4).max(1)
+}
+
+fn attach_cache_meta(mut value: Value, telemetry: Value) -> Value {
+    if let Some(obj) = value.as_object_mut() {
+        obj.insert("cache".to_string(), telemetry);
+    }
+    value
+}
+
 fn truncate_utf8_safe(content: &mut String, max_bytes: usize) {
     let mut end = max_bytes.min(content.len());
     while !content.is_char_boundary(end) {
@@ -835,13 +1180,29 @@ pub fn codebase_memory_status(root: &Path, _args: &Value) -> Result<Value, Strin
     }))
 }
 
-pub fn code_graph_status(root: &Path, args: &Value) -> Result<Value, String> {
-    let codebase_memory = codebase_memory_status(root, args)?;
+pub fn code_graph_status(
+    root: &Path,
+    harness_home: &Path,
+    profile: &str,
+    args: &Value,
+) -> Result<Value, String> {
+    let root = canonical_root(root)?;
+    let cache = CodeGraphCache::open(harness_home, profile)?;
+    let state = repo_cache_state(&root)?;
+    let codebase_memory = codebase_memory_status(&root, args)?;
+    cache.upsert_repo_state(&state, Some(&codebase_memory))?;
     Ok(json!({
         "available": codebase_memory["installed"].as_bool().unwrap_or(false),
         "engine": "codebase-memory-mcp",
         "upstream_mode": "persistent_mcp_when_smart_loaded",
         "persistent_upstream": true,
+        "cache": {
+            "path": cache.path,
+            "repo_key": state.repo_key,
+            "head": state.head,
+            "dirty_hash": state.dirty_hash,
+            "latest_spans": cache.latest_spans(&state, 5)?,
+        },
         "codebase_memory": codebase_memory,
         "harness_wrappers": [
             "repo_code_graph_index",
@@ -869,10 +1230,33 @@ pub fn code_graph_status(root: &Path, args: &Value) -> Result<Value, String> {
     }))
 }
 
-pub fn code_graph_index(root: &Path, args: &Value) -> Result<Value, String> {
+pub fn code_graph_index(
+    root: &Path,
+    harness_home: &Path,
+    profile: &str,
+    args: &Value,
+) -> Result<Value, String> {
+    let started = Instant::now();
     let root = resolve_under_root(root, opt_str(args, "path").unwrap_or("."))?;
     if !root.is_dir() {
         return Err(format!("path is not a directory: {}", root.display()));
+    }
+    let cache = CodeGraphCache::open(harness_home, profile)?;
+    let state = repo_cache_state(&root)?;
+    let key = cache_key(args);
+    if !args.get("run").and_then(Value::as_bool).unwrap_or(false) {
+        if let Some(cached) = cache.read_query(&state, "repo_code_graph_index", &key)? {
+            let telemetry = cache.record_span(
+                &state,
+                "repo_code_graph_index",
+                "cache",
+                true,
+                started.elapsed().as_micros(),
+                &key,
+                &cached,
+            )?;
+            return Ok(attach_cache_meta(cached, telemetry));
+        }
     }
     let codebase_memory = codebase_memory_status(&root, args)?;
     let run = args.get("run").and_then(Value::as_bool).unwrap_or(false);
@@ -904,7 +1288,7 @@ pub fn code_graph_index(root: &Path, args: &Value) -> Result<Value, String> {
         None
     };
     let manifest = manifest(&root, &json!({"limit": 200, "max_depth": 4}))?;
-    Ok(json!({
+    let result = json!({
         "root": root.display().to_string(),
         "run": run,
         "engine": if run { "codebase-memory-mcp-cli" } else { "native-summary" },
@@ -918,16 +1302,54 @@ pub fn code_graph_index(root: &Path, args: &Value) -> Result<Value, String> {
             "manifest_summary": manifest["summary"].clone(),
             "truncated": manifest["truncated"].clone(),
         }
-    }))
+    });
+    cache.write_query(&state, "repo_code_graph_index", &key, &result)?;
+    cache.upsert_repo_state(&state, Some(&codebase_memory))?;
+    let telemetry = cache.record_span(
+        &state,
+        "repo_code_graph_index",
+        if run {
+            "codebase-memory-mcp-cli"
+        } else {
+            "native_fallback"
+        },
+        false,
+        started.elapsed().as_micros(),
+        &key,
+        &result,
+    )?;
+    Ok(attach_cache_meta(result, telemetry))
 }
 
-pub fn code_graph_search(root: &Path, args: &Value) -> Result<Value, String> {
+pub fn code_graph_search(
+    root: &Path,
+    harness_home: &Path,
+    profile: &str,
+    args: &Value,
+) -> Result<Value, String> {
+    let started = Instant::now();
     let query = opt_str(args, "query")
         .or_else(|| opt_str(args, "name_pattern"))
         .unwrap_or("")
         .trim();
     if query.is_empty() {
         return Err("repo_code_graph_search requires query or name_pattern".into());
+    }
+    let root_dir = canonical_root(root)?;
+    let cache = CodeGraphCache::open(harness_home, profile)?;
+    let state = repo_cache_state(&root_dir)?;
+    let key = cache_key(args);
+    if let Some(cached) = cache.read_query(&state, "repo_code_graph_search", &key)? {
+        let telemetry = cache.record_span(
+            &state,
+            "repo_code_graph_search",
+            "cache",
+            true,
+            started.elapsed().as_micros(),
+            &key,
+            &cached,
+        )?;
+        return Ok(attach_cache_meta(cached, telemetry));
     }
     let limit = args
         .get("limit")
@@ -954,18 +1376,50 @@ pub fn code_graph_search(root: &Path, args: &Value) -> Result<Value, String> {
         }),
     )
     .unwrap_or_else(|e| json!({ "error": e, "matches": [] }));
-    Ok(json!({
+    let result = json!({
         "engine": "native_fallback",
         "query": query,
         "limit": limit,
         "symbols": symbols["symbols"].clone(),
         "files": files["matches"].clone(),
         "upstream_hint": "If codebase_memory__search_graph is visible, use it for callers/callees, semantic search, degree filters, and cross-repo graph relationships.",
-    }))
+    });
+    cache.write_query(&state, "repo_code_graph_search", &key, &result)?;
+    let telemetry = cache.record_span(
+        &state,
+        "repo_code_graph_search",
+        "native_fallback",
+        false,
+        started.elapsed().as_micros(),
+        &key,
+        &result,
+    )?;
+    Ok(attach_cache_meta(result, telemetry))
 }
 
-pub fn change_impact(root: &Path, args: &Value) -> Result<Value, String> {
+pub fn change_impact(
+    root: &Path,
+    harness_home: &Path,
+    profile: &str,
+    args: &Value,
+) -> Result<Value, String> {
+    let started = Instant::now();
     let root = canonical_root(root)?;
+    let cache = CodeGraphCache::open(harness_home, profile)?;
+    let state = repo_cache_state(&root)?;
+    let key = cache_key(args);
+    if let Some(cached) = cache.read_query(&state, "repo_change_impact", &key)? {
+        let telemetry = cache.record_span(
+            &state,
+            "repo_change_impact",
+            "cache",
+            true,
+            started.elapsed().as_micros(),
+            &key,
+            &cached,
+        )?;
+        return Ok(attach_cache_meta(cached, telemetry));
+    }
     let explicit_paths = args
         .get("paths")
         .and_then(Value::as_array)
@@ -1013,7 +1467,7 @@ pub fn change_impact(root: &Path, args: &Value) -> Result<Value, String> {
             "related": related["related"].clone(),
         }));
     }
-    Ok(json!({
+    let result = json!({
         "engine": "native_fallback",
         "changed_files": paths,
         "impacted_files": impacted,
@@ -1021,14 +1475,47 @@ pub fn change_impact(root: &Path, args: &Value) -> Result<Value, String> {
         "related_paths": related_paths.into_iter().take(limit).collect::<Vec<_>>(),
         "symbols": symbols.into_iter().take(limit).collect::<Vec<_>>(),
         "upstream_hint": "If codebase_memory__detect_changes is visible, use it for graph-backed blast radius and risk classification.",
-    }))
+    });
+    cache.write_query(&state, "repo_change_impact", &key, &result)?;
+    cache.update_impact(&state, &result)?;
+    let telemetry = cache.record_span(
+        &state,
+        "repo_change_impact",
+        "native_fallback",
+        false,
+        started.elapsed().as_micros(),
+        &key,
+        &result,
+    )?;
+    Ok(attach_cache_meta(result, telemetry))
 }
 
-pub fn architecture_pack(root: &Path, args: &Value) -> Result<Value, String> {
+pub fn architecture_pack(
+    root: &Path,
+    harness_home: &Path,
+    profile: &str,
+    args: &Value,
+) -> Result<Value, String> {
+    let started = Instant::now();
     let path = opt_str(args, "path").unwrap_or(".");
     let dir = resolve_under_root(root, path)?;
     if !dir.is_dir() {
         return Err(format!("path is not a directory: {}", dir.display()));
+    }
+    let cache = CodeGraphCache::open(harness_home, profile)?;
+    let state = repo_cache_state(&dir)?;
+    let key = cache_key(args);
+    if let Some(cached) = cache.read_query(&state, "repo_architecture_pack", &key)? {
+        let telemetry = cache.record_span(
+            &state,
+            "repo_architecture_pack",
+            "cache",
+            true,
+            started.elapsed().as_micros(),
+            &key,
+            &cached,
+        )?;
+        return Ok(attach_cache_meta(cached, telemetry));
     }
     let limit = args
         .get("limit")
@@ -1039,7 +1526,7 @@ pub fn architecture_pack(root: &Path, args: &Value) -> Result<Value, String> {
     let manifest = manifest(&dir, &json!({"limit": limit, "max_depth": 6}))?;
     let analyze = analyze(&dir, &json!({}))?;
     let hotspots = largest_files_from_manifest(&manifest, 12);
-    Ok(json!({
+    let result = json!({
         "engine": "native_fallback",
         "root": dir.display().to_string(),
         "stack": analyze["stack"].clone(),
@@ -1051,11 +1538,44 @@ pub fn architecture_pack(root: &Path, args: &Value) -> Result<Value, String> {
         "manifest_summary": manifest["summary"].clone(),
         "hotspots": hotspots,
         "upstream_hint": "If codebase_memory__get_architecture is visible, use it for graph-backed routes, packages, layers, clusters, ADRs, and boundaries.",
-    }))
+    });
+    cache.write_query(&state, "repo_architecture_pack", &key, &result)?;
+    cache.update_architecture(&state, &result)?;
+    let telemetry = cache.record_span(
+        &state,
+        "repo_architecture_pack",
+        "native_fallback",
+        false,
+        started.elapsed().as_micros(),
+        &key,
+        &result,
+    )?;
+    Ok(attach_cache_meta(result, telemetry))
 }
 
-pub fn code_snippet(root: &Path, args: &Value) -> Result<Value, String> {
+pub fn code_snippet(
+    root: &Path,
+    harness_home: &Path,
+    profile: &str,
+    args: &Value,
+) -> Result<Value, String> {
+    let started = Instant::now();
     let root = canonical_root(root)?;
+    let cache = CodeGraphCache::open(harness_home, profile)?;
+    let state = repo_cache_state(&root)?;
+    let key = cache_key(args);
+    if let Some(cached) = cache.read_query(&state, "repo_code_snippet", &key)? {
+        let telemetry = cache.record_span(
+            &state,
+            "repo_code_snippet",
+            "cache",
+            true,
+            started.elapsed().as_micros(),
+            &key,
+            &cached,
+        )?;
+        return Ok(attach_cache_meta(cached, telemetry));
+    }
     let context = args
         .get("context_lines")
         .and_then(Value::as_u64)
@@ -1088,7 +1608,7 @@ pub fn code_snippet(root: &Path, args: &Value) -> Result<Value, String> {
         .and_then(Value::as_u64)
         .map(|v| v as usize);
     let snippet = read_line_window(&path, center_line, start, end, context)?;
-    Ok(json!({
+    let result = json!({
         "engine": "native_fallback",
         "path": relative_to(&root, &path).unwrap_or_else(|| path.display().to_string()),
         "symbol": symbol,
@@ -1096,7 +1616,18 @@ pub fn code_snippet(root: &Path, args: &Value) -> Result<Value, String> {
         "end_line": snippet.1,
         "content": snippet.2,
         "upstream_hint": "If codebase_memory__get_code_snippet is visible and you have qualified_name from search_graph, use it for precise graph-backed symbol snippets.",
-    }))
+    });
+    cache.write_query(&state, "repo_code_snippet", &key, &result)?;
+    let telemetry = cache.record_span(
+        &state,
+        "repo_code_snippet",
+        "native_fallback",
+        false,
+        started.elapsed().as_micros(),
+        &key,
+        &result,
+    )?;
+    Ok(attach_cache_meta(result, telemetry))
 }
 
 fn str_arg<'a>(args: &'a Value, key: &str) -> Result<&'a str, String> {
@@ -1908,6 +2439,7 @@ mod tests {
     #[test]
     fn code_graph_wrappers_return_bounded_native_fallbacks() {
         let root = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(root.path().join("src")).unwrap();
         std::fs::create_dir_all(root.path().join("tests")).unwrap();
         std::fs::write(
@@ -1927,21 +2459,41 @@ mod tests {
         .unwrap();
         run_git(root.path(), &["init"], 4096).unwrap();
 
-        let indexed = code_graph_index(root.path(), &json!({})).unwrap();
+        let indexed = code_graph_index(root.path(), home.path(), "default", &json!({})).unwrap();
         assert_eq!(indexed["run"], false);
         assert_eq!(indexed["engine"], "native-summary");
+        assert_eq!(indexed["cache"]["cache_hit"], false);
+        assert!(home
+            .path()
+            .join("profiles/default/repo-code-graph/cache.sqlite")
+            .exists());
 
-        let search =
-            code_graph_search(root.path(), &json!({"query": "alpha", "limit": 5})).unwrap();
+        let search = code_graph_search(
+            root.path(),
+            home.path(),
+            "default",
+            &json!({"query": "alpha", "limit": 5}),
+        )
+        .unwrap();
         assert_eq!(search["engine"], "native_fallback");
         assert!(search["symbols"]
             .as_array()
             .unwrap()
             .iter()
             .any(|item| item["name"] == "alpha_service"));
+        let cached_search = code_graph_search(
+            root.path(),
+            home.path(),
+            "default",
+            &json!({"query": "alpha", "limit": 5}),
+        )
+        .unwrap();
+        assert_eq!(cached_search["cache"]["cache_hit"], true);
 
         let snippet = code_snippet(
             root.path(),
+            home.path(),
+            "default",
             &json!({"symbol": "alpha_service", "context_lines": 1}),
         )
         .unwrap();
@@ -1956,14 +2508,21 @@ mod tests {
             "pub fn alpha_service() {\n    beta_helper();\n    beta_helper();\n}\n\nfn beta_helper() {}\n",
         )
         .unwrap();
-        let impact = change_impact(root.path(), &json!({"paths": ["src/lib.rs"]})).unwrap();
+        let impact = change_impact(
+            root.path(),
+            home.path(),
+            "default",
+            &json!({"paths": ["src/lib.rs"]}),
+        )
+        .unwrap();
         assert!(impact["likely_tests"]
             .as_array()
             .unwrap()
             .iter()
             .any(|item| item == "tests/lib_test.rs"));
 
-        let pack = architecture_pack(root.path(), &json!({"limit": 20})).unwrap();
+        let pack =
+            architecture_pack(root.path(), home.path(), "default", &json!({"limit": 20})).unwrap();
         assert!(pack["stack"]
             .as_array()
             .unwrap()

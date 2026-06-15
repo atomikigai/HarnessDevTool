@@ -6,6 +6,7 @@ use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
+use crate::adapter::build_extra_args;
 use crate::errors::SessionError;
 use crate::kind::AgentKind;
 use crate::meta::{
@@ -14,10 +15,6 @@ use crate::meta::{
 use crate::output::{OutputReadChunk, OutputWriter};
 use crate::session::{persist_meta, pid_alive, process_identity, AgentSession};
 
-const DEFAULT_CLAUDE_MODEL: &str = "sonnet";
-const DEFAULT_CLAUDE_EFFORT: &str = "medium";
-const DEFAULT_CODEX_MODEL: &str = "gpt-5.5";
-const DEFAULT_CODEX_EFFORT: &str = "medium";
 const DELETED_MARKER: &str = ".deleted";
 
 /// Broadcast event published by sessions onto the shared bus.
@@ -644,184 +641,6 @@ pub struct McpServerConfig {
     pub args: Vec<String>,
 }
 
-/// Translate `SpawnOpts` into the CLI flags appended to the agent invocation.
-///
-/// - `Claude`: pins `--session-id <id>` so the harness UUID matches the on-disk
-///   transcript filename (`~/.claude/projects/{cwd-slug}/{id}.jsonl`); the
-///   budget reporter relies on this mapping. Also adds
-///   `--mcp-config <path> --strict-mcp-config` when MCP injection is on, plus
-///   `--disallowed-tools TodoWrite` so claude can't satisfy task-
-///   shaped requests with its in-process todo list (which never reaches the
-///   harness TaskStore and so leaves the right-side Tasks panel empty).
-/// - `Codex`: injects the harness MCP with per-invocation `-c
-///   mcp_servers.harness.*` overrides. Codex does not have a `--mcp-config`
-///   file flag, so we avoid mutating `~/.codex/config.toml`.
-fn build_extra_args(kind: AgentKind, opts: &SpawnOpts, session_id: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    if matches!(kind, AgentKind::Claude) {
-        out.push("--session-id".to_string());
-        out.push(session_id.to_string());
-        out.push("--model".to_string());
-        out.push(
-            opts.model
-                .as_deref()
-                .unwrap_or(DEFAULT_CLAUDE_MODEL)
-                .to_string(),
-        );
-        out.push("--effort".to_string());
-        out.push(
-            opts.effort
-                .as_deref()
-                .unwrap_or(DEFAULT_CLAUDE_EFFORT)
-                .to_string(),
-        );
-    }
-
-    // ── Per-CLI autonomous-mode flags ──────────────────────────────────────
-    // Harness sessions run under our supervision (scheduler, pause flag,
-    // budget caps, audit log) — per-call approval prompts are noise. Each
-    // CLI is opted into "autonomous" mode at spawn time. Tools that don't
-    // have a documented flag for this skip silently.
-    match kind {
-        AgentKind::Codex => {
-            // Codex harness workers run behind the harness' own policy,
-            // budget and audit rails. Avoid per-call Codex approval prompts
-            // for harness MCP tools.
-            out.push("--dangerously-bypass-approvals-and-sandbox".to_string());
-            out.push("--model".to_string());
-            out.push(
-                opts.model
-                    .as_deref()
-                    .unwrap_or(DEFAULT_CODEX_MODEL)
-                    .to_string(),
-            );
-            out.push("-c".to_string());
-            out.push(format!(
-                "model_reasoning_effort={}",
-                toml_string(opts.effort.as_deref().unwrap_or(DEFAULT_CODEX_EFFORT))
-            ));
-            if let Some(command) = opts.mcp_server_command.as_ref() {
-                out.push("-c".to_string());
-                out.push(format!(
-                    "mcp_servers.harness.command={}",
-                    toml_string(command)
-                ));
-                out.push("-c".to_string());
-                out.push(format!(
-                    "mcp_servers.harness.args={}",
-                    toml_string_array(&opts.mcp_server_args)
-                ));
-            }
-            for server in &opts.extra_mcp_servers {
-                out.push("-c".to_string());
-                out.push(format!(
-                    "mcp_servers.{}.command={}",
-                    server.name,
-                    toml_string(&server.command)
-                ));
-                out.push("-c".to_string());
-                out.push(format!(
-                    "mcp_servers.{}.args={}",
-                    server.name,
-                    toml_string_array(&server.args)
-                ));
-            }
-            if let Some(intro) = opts.auto_intro.as_ref() {
-                // Codex supports developer instructions through config
-                // overrides. Unlike the positional `[PROMPT]`, this is model
-                // instruction context and does not appear as the first user
-                // turn in the TUI/transcript.
-                out.push("-c".to_string());
-                out.push(format!("developer_instructions={}", toml_string(intro)));
-            }
-            // Pass only the actual role/initial work prompt as Codex's
-            // positional `[PROMPT]` arg. That's how Codex's CLI accepts the
-            // first user turn — typing into its Ink TUI via bracketed paste is
-            // racey because the TUI takes ~1s to mount and Ink doesn't always
-            // honor the paste-end + CR sequence. As a positional arg it's
-            // submitted before the TUI even renders.
-            if let Some(prompt) = opts.role_prompt.as_ref() {
-                out.push(prompt.clone());
-            }
-        }
-        AgentKind::Cursor => {
-            // cursor-agent flag for non-interactive autonomous mode is not
-            // verified yet; leave a TODO. Worst case the user accepts each
-            // tool in the TUI manually until we wire it.
-        }
-        AgentKind::Antigravity => {
-            // Same as cursor — unverified. Leave a TODO.
-        }
-        AgentKind::Claude | AgentKind::Zeus => {
-            // Claude's `--dangerously-skip-permissions` lives in the MCP-
-            // injection arm below (needs MCP config to be meaningful).
-            // A direct Zeus kind here would be a bug; routes resolve Zeus to
-            // its underlying CLI before spawning.
-        }
-    }
-
-    if let Some(path) = opts.mcp_config_path.as_ref() {
-        match kind {
-            AgentKind::Claude => {
-                out.push("--mcp-config".to_string());
-                out.push(path.display().to_string());
-                out.push("--strict-mcp-config".to_string());
-                // Disable claude's built-in todo tools so it routes task-
-                // shaped requests through the harness MCP `task_*` tools
-                // (which fire the `task.created` SSE the UI listens for).
-                // Flag confirmed via `claude --help`: `--disallowed-tools`
-                // accepts a space- or comma-separated list of tool names.
-                out.push("--disallowed-tools".to_string());
-                out.push("TodoWrite".to_string());
-                // Harness sessions run under our supervision (scheduler, pause
-                // flag, budget caps, role-typed prompts) so the per-call
-                // permission prompts are noise — claude should treat the
-                // harness MCP tools as native operations. Prefer the explicit
-                // mode flag supported by current Claude Code builds.
-                out.push("--permission-mode".to_string());
-                out.push("bypassPermissions".to_string());
-                if let Some(intro) = opts.auto_intro.as_ref() {
-                    // Silent system-prompt addendum — invisible to the user
-                    // and not counted as a turn.
-                    out.push("--append-system-prompt".to_string());
-                    out.push(intro.clone());
-                }
-            }
-            AgentKind::Codex => {
-                // Codex consumes `mcp_server_command` via `-c` above. It has
-                // no `--mcp-config <file>` equivalent.
-            }
-            AgentKind::Cursor | AgentKind::Antigravity => {
-                tracing::warn!(
-                    kind = %kind,
-                    path = %path.display(),
-                    "MCP injection not implemented for this CLI; skipping --mcp-config"
-                );
-            }
-            AgentKind::Zeus => {
-                // Unreachable in practice: routes/sessions.rs swaps Zeus for
-                // its `underlying_cli()` before this matches. Keep the arm to satisfy
-                // exhaustiveness without a `_` wildcard.
-                tracing::warn!("build_extra_args called with Zeus kind directly; this is a bug");
-            }
-        }
-    }
-    out
-}
-
-fn toml_string(value: &str) -> String {
-    serde_json::to_string(value).unwrap_or_else(|_| "\"\"".into())
-}
-
-fn toml_string_array(values: &[String]) -> String {
-    let parts = values
-        .iter()
-        .map(|v| toml_string(v))
-        .collect::<Vec<_>>()
-        .join(", ");
-    format!("[{parts}]")
-}
-
 fn sanitize_pty_prompt(prompt: &str) -> String {
     prompt
         .chars()
@@ -944,6 +763,7 @@ fn terminate_pid(pid: i32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::adapter::{DEFAULT_CLAUDE_EFFORT, DEFAULT_CLAUDE_MODEL, DEFAULT_CODEX_MODEL};
     use crate::meta::{SessionMeta, SessionStatus};
     use std::path::PathBuf;
 

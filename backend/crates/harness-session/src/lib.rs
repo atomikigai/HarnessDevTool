@@ -1,5 +1,6 @@
 //! harness-session: spawn and manage agent CLI processes attached to PTYs.
 
+mod adapter;
 pub mod detect;
 pub mod errors;
 pub mod kind;

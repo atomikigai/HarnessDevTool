@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 /// CLI flavor the harness knows how to spawn. Closed set — extending requires
-/// a new variant here plus updates to `build_extra_args` and the frontend
+/// a new variant here plus updates to `adapter::build_extra_args` and the frontend
 /// selector. See [[agents/supported-clis]].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

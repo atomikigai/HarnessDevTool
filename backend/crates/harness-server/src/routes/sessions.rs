@@ -2128,23 +2128,11 @@ async fn get_context_status(
     Path(sid): Path<String>,
 ) -> Result<Json<ContextGovernorStatus>, ApiError> {
     let meta = load_session_meta(&state, &sid).await?;
-    let events = state.store.read_events(&meta.thread_id)?;
-    let indexed_events = match crate::context_index::index_context_events(
-        &state.harness_home,
-        &state.profile,
-        &events,
-    ) {
-        Ok(count) => count,
-        Err(e) => {
-            tracing::warn!(
-                session_id = %sid,
-                thread_id = %meta.thread_id,
-                error = %e,
-                "failed to index context events"
-            );
-            0
-        }
-    };
+    ensure_context_indexed(&state, &meta.thread_id)?;
+    let events =
+        crate::context_index::context_events_for_session(&state.harness_home, &state.profile, &sid)
+            .map_err(|e| ApiError::Internal(format!("read indexed context events: {e}")))?;
+    let indexed_events = events.len();
     Ok(Json(context_status_from_events(
         &meta,
         &events,
@@ -2158,9 +2146,7 @@ async fn search_context_status(
     Query(query): Query<ContextSearchQuery>,
 ) -> Result<Json<ContextSearchResponse>, ApiError> {
     let meta = load_session_meta(&state, &sid).await?;
-    let events = state.store.read_events(&meta.thread_id)?;
-    crate::context_index::index_context_events(&state.harness_home, &state.profile, &events)
-        .map_err(|e| ApiError::Internal(format!("index context events: {e}")))?;
+    ensure_context_indexed(&state, &meta.thread_id)?;
     let hits = crate::context_index::search_context_events(
         &state.harness_home,
         &state.profile,
@@ -2184,6 +2170,20 @@ async fn search_context_status(
         query: query.q,
         hits,
     }))
+}
+
+fn ensure_context_indexed(state: &AppState, thread_id: &str) -> Result<usize, ApiError> {
+    match crate::context_index::last_indexed_seq(&state.harness_home, &state.profile, thread_id) {
+        Ok(Some(_)) => Ok(0),
+        Ok(None) => {
+            let events = state.store.read_events(thread_id)?;
+            crate::context_index::index_context_events(&state.harness_home, &state.profile, &events)
+                .map_err(|e| ApiError::Internal(format!("index context events: {e}")))
+        }
+        Err(e) => Err(ApiError::Internal(format!(
+            "read context index offset: {e}"
+        ))),
+    }
 }
 
 async fn request_context_checkpoint(

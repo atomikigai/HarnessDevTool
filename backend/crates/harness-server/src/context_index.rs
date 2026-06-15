@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
@@ -46,6 +47,10 @@ fn open(harness_home: &Path, profile: &str) -> Result<Connection> {
         );
         CREATE VIRTUAL TABLE IF NOT EXISTS context_events_fts
             USING fts5(thread_id UNINDEXED, session_id UNINDEXED, event_type UNINDEXED, body);
+        CREATE TABLE IF NOT EXISTS index_offsets (
+            thread_id TEXT PRIMARY KEY,
+            last_seq INTEGER NOT NULL
+        );
         "#,
     )?;
     Ok(conn)
@@ -55,7 +60,14 @@ pub fn index_context_events(harness_home: &Path, profile: &str, events: &[Event]
     let mut conn = open(harness_home, profile)?;
     let tx = conn.transaction()?;
     let mut indexed = 0usize;
+    let mut max_seq_by_thread = BTreeMap::<String, u64>::new();
     for event in events {
+        if let Some(thread_id) = event.thread_id.as_deref() {
+            max_seq_by_thread
+                .entry(thread_id.to_string())
+                .and_modify(|seq| *seq = (*seq).max(event.seq))
+                .or_insert(event.seq);
+        }
         if !event.event_type.starts_with("session.context.") {
             continue;
         }
@@ -130,8 +142,69 @@ pub fn index_context_events(harness_home: &Path, profile: &str, events: &[Event]
         )?;
         indexed += 1;
     }
+    for (thread_id, last_seq) in max_seq_by_thread {
+        tx.execute(
+            r#"
+            INSERT INTO index_offsets(thread_id, last_seq)
+            VALUES (?1, ?2)
+            ON CONFLICT(thread_id) DO UPDATE SET
+                last_seq = CASE
+                    WHEN excluded.last_seq > index_offsets.last_seq THEN excluded.last_seq
+                    ELSE index_offsets.last_seq
+                END
+            "#,
+            params![thread_id, last_seq as i64],
+        )?;
+    }
     tx.commit()?;
     Ok(indexed)
+}
+
+pub fn last_indexed_seq(
+    harness_home: &Path,
+    profile: &str,
+    thread_id: &str,
+) -> Result<Option<u64>> {
+    let conn = open(harness_home, profile)?;
+    let mut stmt = conn.prepare("SELECT last_seq FROM index_offsets WHERE thread_id = ?1")?;
+    let mut rows = stmt.query(params![thread_id])?;
+    let Some(row) = rows.next()? else {
+        return Ok(None);
+    };
+    let seq: i64 = row.get(0)?;
+    Ok(u64::try_from(seq).ok())
+}
+
+pub fn context_events_for_session(
+    harness_home: &Path,
+    profile: &str,
+    session_id: &str,
+) -> Result<Vec<Event>> {
+    let conn = open(harness_home, profile)?;
+    let mut stmt = conn.prepare(
+        r#"
+        SELECT thread_id, seq, event_type, at, payload_json
+        FROM context_events
+        WHERE session_id = ?1
+        ORDER BY seq ASC
+        "#,
+    )?;
+    let rows = stmt.query_map(params![session_id], |row| {
+        let payload_json: Option<String> = row.get(4)?;
+        let payload = payload_json
+            .as_deref()
+            .and_then(|raw| serde_json::from_str(raw).ok());
+        Ok(Event {
+            thread_id: Some(row.get(0)?),
+            seq: row.get::<_, i64>(1)? as u64,
+            event_type: row.get(2)?,
+            at: row.get(3)?,
+            items: Vec::new(),
+            actor: None,
+            payload,
+        })
+    })?;
+    Ok(rows.filter_map(|row| row.ok()).collect())
 }
 
 pub fn search_context_events(
@@ -278,5 +351,126 @@ mod tests {
         let hits = search_context_events(dir.path(), "default", "s1", "ChatView", 10).unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].session_id, "s1");
+    }
+
+    #[test]
+    fn records_thread_offset_even_for_non_context_events() {
+        let dir = tempdir().unwrap();
+        let events = vec![
+            Event {
+                seq: 10,
+                at: 10,
+                event_type: "task.created".into(),
+                items: vec![],
+                thread_id: Some("t1".into()),
+                actor: None,
+                payload: None,
+            },
+            Event {
+                seq: 11,
+                at: 11,
+                event_type: "session.context.checkpoint_saved".into(),
+                items: vec![Item::Text {
+                    text: "Saved compact context checkpoint.".into(),
+                }],
+                thread_id: Some("t1".into()),
+                actor: Some("context-governor".into()),
+                payload: Some(json!({
+                    "session_id": "s1",
+                    "checkpoint": "CONTEXT CHECKPOINT\nnext_action: continue"
+                })),
+            },
+        ];
+
+        assert_eq!(
+            index_context_events(dir.path(), "default", &events).unwrap(),
+            1
+        );
+        assert_eq!(
+            last_indexed_seq(dir.path(), "default", "t1").unwrap(),
+            Some(11)
+        );
+
+        let indexed = context_events_for_session(dir.path(), "default", "s1").unwrap();
+        assert_eq!(indexed.len(), 1);
+        assert_eq!(indexed[0].seq, 11);
+        assert_eq!(indexed[0].payload.as_ref().unwrap()["session_id"], "s1");
+    }
+
+    #[test]
+    fn offset_does_not_move_backwards_when_old_event_is_reindexed() {
+        let dir = tempdir().unwrap();
+        let old = Event {
+            seq: 1,
+            at: 10,
+            event_type: "session.context.checkpoint_saved".into(),
+            items: vec![],
+            thread_id: Some("t1".into()),
+            actor: Some("context-governor".into()),
+            payload: Some(json!({ "session_id": "s1", "checkpoint": "old" })),
+        };
+        let latest = Event {
+            seq: 9,
+            at: 11,
+            event_type: "task.created".into(),
+            items: vec![],
+            thread_id: Some("t1".into()),
+            actor: None,
+            payload: None,
+        };
+
+        index_context_events(dir.path(), "default", &[latest]).unwrap();
+        index_context_events(dir.path(), "default", &[old]).unwrap();
+
+        assert_eq!(
+            last_indexed_seq(dir.path(), "default", "t1").unwrap(),
+            Some(9)
+        );
+    }
+
+    #[test]
+    fn long_thread_rebuild_records_offset_for_repeated_searches() {
+        let dir = tempdir().unwrap();
+        let mut events = Vec::new();
+        for seq in 0..500 {
+            events.push(Event {
+                seq,
+                at: seq as i64,
+                event_type: if seq == 499 {
+                    "session.context.checkpoint_saved".into()
+                } else {
+                    "task.updated".into()
+                },
+                items: vec![],
+                thread_id: Some("long-thread".into()),
+                actor: None,
+                payload: if seq == 499 {
+                    Some(json!({
+                        "session_id": "s-long",
+                        "checkpoint": "CONTEXT CHECKPOINT\nnext_action: continue long thread work"
+                    }))
+                } else {
+                    None
+                },
+            });
+        }
+
+        assert!(last_indexed_seq(dir.path(), "default", "long-thread")
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            index_context_events(dir.path(), "default", &events).unwrap(),
+            1
+        );
+        assert_eq!(
+            last_indexed_seq(dir.path(), "default", "long-thread").unwrap(),
+            Some(499)
+        );
+        assert_eq!(
+            search_context_events(dir.path(), "default", "s-long", "continue", 10)
+                .unwrap()
+                .len(),
+            1
+        );
     }
 }

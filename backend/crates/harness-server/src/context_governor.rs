@@ -807,15 +807,46 @@ pub(crate) fn append_context_event(
         actor: Some("context-governor".into()),
         payload: Some(payload),
     };
-    if let Err(e) = store.append_event(&target.thread_id, &event) {
+    match store.append_event(&target.thread_id, &event) {
+        Ok(seq) => {
+            let mut indexed_event = event;
+            indexed_event.seq = seq;
+            index_appended_context_event(store, &indexed_event);
+        }
+        Err(e) => {
+            tracing::warn!(
+                thread_id = %target.thread_id,
+                session_id = %target.session_id,
+                event_type,
+                error = %e,
+                "context governor could not append event"
+            );
+        }
+    }
+}
+
+fn index_appended_context_event(store: &Store, event: &Event) {
+    let Some((harness_home, profile)) = store_home_and_profile(store) else {
+        return;
+    };
+    if let Err(e) =
+        crate::context_index::index_context_events(&harness_home, &profile, &[event.clone()])
+    {
         tracing::warn!(
-            thread_id = %target.thread_id,
-            session_id = %target.session_id,
-            event_type,
+            thread_id = event.thread_id.as_deref().unwrap_or_default(),
+            event_type = %event.event_type,
             error = %e,
-            "context governor could not append event"
+            "context governor could not update derived context index"
         );
     }
+}
+
+fn store_home_and_profile(store: &Store) -> Option<(PathBuf, String)> {
+    let profile_dir = store.threads_dir().parent()?;
+    let profile = profile_dir.file_name()?.to_str()?.to_string();
+    let profiles_dir = profile_dir.parent()?;
+    let harness_home = profiles_dir.parent()?.to_path_buf();
+    Some((harness_home, profile))
 }
 
 fn pressure_payload(pressure: &ContextPressure, target: &ContextGovernorTarget) -> Value {

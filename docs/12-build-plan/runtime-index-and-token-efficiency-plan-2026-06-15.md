@@ -128,6 +128,10 @@ Objetivo: eliminar reindex on-demand de eventos de contexto.
 
 ### Criterios de aceptacion
 
+- `context.sqlite` mantiene `index_offsets(thread_id,last_seq)` y el
+  governor actualiza el indice derivado al append de eventos `session.context.*`.
+- `GET /api/sessions/:sid/context` y `/context/search` aseguran el indice una
+  vez si falta offset y luego leen estado/busqueda desde SQLite.
 - Buscar contexto no relee todo `events.jsonl`.
 - Si `context.sqlite` falta, se reconstruye una vez y guarda offset.
 - `GET /api/sessions/:sid/context/search` mantiene comportamiento compatible.

@@ -454,6 +454,12 @@ export interface TranscriptEvent {
   raw?: unknown;
 }
 
+export interface TranscriptQueryResponse {
+  session_id: string;
+  event_count: number;
+  events: TranscriptEvent[];
+}
+
 export interface CreateSessionResponse {
   session_id: string;
 }
@@ -708,6 +714,22 @@ export const api = {
       }),
     get: (sessionId: string, signal?: AbortSignal) =>
       apiRequest<SessionMeta>(`/sessions/${sessionId}`, { signal }),
+    transcriptQuery: (
+      sessionId: string,
+      opts: { since?: number; limit?: number; kind?: TranscriptKind; role?: string } = {},
+      signal?: AbortSignal
+    ) => {
+      const qs = new URLSearchParams();
+      if (opts.since != null) qs.set('since', String(opts.since));
+      if (opts.limit != null) qs.set('limit', String(opts.limit));
+      if (opts.kind) qs.set('kind', opts.kind);
+      if (opts.role) qs.set('role', opts.role);
+      const query = qs.toString();
+      return apiRequest<TranscriptQueryResponse>(
+        `/sessions/${sessionId}/transcript/query${query ? `?${query}` : ''}`,
+        { signal }
+      );
+    },
     metrics: (sessionId: string, signal?: AbortSignal) =>
       apiRequest<SessionMetrics>(`/sessions/${sessionId}/metrics`, { signal }),
     context: (sessionId: string, signal?: AbortSignal) =>

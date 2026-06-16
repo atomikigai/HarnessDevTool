@@ -128,6 +128,7 @@ Reglas:
 | `security` | auth, secrets, sandboxing |
 | `performance` | profiling, optimization |
 | `refactor` | técnicas de refactor seguro |
+| `kiss` | regla KISS/YAGNI: borrar, usar stdlib/plataforma nativa y evitar abstracciones/deps innecesarias |
 | `code-simplification` | refactors de claridad preservando comportamiento |
 | `code-review` | revision multi-eje: correctness, arquitectura, seguridad, performance |
 

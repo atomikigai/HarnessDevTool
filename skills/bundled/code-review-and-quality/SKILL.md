@@ -10,6 +10,7 @@ capabilities:
     - tool:repo.git_diff
     - tool:repo.read_file
   suggests:
+    - skill:kiss
     - skill:difftastic
     - skill:security-tooling
     - skill:performance-optimization
@@ -29,6 +30,9 @@ capabilities:
       - audit change
       - assess diff
       - lgtm
+      - KISS review
+      - over engineered
+      - what can we delete
 ---
 
 # Code Review and Quality
@@ -51,6 +55,9 @@ conventions; do not block on personal preference.
    large payloads, or hot-path sync work?
 6. **Verification**: Were the right checks run? For frontend, is there
    real-user `agent-browser` evidence?
+7. **KISS**: Can the same behavior be achieved by deleting code, using stdlib,
+   using native platform/framework behavior, avoiding a new dependency, or
+   delaying speculative abstraction?
 
 ## Harness-Specific Gates
 
@@ -121,3 +128,24 @@ Prefer local utilities and existing dependencies over new ones.
 - No generated files were hand-edited.
 - No unrelated changes were mixed in.
 - The final summary states remaining risk.
+
+## KISS Review Mode
+
+When the request is specifically about KISS, over-engineering, deletion, or
+unnecessary code, keep the review focused on complexity. Use one line per
+finding:
+
+```text
+<file>:L<line>: <tag> <what to cut>. <replacement>.
+```
+
+Tags:
+
+- `delete:` dead code, unused flexibility, speculative feature
+- `stdlib:` custom code replaced by stdlib
+- `native:` custom/dependency code replaced by platform/framework behavior
+- `yagni:` abstraction, config, or extension point with no current use
+- `shrink:` same behavior with less code or fewer files
+
+End with `net: -N lines possible` when you can estimate it. If there is
+nothing worthwhile to cut, say `Lean already. Ship.`

@@ -69,6 +69,8 @@
   let collapsed = $state(false);
   let newDialogOpen = $state(false);
   let tokenTotalsBySession = $state<Record<string, number>>({});
+  const tokenTotalsLoaded = new Set<string>();
+  const tokenTotalsLoading = new Set<string>();
 
   // Mirror selection into localStorage so reloads land back on the same
   // session card. Scoped by active profile so each workspace remembers its
@@ -154,6 +156,17 @@
     }
   });
 
+  // Preload token totals for visible session cards so the sidebar does not show
+  // stale zeroes until each chat is opened.
+  $effect(() => {
+    const candidates = allSessions
+      .filter((s) => s.has_transcript && tokenTotalsBySession[s.id] == null)
+      .slice(0, 12);
+    for (const s of candidates) {
+      void preloadSessionTokenTotal(s.id);
+    }
+  });
+
   function refreshSessions() {
     void sessionsState.refresh();
   }
@@ -186,6 +199,28 @@
 
   function onSessionTokens(sessionId: string, totalTokens: number) {
     tokenTotalsBySession = { ...tokenTotalsBySession, [sessionId]: totalTokens };
+    tokenTotalsLoaded.add(sessionId);
+  }
+
+  async function preloadSessionTokenTotal(sessionId: string) {
+    if (tokenTotalsLoaded.has(sessionId) || tokenTotalsLoading.has(sessionId)) return;
+    tokenTotalsLoading.add(sessionId);
+    try {
+      const res = await api.sessions.transcriptQuery(sessionId, {
+        kind: 'message',
+        role: 'assistant'
+      });
+      const total = res.data.events.reduce((sum, ev) => {
+        const usage = ev.usage;
+        return sum + (usage?.input_tokens ?? 0) + (usage?.output_tokens ?? 0);
+      }, 0);
+      tokenTotalsBySession = { ...tokenTotalsBySession, [sessionId]: total };
+      tokenTotalsLoaded.add(sessionId);
+    } catch {
+      // Best effort only: ChatView still reports live totals once the session is opened.
+    } finally {
+      tokenTotalsLoading.delete(sessionId);
+    }
   }
 
   /// Hard-delete a session from the Agents panel (kebab → Delete).

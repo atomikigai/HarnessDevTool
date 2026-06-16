@@ -138,7 +138,7 @@ fn categories(runtime: CapabilityRuntime) -> Vec<CapabilityCategory> {
                 "repo_symbol_search",
                 "repo_related_files",
             ],
-            skills: &["rust-tooling", "ast-grep", "code-simplification"],
+            skills: &["rust-tooling", "ast-grep", "code-simplification", "kiss"],
             status: CapabilityStatus::Always,
         },
         CapabilityCategory {
@@ -202,7 +202,7 @@ fn categories(runtime: CapabilityRuntime) -> Vec<CapabilityCategory> {
                 "task_list_summary",
                 "task_next_best",
             ],
-            skills: &["code-review-and-quality"],
+            skills: &["code-review-and-quality", "kiss"],
             status: if requested("planning") {
                 CapabilityStatus::Loaded
             } else {

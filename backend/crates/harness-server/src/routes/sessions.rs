@@ -1446,6 +1446,16 @@ pub(crate) fn spawn_capability_intro(
                 .to_string(),
         );
     }
+    if skills.iter().any(|skill| skill == "kiss") {
+        parts.push(
+            "[harness] KISS rail is active. Before adding code, check whether the need can be \
+             skipped, handled by stdlib/native platform behavior, covered by an installed \
+             dependency, or solved with a smaller local change. Do not simplify away Harness \
+             invariants: append-only logs, protocol headers, generated type ownership, security, \
+             validation, or required frontend QA."
+                .to_string(),
+        );
+    }
     parts.join("\n\n")
 }
 
@@ -1660,6 +1670,33 @@ pub(crate) fn resolve_smart_skills<'a>(
         push_unique(&mut skills, "difftastic".to_string());
     }
     if signals.matches(&["refactor", "simplify", "clarity", "cleanup"], 4) {
+        push_unique(&mut skills, "code-simplification".to_string());
+    }
+    let kiss_explicit = signals.matches(
+        &[
+            "kiss",
+            "yagni",
+            "keep it simple",
+            "simplest solution",
+            "minimal solution",
+        ],
+        1,
+    );
+    let kiss_contextual = signals.distinct_hit_count(&[
+        "over engineered",
+        "overengineering",
+        "boilerplate",
+        "less code",
+        "write less",
+        "delete code",
+        "stdlib",
+        "standard library",
+        "native platform",
+        "one line",
+        "unnecessary dependency",
+    ]) >= 2;
+    if kiss_explicit || kiss_contextual {
+        push_unique(&mut skills, "kiss".to_string());
         push_unique(&mut skills, "code-simplification".to_string());
     }
     if signals.matches(
@@ -3985,6 +4022,53 @@ Use these defaults in DB tools: connection="conn-1", database="main".
     }
 
     #[test]
+    fn smart_skill_loader_selects_kiss_for_explicit_and_contextual_signals() {
+        let explicit = resolve_smart_skills(
+            false,
+            Some("reviewer"),
+            Some(std::path::Path::new("/repo/app")),
+            [Some("Apply KISS and identify boilerplate we can delete")],
+            &[],
+            CapabilityProfile::Auto,
+        );
+        assert_eq!(
+            explicit,
+            vec!["kiss".to_string(), "code-simplification".to_string()]
+        );
+
+        let contextual = resolve_smart_skills(
+            false,
+            Some("reviewer"),
+            Some(std::path::Path::new("/repo/app")),
+            [Some(
+                "Replace unnecessary dependency usage with standard library code",
+            )],
+            &[],
+            CapabilityProfile::Auto,
+        );
+        assert_eq!(
+            contextual,
+            vec!["kiss".to_string(), "code-simplification".to_string()]
+        );
+    }
+
+    #[test]
+    fn smart_skill_loader_does_not_match_kiss_inside_words() {
+        let skills = resolve_smart_skills(
+            false,
+            Some("reviewer"),
+            Some(std::path::Path::new("/repo/app")),
+            [Some(
+                "The UI copy says kissing booth; do not load coding rails",
+            )],
+            &[],
+            CapabilityProfile::Auto,
+        );
+
+        assert!(skills.is_empty());
+    }
+
+    #[test]
     fn smart_skill_loader_respects_light_capability_profile() {
         let skills = resolve_smart_skills(
             true,
@@ -4021,6 +4105,15 @@ Use these defaults in DB tools: connection="conn-1", database="main".
 
         assert!(intro.contains("Native data loader is available"));
         assert!(intro.contains("POST /api/data/inspect"));
+    }
+
+    #[test]
+    fn spawn_capability_intro_names_kiss_rail() {
+        let intro = spawn_capability_intro(false, &["kiss".to_string()], &[]);
+
+        assert!(intro.contains("KISS rail is active"));
+        assert!(intro.contains("append-only logs"));
+        assert!(intro.contains("protocol headers"));
     }
 
     #[test]

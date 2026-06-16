@@ -10,6 +10,7 @@ capabilities:
     - tool:repo.scan
     - tool:repo.read_file
   suggests:
+    - skill:kiss
     - skill:ast-grep
     - skill:difftastic
     - skill:code-review-and-quality
@@ -27,6 +28,10 @@ capabilities:
       - duplicate logic
       - over engineered
       - nested logic
+      - KISS
+      - YAGNI
+      - less code
+      - delete code
 ---
 
 # Code Simplification
@@ -48,13 +53,26 @@ the goal.
 
 1. Understand before touching. Identify responsibility, callers, edge cases,
    tests, and historical context when relevant.
-2. Locate concrete complexity: deep nesting, long functions, unclear names,
+2. Run the KISS ladder before adding code: skip unnecessary work, use stdlib,
+   use native platform/framework behavior, reuse installed dependencies, then
+   prefer the smallest local change.
+3. Locate concrete complexity: deep nesting, long functions, unclear names,
    duplicated logic, dead code, boolean flag arguments, wrappers with no value,
    repeated conditionals.
-3. Apply one simplification at a time.
-4. Run focused checks after meaningful changes.
-5. Review the diff with `difftastic` or normal git diff.
-6. Revert any "simplification" that is harder to understand or review.
+4. Apply one simplification at a time.
+5. Run focused checks after meaningful changes.
+6. Review the diff with `difftastic` or normal git diff.
+7. Revert any "simplification" that is harder to understand or review.
+
+## KISS Rails
+
+- Prefer deletion over addition when behavior is unused or speculative.
+- Prefer stdlib, browser, database, OS, CLI, and existing framework behavior
+  over custom code.
+- Prefer an installed dependency over adding a new dependency.
+- Do not add an abstraction until it removes current complexity or matches a
+  clear local pattern.
+- Mark intentional shortcuts with `kiss: <ceiling>; upgrade when <trigger>`.
 
 ## Good Simplifications
 
@@ -73,6 +91,12 @@ the goal.
 - Merging unrelated functions.
 - Refactoring unrelated modules opportunistically.
 - Changing tests to fit the refactor.
+
+## KISS Debt
+
+If you encounter `kiss:` markers, keep them honest. A valid marker names both
+the ceiling and the trigger to revisit it. Markers without a trigger should be
+reported as cleanup debt, not silently preserved.
 
 ## Harness Checks
 

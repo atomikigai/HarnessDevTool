@@ -169,6 +169,12 @@ pub fn pack(args: &Value) -> Result<Value, String> {
         guardrails.push("Keep behavior stable and scope the diff to the requested refactor.");
     }
 
+    if signals.kiss {
+        skills.insert("kiss");
+        skills.insert("code-simplification");
+        guardrails.push("Apply KISS: prefer deletion, stdlib/native behavior, installed dependencies, and the smallest local change before adding new code.");
+    }
+
     if signals.review {
         first_actions.push(action(
             "evidence_pack",
@@ -326,6 +332,7 @@ struct Signals {
     code_graph: bool,
     refactor: bool,
     review: bool,
+    kiss: bool,
 }
 
 impl Signals {
@@ -417,6 +424,23 @@ impl Signals {
                     "pr",
                 ],
             ),
+            kiss: contains_any(
+                text,
+                &[
+                    "kiss",
+                    "yagni",
+                    "keep it simple",
+                    "simplest solution",
+                    "minimal solution",
+                    "over engineered",
+                    "over-engineered",
+                    "boilerplate",
+                    "less code",
+                    "delete code",
+                    "standard library",
+                    "native platform",
+                ],
+            ),
         }
     }
 
@@ -466,6 +490,9 @@ impl Signals {
         }
         if self.refactor {
             domains.push("refactor");
+        }
+        if self.kiss {
+            domains.push("kiss");
         }
         domains
     }
@@ -593,5 +620,29 @@ mod tests {
             .unwrap()
             .iter()
             .any(|item| item["tool"] == "repo_code_graph_status"));
+    }
+
+    #[test]
+    fn planning_pack_recommends_kiss_for_simplicity_work() {
+        let result = pack(&json!({
+            "objective": "Apply KISS: remove boilerplate and avoid over-engineered abstractions"
+        }))
+        .unwrap();
+
+        assert!(result["recommended_skills"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item == "kiss"));
+        assert!(result["domains"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item == "kiss"));
+        assert!(result["guardrails"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item.as_str().unwrap_or("").contains("Apply KISS")));
     }
 }

@@ -91,6 +91,7 @@ Cada skill describe cuándo usar la herramienta, patrones concretos y cuándo no
 | `frontend-design` | Skill harness | Diseño UI frontend productivo y pulido |
 | `shadcn-svelte` | Skill harness/docs | Componentes shadcn-svelte, Bits UI y Tailwind v4 |
 | `performance-optimization` | Skill harness | Medicion y optimizacion performance frontend/backend |
+| `kiss` | Skill harness | Regla KISS/YAGNI para reducir codigo, dependencias y abstracciones innecesarias |
 | `code-simplification` | Skill harness | Refactors de claridad sin cambiar comportamiento |
 | `code-review-and-quality` | Skill harness | Revision multi-eje antes de merge/commit |
 | `ast-grep` | CLI npm | Búsqueda estructural de código por AST |
@@ -117,6 +118,10 @@ keywords, rol y contrato afectado; registra lo cargado en `loaded_capabilities`.
   UI con `agent-browser`; API checks o tests estaticos no bastan.
 - **Performance**: cargar `performance-optimization`; medir baseline, encontrar
   cuello de botella, corregir, medir despues y anotar numeros.
+- **KISS/YAGNI**: cargar `kiss` cuando el usuario pida simplicidad, menos codigo,
+  evitar over-engineering o revisar que se puede borrar. Preferir no construir,
+  stdlib/plataforma nativa, dependencias ya instaladas y cambios locales chicos,
+  sin saltarse invariantes del harness.
 - **Refactor de claridad**: cargar `code-simplification`; preservar comportamiento,
   scope acotado, tests/checks enfocados y diff revisable.
 - **Revision/calidad**: cargar `code-review-and-quality` antes de merge/commit

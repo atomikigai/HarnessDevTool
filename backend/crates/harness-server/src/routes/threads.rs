@@ -126,7 +126,7 @@ async fn create_thread(
         .cwd
         .as_deref()
         .map(PathBuf::from)
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+        .unwrap_or_else(|| state.default_cwd.clone());
     if let Ok(identity) = state.repos.detect(&cwd) {
         match state.repos.touch(&identity, Some(&thread.id), None, None) {
             Ok((_record, context)) => {
@@ -264,7 +264,7 @@ async fn get_readiness(
     if let Some(report) = state.store.read_readiness_report(&id)? {
         return Ok(Json(report));
     }
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let cwd = state.default_cwd.clone();
     let thread = state.store.get_thread(&id)?;
     let report = calculate_readiness(&state, &id, &cwd, thread.title.as_deref());
     state.store.write_readiness_report(&id, &report)?;
@@ -286,7 +286,7 @@ async fn recalculate_readiness(
         .as_deref()
         .filter(|s| !s.trim().is_empty())
         .map(PathBuf::from)
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+        .unwrap_or_else(|| state.default_cwd.clone());
     let report = calculate_readiness(&state, &id, &cwd, thread.title.as_deref());
     state.store.write_readiness_report(&id, &report)?;
     state

@@ -80,7 +80,30 @@ fn parse_event_msg(session_id: &str, ts: &str, raw: &Value) -> Vec<TranscriptEve
 fn parse_response_item(session_id: &str, ts: &str, raw: &Value) -> Vec<TranscriptEvent> {
     let payload = raw.get("payload").unwrap_or(&Value::Null);
     match payload.get("type").and_then(Value::as_str).unwrap_or("") {
-        "reasoning" => Vec::new(),
+        "reasoning" => {
+            let text = reasoning_text(payload);
+            text.map(|content| {
+                vec![TranscriptEvent {
+                    seq: 0,
+                    session_id: session_id.to_string(),
+                    ts: ts.to_string(),
+                    source: TranscriptSource::Codex,
+                    kind: TranscriptKind::Thinking,
+                    role: Some("assistant".into()),
+                    content: Some(content),
+                    tool_name: None,
+                    tool_args: None,
+                    tool_use_id: None,
+                    tool_result: None,
+                    is_error: None,
+                    model: None,
+                    usage: None,
+                    subtype: None,
+                    raw: Some(raw.clone()),
+                }]
+            })
+            .unwrap_or_default()
+        }
         "function_call" => vec![TranscriptEvent {
             seq: 0,
             session_id: session_id.to_string(),
@@ -105,8 +128,52 @@ fn parse_response_item(session_id: &str, ts: &str, raw: &Value) -> Vec<Transcrip
             subtype: None,
             raw: Some(raw.clone()),
         }],
+        "function_call_output" => vec![TranscriptEvent {
+            seq: 0,
+            session_id: session_id.to_string(),
+            ts: ts.to_string(),
+            source: TranscriptSource::Codex,
+            kind: TranscriptKind::ToolResult,
+            role: None,
+            content: None,
+            tool_name: None,
+            tool_args: None,
+            tool_use_id: payload
+                .get("call_id")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            tool_result: payload.get("output").cloned(),
+            is_error: payload
+                .get("is_error")
+                .and_then(Value::as_bool)
+                .or_else(|| payload.get("error").and_then(Value::as_bool)),
+            model: None,
+            usage: None,
+            subtype: None,
+            raw: Some(raw.clone()),
+        }],
         _ => vec![event_meta(session_id, ts, raw)],
     }
+}
+
+fn reasoning_text(payload: &Value) -> Option<String> {
+    if let Some(content) = payload.get("content").and_then(Value::as_str) {
+        if !content.trim().is_empty() {
+            return Some(content.to_string());
+        }
+    }
+    let summary = payload.get("summary").and_then(Value::as_array)?;
+    let parts = summary
+        .iter()
+        .filter_map(|item| {
+            item.as_str()
+                .or_else(|| item.get("text").and_then(Value::as_str))
+                .or_else(|| item.get("summary").and_then(Value::as_str))
+        })
+        .filter(|text| !text.trim().is_empty())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    (!parts.is_empty()).then(|| parts.join("\n"))
 }
 
 fn event_message(
@@ -352,6 +419,36 @@ mod tests {
         let usage = events[0].usage.as_ref().unwrap();
         assert_eq!(usage["input_tokens"].as_u64(), Some(12076));
         assert_eq!(usage["model_context_window"].as_u64(), Some(258400));
+    }
+
+    #[test]
+    fn parses_function_call_output_as_tool_result() {
+        let line = r#"{"timestamp":"2026-06-09T13:08:39.520Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call_123","output":"done"}}"#;
+
+        let events = parse_line(line, "sid");
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, TranscriptKind::ToolResult);
+        assert_eq!(events[0].tool_use_id.as_deref(), Some("call_123"));
+        assert_eq!(
+            events[0].tool_result.as_ref().and_then(Value::as_str),
+            Some("done")
+        );
+    }
+
+    #[test]
+    fn parses_reasoning_summary_as_thinking() {
+        let line = r#"{"timestamp":"2026-06-09T13:08:39.520Z","type":"response_item","payload":{"type":"reasoning","summary":[{"text":"checking files"},{"text":"planning edit"}],"content":null}}"#;
+
+        let events = parse_line(line, "sid");
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, TranscriptKind::Thinking);
+        assert_eq!(events[0].role.as_deref(), Some("assistant"));
+        assert_eq!(
+            events[0].content.as_deref(),
+            Some("checking files\nplanning edit")
+        );
     }
 
     #[test]

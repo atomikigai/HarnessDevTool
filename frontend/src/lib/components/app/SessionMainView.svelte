@@ -434,16 +434,13 @@
           {/each}
         </div>
 
-        <!-- Body. `{#key session.id}` forces remount when the selected session
-             changes, so its terminal + SSE are torn down and rebuilt.
-             LAYOUT: flex flex-col so h-full in ChatView propagates correctly. -->
+        <!-- Body. Keep ChatView mounted while the Terminal tab is visible so
+             its replayed transcript and live SSE state are not discarded on
+             every tab toggle. The keyed wrapper still remounts both views when
+             the selected session changes. -->
         <div class="min-h-0 flex-1 overflow-hidden flex flex-col">
-          {#if mainTab === 'terminal'}
-            {#key session.id}
-              <TerminalView threadId={session.thread_id} sessionId={session.id} embedded />
-            {/key}
-          {:else}
-            {#key session.id}
+          {#key session.id}
+            <div class:hidden={mainTab !== 'chat'} class="min-h-0 flex flex-1 flex-col overflow-hidden" aria-hidden={mainTab !== 'chat'}>
               <ChatView
                 {session}
                 prevSid={prevSidForChat}
@@ -457,8 +454,11 @@
                   queueMicrotask(() => onSessionTokens?.(sid, total));
                 }}
               />
-            {/key}
-          {/if}
+            </div>
+            {#if mainTab === 'terminal'}
+              <TerminalView threadId={session.thread_id} sessionId={session.id} embedded />
+            {/if}
+          {/key}
         </div>
 
         <!-- Footer prompt (terminal tab only) -->

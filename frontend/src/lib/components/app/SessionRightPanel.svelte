@@ -415,7 +415,7 @@
 </script>
 
 <aside
-  class="flex h-full w-[280px] shrink-0 flex-col overflow-hidden border-l"
+  class="session-right-panel flex h-full w-[280px] shrink-0 flex-col overflow-hidden border-l"
   style="background: var(--surface-panel); border-color: var(--border-subtle);"
 >
   <!-- Tab strip -->

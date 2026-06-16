@@ -31,10 +31,24 @@ const readiness = {
   suggested_execution_mode: 'standard'
 };
 
-async function installApiMocks(page: Page, opts: { transcriptReady?: boolean } = {}) {
+type MockTranscriptEvent = ReturnType<typeof transcript> | Record<string, unknown>;
+
+async function installApiMocks(
+  page: Page,
+  opts: {
+    transcriptReady?: boolean;
+    transcriptEvents?: MockTranscriptEvent[];
+    transcriptReplayOnce?: boolean;
+    ptyOutputText?: string;
+    approvals?: unknown[];
+  } = {}
+) {
   let checkpointRequested = false;
   let clearRequested = false;
+  const sessionInputChunks: string[] = [];
+  let transcriptRequests = 0;
   const transcriptReady = opts.transcriptReady ?? true;
+  const approvals = opts.approvals ?? [];
 
   await page.route(
     (url) => url.pathname === '/api' || url.pathname.startsWith('/api/'),
@@ -44,6 +58,10 @@ async function installApiMocks(page: Page, opts: { transcriptReady?: boolean } =
       const method = route.request().method();
 
       if (path === '/health') return json(route, { version: 'test', uptime_s: 1 });
+      if (path === '/approvals') return json(route, approvals);
+      if (path.startsWith('/approvals/') && path.endsWith('/decide') && method === 'POST') {
+        return json(route, null);
+      }
       if (path === '/profiles/active')
         return json(route, { active: 'default', reload_required: false });
       if (path === '/threads') {
@@ -128,22 +146,35 @@ async function installApiMocks(page: Page, opts: { transcriptReady?: boolean } =
         return json(route, { status: 'cleared', reason: null });
       }
       if (path === '/sessions/s-chat-1/transcript') {
+        transcriptRequests += 1;
         if (!transcriptReady) return sse(route, [], 'transcript');
-        return sse(route, [
-          transcript({
-            seq: 1,
-            role: 'user',
-            content: 'show markdown'
-          }),
-          transcript({
-            seq: 2,
-            role: 'assistant',
-            content: '### Result\n\n- **bold** item\n\n```ts\nconst ok = true;\n```'
-          })
-        ]);
+        if (opts.transcriptReplayOnce && transcriptRequests > 1) {
+          return sse(route, [], 'transcript');
+        }
+        return sse(
+          route,
+          opts.transcriptEvents ?? [
+            transcript({
+              seq: 1,
+              role: 'user',
+              content: 'show markdown'
+            }),
+            transcript({
+              seq: 2,
+              role: 'assistant',
+              content: '### Result\n\n- **bold** item\n\n```ts\nconst ok = true;\n```'
+            })
+          ]
+        );
+      }
+      if (path === '/sessions/s-chat-1/input' && method === 'POST') {
+        sessionInputChunks.push(await route.request().postData() ?? '');
+        return json(route, null);
       }
       if (path.startsWith('/events')) {
         if (!transcriptReady) {
+          const ptyOutputText =
+            opts.ptyOutputText ?? '❯ hablame del equipo\n● Respuesta desde PTY fallback\n';
           return sse(
             route,
             [
@@ -151,10 +182,7 @@ async function installApiMocks(page: Page, opts: { transcriptReady?: boolean } =
                 type: 'session.output',
                 session_id: 's-chat-1',
                 seq: 1,
-                b64: Buffer.from(
-                  '❯ hablame del equipo\n● Respuesta desde PTY fallback\n',
-                  'utf8'
-                ).toString('base64')
+                b64: Buffer.from(ptyOutputText, 'utf8').toString('base64')
               }
             ],
             'session.output'
@@ -169,14 +197,15 @@ async function installApiMocks(page: Page, opts: { transcriptReady?: boolean } =
 
   return {
     checkpointRequested: () => checkpointRequested,
-    clearRequested: () => clearRequested
+    clearRequested: () => clearRequested,
+    sessionInputText: () => sessionInputChunks.join('')
   };
 }
 
 test('ChatView renders markdown transcript instead of waiting forever', async ({ page }) => {
   await installApiMocks(page);
   await page.goto('/');
-  await page.getByRole('button', { name: 'Chat', exact: true }).click({ force: true });
+  await openChat(page);
 
   await expect(page.getByText('Waiting for transcript events')).toHaveCount(0);
   await expect(page.getByRole('heading', { name: 'Result' })).toBeVisible();
@@ -187,15 +216,122 @@ test('ChatView renders markdown transcript instead of waiting forever', async ({
 test('ChatView falls back to PTY output when transcript is not ready', async ({ page }) => {
   await installApiMocks(page, { transcriptReady: false });
   await page.goto('/');
+  await openChat(page);
+
+  await expect(page.getByText('Respuesta desde PTY fallback')).toBeVisible();
+  await expect(page.getByText('Waiting for transcript events')).toHaveCount(0);
+});
+
+test('ChatView normalizes Claude-style PTY output when transcript is missing', async ({ page }) => {
+  await installApiMocks(page, {
+    transcriptReady: false,
+    ptyOutputText: [
+      'Human: summarize the repo',
+      '● Reading package files',
+      '⎿  Found 4 manifests',
+      '✓ Claude-style response from PTY fallback'
+    ].join('\n')
+  });
+  await page.goto('/');
+  await openChat(page);
+
+  await expect(page.getByText('Claude-style response from PTY fallback')).toBeVisible();
+  await expect(page.locator('.pty-line-action').filter({ hasText: 'Reading package files' })).toBeVisible();
+  await expect(page.locator('.pty-line-result').filter({ hasText: 'Claude-style response' })).toBeVisible();
+});
+
+test('ChatView keeps transcript when switching between chat and terminal', async ({ page }) => {
+  await installApiMocks(page, { transcriptReplayOnce: true });
+  await page.goto('/');
+  await openChat(page);
+
+  await expect(page.getByRole('heading', { name: 'Result' })).toBeVisible();
+  await page.getByRole('button', { name: 'Terminal', exact: true }).click({ force: true });
+  await expect(page.getByRole('button', { name: /Active codex/ })).toBeVisible();
   await page.getByRole('button', { name: 'Chat', exact: true }).click({ force: true });
 
+  await expect(page.getByRole('heading', { name: 'Result' })).toBeVisible();
   await expect(page.getByText('Waiting for transcript events')).toHaveCount(0);
-  await expect(page.getByText('Respuesta desde PTY fallback')).toBeVisible();
+});
+
+test('ChatView renders Claude PR link events as useful links', async ({ page }) => {
+  await installApiMocks(page, {
+    transcriptEvents: [
+      transcript({ seq: 1, role: 'user', content: 'open a pr' }),
+      {
+        seq: 2,
+        session_id: 's-chat-1',
+        ts: new Date().toISOString(),
+        source: 'claude',
+        kind: 'unknown',
+        role: null,
+        content: null,
+        tool_name: null,
+        tool_args: null,
+        tool_use_id: null,
+        tool_result: null,
+        is_error: null,
+        model: null,
+        usage: null,
+        subtype: null,
+        raw: {
+          type: 'pr-link',
+          url: 'https://github.com/acme/repo/pull/670',
+          number: 670,
+          title: 'fix: cron scheduler improvements'
+        }
+      }
+    ]
+  });
+  await page.goto('/');
+  await openChat(page);
+
+  const link = page.getByRole('link', { name: /Pull request #670/ });
+  await expect(link).toBeVisible();
+  await expect(link).toHaveAttribute('href', 'https://github.com/acme/repo/pull/670');
+  await expect(page.getByText('Unparsed claude event: pr-link')).toHaveCount(0);
+});
+
+test('ChatView exposes CLI approval choices inside the transcript', async ({ page }) => {
+  const calls = await installApiMocks(page, {
+    transcriptEvents: [
+      transcript({ seq: 1, role: 'user', content: 'stage files' }),
+      {
+        seq: 2,
+        session_id: 's-chat-1',
+        ts: new Date().toISOString(),
+        source: 'claude',
+        kind: 'unknown',
+        role: null,
+        content: null,
+        tool_name: null,
+        tool_args: null,
+        tool_use_id: null,
+        tool_result: null,
+        is_error: null,
+        model: null,
+        usage: null,
+        subtype: null,
+        raw: {
+          type: 'approval-request',
+          tool: 'Bash',
+          command: 'git add .'
+        }
+      }
+    ]
+  });
+  await page.goto('/');
+  await openChat(page);
+
+  await expect(page.getByText('Approval required: Bash')).toBeVisible();
+  await page.locator('.system-approval').getByRole('button', { name: 'Always' }).click();
+  await expect.poll(() => calls.sessionInputText()).toBe('2\r');
 });
 
 test('Context panel shows pressure, search and manual actions', async ({ page }) => {
   const calls = await installApiMocks(page);
   await page.goto('/');
+  await expect(page.getByRole('button', { name: /^Info$/ })).toBeVisible({ timeout: 15000 });
   await page.getByRole('button', { name: /^Info$/ }).click({ force: true });
 
   await expect(page.getByText('37%')).toBeVisible();
@@ -212,11 +348,19 @@ test('Context panel shows pressure, search and manual actions', async ({ page })
 test('Terminal tab mounts without unreadable empty-state regression', async ({ page }) => {
   await installApiMocks(page);
   await page.goto('/');
-  await page.getByRole('button', { name: 'Terminal', exact: true }).click({ force: true });
+  const terminalTab = page.getByRole('button', { name: 'Terminal', exact: true });
+  await expect(terminalTab).toBeVisible({ timeout: 15000 });
+  await terminalTab.click({ force: true });
 
   await expect(page.getByRole('button', { name: /Active codex/ })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Terminal', exact: true })).toBeVisible();
 });
+
+async function openChat(page: Page) {
+  const chatTab = page.getByRole('button', { name: 'Chat', exact: true });
+  await expect(chatTab).toBeVisible({ timeout: 15000 });
+  await chatTab.click({ force: true });
+}
 
 function transcript(input: { seq: number; role: 'user' | 'assistant'; content: string }) {
   return {

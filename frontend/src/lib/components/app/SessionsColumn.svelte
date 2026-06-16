@@ -367,7 +367,7 @@
 {/snippet}
 
 <aside
-  class="flex h-full shrink-0 flex-col overflow-hidden border-r transition-[width]"
+  class="sessions-column flex h-full shrink-0 flex-col overflow-hidden border-r transition-[width]"
   style="
     width: {collapsed ? '52px' : '280px'};
     background: var(--surface-panel);

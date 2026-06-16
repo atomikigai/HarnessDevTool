@@ -11,6 +11,7 @@ use crate::state::AppState;
 pub struct HealthResponse {
     pub version: String,
     pub uptime_s: u64,
+    pub server_cwd: String,
 }
 
 pub fn router() -> Router<Arc<AppState>> {
@@ -21,5 +22,6 @@ async fn health(State(state): State<Arc<AppState>>) -> Json<HealthResponse> {
     Json(HealthResponse {
         version: state.version.to_string(),
         uptime_s: state.start_time.elapsed().as_secs(),
+        server_cwd: state.default_cwd.display().to_string(),
     })
 }

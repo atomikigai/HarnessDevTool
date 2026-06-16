@@ -302,7 +302,7 @@ async fn create_session(
     Json(req): Json<CreateSessionRequest>,
 ) -> Result<(StatusCode, Json<CreateSessionResponse>), ApiError> {
     state.store.get_thread(&tid)?;
-    let cwd = resolve_cwd(req.cwd.as_deref())?;
+    let cwd = resolve_cwd(req.cwd.as_deref(), &state.default_cwd)?;
     // Only honour the pair when BOTH are present and non-zero — half a size
     // is meaningless to `openpty()` and we'd rather fall back to the default
     // than spawn with a 0-width PTY (which would deadlock the TUI).
@@ -392,13 +392,12 @@ struct ZeusChildRoutingError {
     message: String,
 }
 
-/// Resolve `cwd` from a user-supplied string, falling back to `$HOME`. Used
-/// by both the user-facing route and the Zeus `session.spawn_child` MCP tool.
-fn resolve_cwd(raw: Option<&str>) -> Result<PathBuf, ApiError> {
+/// Resolve `cwd` from a user-supplied string, falling back to the caller's
+/// explicit default. Used by both the user-facing route and child spawns.
+fn resolve_cwd(raw: Option<&str>, default_cwd: &FsPath) -> Result<PathBuf, ApiError> {
     let cwd = match raw {
         Some(c) => PathBuf::from(c),
-        None => dirs::home_dir()
-            .ok_or_else(|| ApiError::Internal("cannot resolve $HOME for default cwd".into()))?,
+        None => default_cwd.to_path_buf(),
     };
     if !cwd.exists() {
         return Err(ApiError::BadRequest(format!(
@@ -2560,7 +2559,7 @@ async fn spawn_child_route(
     // the request still wins (lets the orchestrator hand a worker a vendored
     // subtree, for example).
     let cwd = match body.cwd.as_deref() {
-        Some(c) => resolve_cwd(Some(c))?,
+        Some(c) => resolve_cwd(Some(c), parent.cwd())?,
         None => parent.cwd().to_path_buf(),
     };
     let zeus_roles = load_zeus_roles(&state, &parent_sid)?;

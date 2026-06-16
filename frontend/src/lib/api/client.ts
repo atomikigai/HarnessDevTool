@@ -177,6 +177,7 @@ export async function apiRequest<T>(
 export interface HealthResponse {
   version: string;
   uptime_s: number;
+  server_cwd: string;
 }
 
 export interface ThreadSummary {

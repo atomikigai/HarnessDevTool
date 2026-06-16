@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
@@ -57,6 +57,10 @@ pub struct AppState {
     /// the profiles routes to report current state. Switching profiles
     /// requires a backend restart today; see `routes/profiles.rs`.
     pub profile: String,
+    /// Default working directory for new threads/sessions when the request does
+    /// not provide one. Prefer the active workspace root over the backend crate
+    /// cwd used by `cargo run`.
+    pub default_cwd: PathBuf,
     pub autonomy_profile: harness_core::AutonomyProfile,
     /// Shared bearer token required by mutating HTTP routes when configured.
     pub api_token: Option<String>,
@@ -86,6 +90,7 @@ impl AppState {
     pub fn new(cfg: &Config) -> Result<Self> {
         let profile = cfg.profile.as_str();
         tracing::info!(profile = %profile, "AppState init: using profile");
+        let default_cwd = resolve_default_cwd(cfg);
 
         let store = Arc::new(Store::with_profile(&cfg.home, profile)?);
         let sessions_root = cfg.home.join("profiles").join(profile).join("sessions");
@@ -176,6 +181,7 @@ impl AppState {
             binaries: binaries.clone(),
             mcp_server_binary: mcp_server_binary.clone(),
             harness_home: cfg.home.clone(),
+            default_cwd: default_cwd.clone(),
             server_url: server_url.clone(),
             api_token: cfg.api_token.clone(),
             mcp_configs: Arc::new(DashMap::new()),
@@ -210,6 +216,7 @@ impl AppState {
             binaries,
             harness_home: cfg.home.clone(),
             profile: cfg.profile.clone(),
+            default_cwd,
             autonomy_profile: cfg.autonomy_profile,
             api_token: cfg.api_token.clone(),
             mcp_server_binary,
@@ -267,6 +274,44 @@ impl AppState {
             }
         }
     }
+}
+
+fn resolve_default_cwd(cfg: &Config) -> PathBuf {
+    if let Ok(raw) = std::env::var("HARNESS_WORKSPACE_ROOT") {
+        let trimmed = raw.trim();
+        if !trimmed.is_empty() {
+            return PathBuf::from(trimmed);
+        }
+    }
+
+    let profile_workspace = cfg
+        .home
+        .join("profiles")
+        .join(&cfg.profile)
+        .join("workspace.toml");
+    if let Ok(text) = std::fs::read_to_string(profile_workspace) {
+        if let Ok(doc) = text.parse::<toml_edit::DocumentMut>() {
+            if let Some(path) = doc.get("path").and_then(|v| v.as_str()) {
+                if !path.trim().is_empty() {
+                    return PathBuf::from(path.trim());
+                }
+            }
+        }
+    }
+
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    workspace_parent_if_backend_crate(&cwd).unwrap_or(cwd)
+}
+
+fn workspace_parent_if_backend_crate(cwd: &Path) -> Option<PathBuf> {
+    if cwd.file_name().and_then(|s| s.to_str()) != Some("backend") {
+        return None;
+    }
+    let parent = cwd.parent()?;
+    let looks_like_workspace = parent.join("AGENTS.md").exists()
+        || parent.join(".git").exists()
+        || parent.join("frontend").is_dir();
+    looks_like_workspace.then(|| parent.to_path_buf())
 }
 
 /// Bridges `harness-session::Manager` to the scheduler's budget pass without
@@ -398,6 +443,7 @@ struct ManagerSpawner {
     binaries: HashMap<AgentKind, PathBuf>,
     mcp_server_binary: Option<PathBuf>,
     harness_home: PathBuf,
+    default_cwd: PathBuf,
     /// Base URL we pass to the MCP child as `--server-url` so it can delegate
     /// `task_create` back into our HTTP store (drives the SSE `task.created`).
     server_url: String,
@@ -616,11 +662,7 @@ impl SessionSpawner for ManagerSpawner {
         let kind = selection.kind;
         let binary = selection.binary;
 
-        let cwd = req
-            .cwd
-            .clone()
-            .or_else(dirs::home_dir)
-            .unwrap_or_else(|| PathBuf::from("/"));
+        let cwd = req.cwd.clone().unwrap_or_else(|| self.default_cwd.clone());
 
         // Build SpawnOpts with the role prompt. We tag SessionMeta.role with
         // the AGENT id (not the role tag) so `find_existing` can de-dupe.
@@ -851,6 +893,7 @@ mod tests {
                 binaries,
                 mcp_server_binary: None,
                 harness_home: dir.path().to_path_buf(),
+                default_cwd: dir.path().to_path_buf(),
                 server_url: "http://127.0.0.1:7777".to_string(),
                 api_token: None,
                 mcp_configs: Arc::new(DashMap::new()),

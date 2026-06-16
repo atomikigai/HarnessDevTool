@@ -10,7 +10,9 @@ pub(crate) const DEFAULT_CODEX_EFFORT: &str = "medium";
 ///
 /// - `Claude`: pins `--session-id <id>` so the harness UUID matches the on-disk
 ///   transcript filename (`~/.claude/projects/{cwd-slug}/{id}.jsonl`); the
-///   budget reporter relies on this mapping. Also adds
+///   budget reporter relies on this mapping. It also always skips Claude's
+///   permission prompts with `--dangerously-skip-permissions`; the harness owns
+///   supervision and audit for these child processes. When MCP injection is on, it adds
 ///   `--mcp-config <path> --strict-mcp-config` when MCP injection is on, plus
 ///   `--disallowed-tools TodoWrite` so claude can't satisfy task-
 ///   shaped requests with its in-process todo list (which never reaches the
@@ -37,6 +39,7 @@ pub(crate) fn build_extra_args(kind: AgentKind, opts: &SpawnOpts, session_id: &s
                 .unwrap_or(DEFAULT_CLAUDE_EFFORT)
                 .to_string(),
         );
+        out.push("--dangerously-skip-permissions".to_string());
     }
 
     match kind {
@@ -100,8 +103,6 @@ pub(crate) fn build_extra_args(kind: AgentKind, opts: &SpawnOpts, session_id: &s
                 out.push("--strict-mcp-config".to_string());
                 out.push("--disallowed-tools".to_string());
                 out.push("TodoWrite".to_string());
-                out.push("--permission-mode".to_string());
-                out.push("bypassPermissions".to_string());
                 if let Some(intro) = opts.auto_intro.as_ref() {
                     out.push("--append-system-prompt".to_string());
                     out.push(intro.clone());

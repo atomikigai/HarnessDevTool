@@ -29,7 +29,7 @@
   style="background: var(--surface-window); color: var(--fg-default);"
 >
   <TopBar />
-  <div class="flex min-h-0 flex-1">
+  <div class="app-shell-body flex min-h-0 flex-1">
     <IconRail {currentPath} />
     <main class="min-w-0 flex-1 overflow-hidden" style="background: var(--surface-canvas);">
       {@render children()}

@@ -607,6 +607,26 @@
       fitAddon = new FitAddon();
       term.loadAddon(fitAddon);
 
+      // ── Wheel scroll fix ───────────────────────────────────────────────
+      // When a TUI app activates alternate screen + mouse tracking, ghostty-web
+      // normally forwards wheel events as PTY mouse-report escape sequences
+      // (which the running app interprets as arrow-up/down). This makes the
+      // scrollback buffer inaccessible: the user spins the wheel and the agent
+      // gets ↑↑↑ instead of the viewport scrolling.
+      //
+      // attachCustomWheelEventHandler: returning `true` prevents the terminal's
+      // default wheel handling (which would encode & send the event to the PTY),
+      // returning `false` lets the terminal handle it normally. We always return
+      // `true` so the PTY never sees the wheel event, and we do the viewport
+      // scroll ourselves via scrollLines().
+      //
+      // scrollLines(amount): positive = scroll down, negative = scroll up.
+      // We use ±3 lines per wheel tick which matches typical browser behavior.
+      term.attachCustomWheelEventHandler((ev: WheelEvent) => {
+        term?.scrollLines(ev.deltaY > 0 ? 3 : -3);
+        return true; // prevent ghostty from forwarding the event to the PTY
+      });
+
       // ── Clipboard wiring ───────────────────────────────────────────────
       // Ctrl+C keeps sending SIGINT when there is no selection. If text is
       // selected, it copies instead, matching embedded terminal behavior.

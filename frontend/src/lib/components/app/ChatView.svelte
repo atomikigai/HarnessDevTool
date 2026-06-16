@@ -16,6 +16,7 @@
 -->
 <script lang="ts">
   import { marked } from 'marked';
+  import 'katex/dist/katex.min.css';
   import DOMPurify from 'dompurify';
   import { isTauri, invokeCommand } from '$lib/tauri';
   import {
@@ -44,9 +45,14 @@
     FileJson,
     FileCode2,
     FileSpreadsheet,
-    RotateCcw
+    RotateCcw,
+    Link2,
+    AlertTriangle,
+    Terminal
   } from '$lib/icons';
   import { toast } from 'svelte-sonner';
+  import { approvalsState } from '$lib/stores/approvals.svelte';
+  import type { Decision } from '$lib/api/types/Decision';
 
   interface Props {
     session: SessionMeta | null;
@@ -82,6 +88,20 @@
     failed?: boolean; // set when rendering fails; shows JSON fallback
   };
 
+  type MermaidScene = {
+    raw: string;
+    svgHtml?: string;
+    failed?: boolean;
+    error?: string;
+  };
+
+  type ChartScene = {
+    raw: string;
+    svgHtml?: string;
+    failed?: boolean;
+    error?: string;
+  };
+
   type ChatTurn = {
     id: string;
     role: 'user' | 'assistant' | 'system';
@@ -92,6 +112,8 @@
     renderedHtml: string; // empty while streaming; populated once when isStreaming→false
     cleanedContent?: string; // content with excalidraw fences stripped, used for markdown
     excalidrawScenes: ExcalidrawScene[]; // scenes extracted from content fences
+    mermaidScenes: MermaidScene[];
+    chartScenes: ChartScene[];
     inlineImages: string[]; // standalone image URLs / data-URIs detected in content
     model?: string;
     source?: string;
@@ -100,6 +122,9 @@
     durationMs?: number;
     /** Set by 1.2s inactivity debounce: triggers markdown render while isStreaming is still true. */
     settled?: boolean;
+    systemKind?: 'note' | 'link' | 'approval';
+    systemHref?: string;
+    systemDetail?: string;
   };
 
   type PtyOutputEvent = {
@@ -142,7 +167,29 @@
   // set and discards the result instead of writing stale HTML.
   let staleRenders = new Set<string>();
   let fallbackOutputBytes = $state(0);
+  let lastPtyFallbackSeq = 0;
   let fallbackTimer: ReturnType<typeof setTimeout> | null = null;
+  // Round 5: tracks whether agentIsWorking became true while the PTY fallback
+  // was armed. Used by the auto-hide effect to preserve legitimate PTY output
+  // (agent that genuinely worked but produced no transcript) vs idle banner noise.
+  let fallbackSawWorking = false;
+  // FIX 2: tracks whether the agent finished (went idle) while the PTY fallback
+  // was showing real output (fallbackSawWorking=true, no transcript). When true,
+  // the PTY block renders as "Response (terminal output)" expanded, not "waiting…".
+  let fallbackDone = $state(false);
+
+  // Round 4: optimistic "awaiting response" indicator. Set true after sendInput() POSTs
+  // successfully; cleared when agent starts streaming content/thinking/tools, when
+  // detected_state transitions working→idle, or after 90s safety timeout.
+  let awaitingResponse = $state(false);
+  let awaitingResponseTimer: ReturnType<typeof setTimeout> | null = null;
+  // Non-reactive: tracks whether we've seen detected_state==='working' while awaitingResponse is true,
+  // so we can detect the working→idle transition and clear the flag.
+  let hadWorkingState = false;
+  // Non-reactive: captures turns.length at the moment sendInput() fires. The awaiting-response
+  // $effect uses this to find only assistant turns created AFTER the send (index >= sendTurnCount),
+  // avoiding false positives from pre-existing turns that already have content (P1 fix).
+  let sendTurnCount = 0;
 
   // Fix 1 — Non-reactive guard: tracks which session ID the SSE is actually open for.
   // Prevents re-opening on every poll tick that produces a new object reference for the same session.
@@ -175,6 +222,25 @@
   const encoder = new TextEncoder();
 
   const stopped = $derived(!session || session.status !== 'running');
+  const sessionApprovals = $derived(
+    approvalsState.pending.filter((approval) => !session?.id || approval.session_id === session.id)
+  );
+  const currentApproval = $derived(sessionApprovals[0] ?? null);
+  const agentIsWorking = $derived(session?.detected_state === 'working');
+
+  // Round 5: the last assistant turn that is streaming but has no visible
+  // content yet (pre-content phase: only thinking or tool calls, or empty).
+  // Used to extend the working indicator beyond the awaitingResponse phase.
+  const workingActiveTurn = $derived.by(() => {
+    const last = lastAssistantTurn();
+    if (!last) return null;
+    return (last.isStreaming && !last.content && !last.renderedHtml) ? last : null;
+  });
+
+  // showWorkingIndicator: display the 3-dot working indicator when:
+  //   • we sent input and no new assistant turn exists yet (awaitingResponse), OR
+  //   • the last assistant turn is streaming but shows no text content yet.
+  const showWorkingIndicator = $derived(!stopped && (awaitingResponse || workingActiveTurn !== null));
 
   // ---- DOMPurify config (allows data:image/ URIs) ---------------------------
 
@@ -187,15 +253,67 @@
 
   // ---- Markdown helper ------------------------------------------------------
 
+  type KatexModule = typeof import('katex');
+  let katexPromise: Promise<KatexModule | null> | null = null;
+
+  function getKatex(): Promise<KatexModule | null> {
+    if (!katexPromise) {
+      katexPromise = import('katex').catch(() => null);
+    }
+    return katexPromise;
+  }
+
+  async function renderMathMarkdown(text: string): Promise<string> {
+    const katex = await getKatex();
+    if (!katex) return text;
+
+    const codeFences: string[] = [];
+    const protectedText = text.replace(/```[\s\S]*?```|`[^`\n]+`/g, (match) => {
+      const token = `@@HARNESS_CODE_${codeFences.length}@@`;
+      codeFences.push(match);
+      return token;
+    });
+
+    const render = (expr: string, displayMode: boolean) => {
+      try {
+        return katex.renderToString(expr.trim(), {
+          displayMode,
+          throwOnError: false,
+          trust: false,
+          strict: 'ignore',
+          output: 'html'
+        });
+      } catch {
+        return displayMode ? `$$${expr}$$` : `$${expr}$`;
+      }
+    };
+
+    const withBracketBlocks = protectedText.replace(/\\\[([\s\S]+?)\\\]/g, (_m, expr: string) =>
+      render(expr, true)
+    );
+    const withBlocks = withBracketBlocks.replace(/\$\$([\s\S]+?)\$\$/g, (_m, expr: string) =>
+      render(expr, true)
+    );
+    const withParenInline = withBlocks.replace(/\\\(([\s\S]{1,500}?)\\\)/g, (_m, expr: string) =>
+      render(expr, false)
+    );
+    const withInline = withParenInline.replace(/(^|[^\\$])\$([^\n$]{1,500}?)\$/g, (_m, prefix: string, expr: string) =>
+      `${prefix}${render(expr, false)}`
+    );
+
+    return withInline.replace(/@@HARNESS_CODE_(\d+)@@/g, (_m, idx: string) => codeFences[Number(idx)] ?? '');
+  }
+
   async function renderMarkdown(text: string): Promise<string> {
+    const mathReady = await renderMathMarkdown(text);
     if (isTauri) {
       // Sanitize pulldown-cmark output even in Tauri: agent content is untrusted and
       // in Tauri an XSS can reach native IPC. DOMPurify is available as a normal
       // bundle import on both web and Tauri paths.
-      const html = await invokeCommand<string>('parse_markdown', { text });
+      const html = await invokeCommand<string>('parse_markdown', { text: mathReady });
       return DOMPurify.sanitize(html, PURIFY_CFG);
     }
-    const html = marked.parse(text, { breaks: true, gfm: true });
+    const html = marked.parse(mathReady, { breaks: true, gfm: true });
     return DOMPurify.sanitize(typeof html === 'string' ? html : '', PURIFY_CFG);
   }
 
@@ -221,6 +339,24 @@
     const cleaned = content.replace(/```excalidraw\r?\n([\s\S]*?)```/g, (_match, body: string) => {
       scenes.push(body.trim());
       return ''; // remove fence from rendered markdown
+    });
+    return { cleaned, scenes };
+  }
+
+  function extractMermaidBlocks(content: string): { cleaned: string; scenes: string[] } {
+    const scenes: string[] = [];
+    const cleaned = content.replace(/```(?:mermaid|mmd)\r?\n([\s\S]*?)```/gi, (_match, body: string) => {
+      scenes.push(body.trim());
+      return '';
+    });
+    return { cleaned, scenes };
+  }
+
+  function extractChartBlocks(content: string): { cleaned: string; scenes: string[] } {
+    const scenes: string[] = [];
+    const cleaned = content.replace(/```(?:chart|chart-json|harness-chart)\r?\n([\s\S]*?)```/gi, (_match, body: string) => {
+      scenes.push(body.trim());
+      return '';
     });
     return { cleaned, scenes };
   }
@@ -298,6 +434,98 @@
     }
   }
 
+  let mermaidModPromise: Promise<typeof import('mermaid').default | null> | null = null;
+
+  function getMermaidMod(): Promise<typeof import('mermaid').default | null> {
+    if (!mermaidModPromise) {
+      mermaidModPromise = import('mermaid')
+        .then((m) => {
+          m.default.initialize({
+            startOnLoad: false,
+            securityLevel: 'strict',
+            theme: 'base',
+            themeVariables: {
+              background: '#ffffff',
+              primaryColor: '#faf8f2',
+              primaryBorderColor: '#e2ddd4',
+              primaryTextColor: '#2e2a22',
+              lineColor: '#8a8278',
+              fontFamily: 'Inter, ui-sans-serif, system-ui'
+            }
+          });
+          return m.default;
+        })
+        .catch(() => null);
+    }
+    return mermaidModPromise;
+  }
+
+  async function renderMermaid(scene: MermaidScene): Promise<void> {
+    if (scene.svgHtml !== undefined || scene.failed) return;
+    try {
+      const mermaid = await getMermaidMod();
+      if (!mermaid) {
+        scene.failed = true;
+        return;
+      }
+      const id = `harness-mermaid-${Math.random().toString(36).slice(2)}`;
+      const rendered = await mermaid.render(id, scene.raw);
+      scene.svgHtml = DOMPurify.sanitize(rendered.svg, {
+        USE_PROFILES: { svg: true, svgFilters: true }
+      });
+    } catch (err) {
+      scene.failed = true;
+      scene.error = err instanceof Error ? err.message : String(err);
+    }
+  }
+
+  function renderSimpleChart(raw: string): ChartScene {
+    const scene: ChartScene = { raw };
+    try {
+      const parsed = JSON.parse(raw) as {
+        type?: string;
+        title?: string;
+        labels?: string[];
+        values?: number[];
+        data?: Array<{ label?: string; name?: string; value?: number }>;
+      };
+      const points = Array.isArray(parsed.data)
+        ? parsed.data.map((d) => ({ label: String(d.label ?? d.name ?? ''), value: Number(d.value ?? 0) }))
+        : (parsed.labels ?? []).map((label, i) => ({ label, value: Number(parsed.values?.[i] ?? 0) }));
+      const valid = points.filter((p) => Number.isFinite(p.value));
+      if (!valid.length) throw new Error('chart has no numeric values');
+      const max = Math.max(...valid.map((p) => Math.abs(p.value)), 1);
+      const width = 720;
+      const height = Math.max(220, valid.length * 34 + 70);
+      const labelW = 150;
+      const barW = width - labelW - 70;
+      const rows = valid
+        .map((p, i) => {
+          const y = 52 + i * 34;
+          const w = Math.max(2, (Math.abs(p.value) / max) * barW);
+          const label = escapeHtml(p.label || `Item ${i + 1}`);
+          const value = escapeHtml(String(p.value));
+          return `<text x="16" y="${y + 17}" class="chart-label">${label}</text><rect x="${labelW}" y="${y}" width="${w}" height="22" rx="4" class="chart-bar"/><text x="${labelW + w + 8}" y="${y + 16}" class="chart-value">${value}</text>`;
+        })
+        .join('');
+      const title = parsed.title ? `<text x="16" y="26" class="chart-title">${escapeHtml(parsed.title)}</text>` : '';
+      const svg = `<svg viewBox="0 0 ${width} ${height}" role="img" xmlns="http://www.w3.org/2000/svg"><style>.chart-title{font:600 16px Inter,system-ui;fill:#2e2a22}.chart-label{font:12px Inter,system-ui;fill:#6b6258}.chart-value{font:12px ui-monospace,monospace;fill:#6b6258}.chart-bar{fill:#0e7864}</style>${title}${rows}</svg>`;
+      scene.svgHtml = DOMPurify.sanitize(svg, { USE_PROFILES: { svg: true, svgFilters: true } });
+    } catch (err) {
+      scene.failed = true;
+      scene.error = err instanceof Error ? err.message : String(err);
+    }
+    return scene;
+  }
+
+  function escapeHtml(value: string): string {
+    return value
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .replaceAll('"', '&quot;');
+  }
+
   // ---- Tool result image extraction -----------------------------------------
 
   function extractSingleImageBlock(item: unknown): string | null {
@@ -373,21 +601,42 @@
     return [];
   }
 
+  function extractToolResultExcalidrawScenes(result: unknown): string[] {
+    if (result == null) return [];
+    if (typeof result === 'string') {
+      const scene = normalizedExcalidrawScene(result.trim());
+      return scene ? [scene] : [];
+    }
+    if (Array.isArray(result)) {
+      return result.flatMap((item) => extractToolResultExcalidrawScenes(item));
+    }
+    if (typeof result !== 'object') return [];
+
+    const obj = result as Record<string, unknown>;
+    if (isExcalidrawJson(obj)) return [JSON.stringify(obj)];
+
+    const mime = String(obj.mime_type ?? obj.media_type ?? obj.mimeType ?? '');
+    const data = obj.text ?? obj.data ?? obj.content;
+    if (mime === 'application/vnd.excalidraw+json' || mime === 'application/excalidraw+json') {
+      if (typeof data === 'string') {
+        const scene = normalizedExcalidrawScene(data.trim());
+        return scene ? [scene] : [];
+      }
+      if (isExcalidrawJson(data)) return [JSON.stringify(data)];
+    }
+
+    if (obj.resource && typeof obj.resource === 'object') {
+      return extractToolResultExcalidrawScenes(obj.resource);
+    }
+    return [];
+  }
+
   function hydrateToolResult(block: ToolBlock): void {
     const textParts = extractToolResultTextParts(block.result);
-    const scenes: ExcalidrawScene[] = [];
+    const scenes: ExcalidrawScene[] = extractToolResultExcalidrawScenes(block.result).map((raw) => ({
+      raw
+    }));
     const visibleText: string[] = [];
-
-    const directScene =
-      typeof block.result === 'string'
-        ? normalizedExcalidrawScene(block.result.trim())
-        : isExcalidrawJson(block.result)
-          ? JSON.stringify(block.result)
-          : null;
-
-    if (directScene) {
-      scenes.push({ raw: directScene });
-    }
 
     for (const part of textParts) {
       const { cleaned, scenes: fencedScenes } = extractExcalidrawBlocks(part);
@@ -426,7 +675,7 @@
     if (!hljsPromise) {
       hljsPromise = (async () => {
         const { default: core } = await import('highlight.js/lib/core');
-        const [js, ts, rust, python, bash, json, xml, css, sql] = await Promise.all([
+        const [js, ts, rust, python, bash, json, xml, css, sql, yaml, markdown, diff] = await Promise.all([
           import('highlight.js/lib/languages/javascript'),
           import('highlight.js/lib/languages/typescript'),
           import('highlight.js/lib/languages/rust'),
@@ -435,7 +684,10 @@
           import('highlight.js/lib/languages/json'),
           import('highlight.js/lib/languages/xml'), // html / xml
           import('highlight.js/lib/languages/css'),
-          import('highlight.js/lib/languages/sql')
+          import('highlight.js/lib/languages/sql'),
+          import('highlight.js/lib/languages/yaml'),
+          import('highlight.js/lib/languages/markdown'),
+          import('highlight.js/lib/languages/diff')
         ]);
         core.registerLanguage('javascript', js.default);
         core.registerLanguage('js', js.default);
@@ -452,6 +704,12 @@
         core.registerLanguage('xml', xml.default);
         core.registerLanguage('css', css.default);
         core.registerLanguage('sql', sql.default);
+        core.registerLanguage('yaml', yaml.default);
+        core.registerLanguage('yml', yaml.default);
+        core.registerLanguage('markdown', markdown.default);
+        core.registerLanguage('md', markdown.default);
+        core.registerLanguage('diff', diff.default);
+        core.registerLanguage('patch', diff.default);
         return core as HljsCore;
       })();
     }
@@ -572,6 +830,8 @@
       isStreaming: true,
       renderedHtml: '',
       excalidrawScenes: [],
+      mermaidScenes: [],
+      chartScenes: [],
       inlineImages: [],
       model: ev.model ?? undefined,
       source: ev.source,
@@ -641,7 +901,14 @@
   // ---------------------------------------------------------------------------
 
   function processEvent(ev: TranscriptEvent) {
-    if (ev.kind === 'meta') return;
+    if (ev.kind === 'meta') {
+      const note = metaEventLabel(ev);
+      if (!note) return;
+      const prevAssistant = lastAssistantTurn();
+      if (prevAssistant?.isStreaming) markTurnSettled(prevAssistant);
+      turns.push(systemTurn(ev.seq, note));
+      return;
+    }
 
     if (ev.kind === 'system_note') {
       // Fix 4: turn_duration — attach ms to last assistant turn, never show as pill.
@@ -658,22 +925,12 @@
         }
         return;
       }
-      // Skip system_notes with null content — these are internal Claude lifecycle
-      // events (e.g. other subtypes) that have no human-readable label.
-      if (ev.content == null) return;
+      const note = ev.content ?? systemNoteLabel(ev);
+      if (note == null) return;
       // Boundary: immediately settle any streaming assistant turn.
       const prevAssistant = lastAssistantTurn();
       if (prevAssistant?.isStreaming) markTurnSettled(prevAssistant);
-      turns.push({
-        id: String(ev.seq),
-        role: 'system',
-        content: ev.content,
-        toolBlocks: [],
-        isStreaming: false,
-        renderedHtml: '',
-        excalidrawScenes: [],
-        inlineImages: []
-      });
+      turns.push(systemTurn(ev.seq, note));
       return;
     }
 
@@ -690,6 +947,8 @@
           isStreaming: false,
           renderedHtml: '',
           excalidrawScenes: [],
+          mermaidScenes: [],
+          chartScenes: [],
           inlineImages: []
         });
       } else if (ev.role === 'assistant') {
@@ -723,6 +982,17 @@
       return;
     }
 
+    if (ev.kind === 'unknown') {
+      const special = specialSystemTurn(ev);
+      if (special) {
+        turns.push(special);
+        return;
+      }
+      const note = unknownEventLabel(ev);
+      if (note) turns.push(systemTurn(ev.seq, note));
+      return;
+    }
+
     if (ev.kind === 'thinking') {
       const last = currentAssistantTurn(ev);
       // P1-A: same invalidation pattern as message events — always mark in-flight
@@ -748,7 +1018,7 @@
         resultExcalidrawScenes: [],
         resultInlineImages: [],
         isError: false,
-        expanded: true
+        expanded: false
       });
       return;
     }
@@ -762,13 +1032,32 @@
             block.result = ev.tool_result;
             block.isError = ev.is_error ?? false;
             hydrateToolResult(block);
-            block.expanded = true;
             break;
           }
         }
       }
       return;
     }
+  }
+
+  function systemTurn(
+    seq: number,
+    content: string,
+    opts: Pick<ChatTurn, 'systemKind' | 'systemHref' | 'systemDetail'> = {}
+  ): ChatTurn {
+    return {
+      id: String(seq),
+      role: 'system',
+      content,
+      toolBlocks: [],
+      isStreaming: false,
+      renderedHtml: '',
+      excalidrawScenes: [],
+      mermaidScenes: [],
+      chartScenes: [],
+      inlineImages: [],
+      ...opts
+    };
   }
 
   // ---- Streaming state sync -------------------------------------------------
@@ -790,16 +1079,23 @@
         !renderingTurnIds.has(t.id)
     );
 
-    // Pre-process each pending turn: extract excalidraw scenes and inline images
-    // from the raw content so markdown is rendered without excalidraw fences.
+    // Pre-process each pending turn: extract visual blocks and inline images
+    // from the raw content so markdown is rendered without diagram/chart fences.
     for (const turn of pending) {
       if (!turn.cleanedContent) {
-        const { cleaned, scenes } = extractExcalidrawBlocks(turn.content);
-        turn.cleanedContent = cleaned || turn.content;
-        turn.excalidrawScenes = scenes.map((raw) => ({ raw }));
-        turn.inlineImages = extractStandaloneImages(cleaned);
+        const excalidraw = extractExcalidrawBlocks(turn.content);
+        const mermaid = extractMermaidBlocks(excalidraw.cleaned);
+        const charts = extractChartBlocks(mermaid.cleaned);
+        turn.cleanedContent = charts.cleaned || turn.content;
+        turn.excalidrawScenes = excalidraw.scenes.map((raw) => ({ raw }));
+        turn.mermaidScenes = mermaid.scenes.map((raw) => ({ raw }));
+        turn.chartScenes = charts.scenes.map((raw) => renderSimpleChart(raw));
+        turn.inlineImages = extractStandaloneImages(charts.cleaned);
         for (const scene of turn.excalidrawScenes) {
           void renderExcalidraw(scene);
+        }
+        for (const scene of turn.mermaidScenes) {
+          void renderMermaid(scene);
         }
       }
     }
@@ -859,6 +1155,11 @@
   function openSSE(sessionId: string) {
     closeSSE(); // also clears sseReconnectTimer
     closePtyFallback();
+    // Round 4: clear awaiting indicator on new session open.
+    awaitingResponse = false;
+    if (awaitingResponseTimer) { clearTimeout(awaitingResponseTimer); awaitingResponseTimer = null; }
+    hadWorkingState = false;
+    fallbackSawWorking = false;
     turns = [];
     renderingTurnIds = new Set();
     // P1-B: clear orphaned debounce timers from the previous session so they
@@ -867,7 +1168,9 @@
     staleRenders.clear();
     lastSeq = 0;
     fallbackOutputBytes = 0;
+    lastPtyFallbackSeq = 0;
     fallbackArmed = false;
+    fallbackDone = false;
     transcriptSeen = false;
     eventQueue = [];
     sseAttempts = 0;
@@ -877,8 +1180,13 @@
     void loadAttachments();
     openTranscriptSSE(sessionId); // BUG A: manual reconnect with since=lastSeq
 
+    // If no structured transcript arrives, read PTY output as a backup even
+    // for idle sessions: older/completed runs can still have terminal replay
+    // available while the transcript watcher has no visible message events.
     fallbackTimer = setTimeout(() => {
-      if (!transcriptSeen && turns.length === 0) openPtyFallback(sessionId);
+      if (!transcriptSeen && turns.length === 0) {
+        openPtyFallback(sessionId);
+      }
     }, 900);
   }
 
@@ -932,8 +1240,12 @@
     // the transcript reconnect is still in flight.
     if (!transcriptSeen && fallbackTimer !== null) {
       clearTimeout(fallbackTimer);
+      // Same backup path as openSSE: if transcript replay is still absent,
+      // try terminal output instead of leaving ChatView blank.
       fallbackTimer = setTimeout(() => {
-        if (!transcriptSeen && turns.length === 0) openPtyFallback(sessionId);
+        if (!transcriptSeen && turns.length === 0) {
+          openPtyFallback(sessionId);
+        }
       }, 900);
     }
     const cap = Math.min(5000, 500 * Math.pow(2, sseAttempts));
@@ -994,6 +1306,8 @@
     return () => {
       settledTimers.forEach((t) => clearTimeout(t));
       settledTimers.clear();
+      // Round 4: clean up awaiting-response timer on unmount.
+      if (awaitingResponseTimer) { clearTimeout(awaitingResponseTimer); awaitingResponseTimer = null; }
       closeSSE();
       closePtyFallback();
     };
@@ -1098,6 +1412,8 @@
 
   function appendPtyFallback(ev: PtyOutputEvent) {
     if (!ev.b64) return;
+    if (ev.seq <= lastPtyFallbackSeq && lastPtyFallbackSeq > 0) return;
+    if (ev.seq > lastPtyFallbackSeq) lastPtyFallbackSeq = ev.seq;
     const text = cleanPtyText(decodeBase64Utf8(ev.b64));
     if (!text.trim()) return;
 
@@ -1111,6 +1427,8 @@
         isStreaming: true,
         renderedHtml: '',
         excalidrawScenes: [],
+        mermaidScenes: [],
+        chartScenes: [],
         inlineImages: [],
         source: 'pty',
         model: session?.kind ? `${session.kind} output` : 'agent output'
@@ -1143,6 +1461,28 @@
       .replace(/\r/g, '\n')
       .replace(//g, '')
       .replace(/\n{4,}/g, '\n\n\n');
+  }
+
+  type PtyLineKind = 'prompt' | 'action' | 'result' | 'error' | 'output' | 'muted';
+
+  function ptyPrettyLines(content: string): Array<{ id: string; kind: PtyLineKind; text: string }> {
+    return content
+      .split('\n')
+      .map((raw, index) => ({ id: `${index}-${raw.slice(0, 12)}`, kind: classifyPtyLine(raw), text: raw.trimEnd() }))
+      .filter((line) => line.text.trim().length > 0)
+      .slice(-420);
+  }
+
+  function classifyPtyLine(raw: string): PtyLineKind {
+    const line = raw.trim();
+    if (!line) return 'muted';
+    if (/^(❯|>|user:|you:|human:)/i.test(line)) return 'prompt';
+    if (/^(•|●|⏺|↳|☐|☑|☒|✢|✻|✳|✶|⠋|⠙|⠹|⠸|⠼|⠴|⠦|⠧|⠇|⠏)/.test(line)) return 'action';
+    if (/^(✓|✔|done|success|completed)/i.test(line)) return 'result';
+    if (/^(✗|×|error|failed|failure|panic|denied)/i.test(line)) return 'error';
+    if (/^(└|⎿|│|╰|├|─|\$|ran\\b|running\\b)/i.test(line)) return 'output';
+    if (/^(thinking|working|reading|editing|applying|checking|searching|writing|creating|updating|calling)\\b/i.test(line)) return 'action';
+    return 'output';
   }
 
   // BUG D — Historical turns from prevSid (previous session after restart).
@@ -1227,6 +1567,88 @@
     onTotalTokens?.(totalInputTok, totalOutputTok);
   });
 
+  // Round 4: reactively clear the awaitingResponse optimistic flag when the agent starts
+  // streaming (any assistant turn at index >= sendTurnCount appears), or when detected_state
+  // transitions working→idle (safety net for responses that produce no new turns).
+  $effect(() => {
+    const isWorking = session?.detected_state === 'working';
+
+    if (awaitingResponse) {
+      // Track if we've seen the agent in working state while waiting
+      if (isWorking) hadWorkingState = true;
+
+      // P1 fix: clear as soon as any NEW assistant turn appears (index >= sendTurnCount).
+      // The old approach (lastAssistantTurn()) found turns from PREVIOUS rounds that already
+      // had content, so the flag cleared on the very first $effect tick. Now we only consider
+      // turns pushed AFTER sendInput() was called. The stream-cursor covers "turn exists but
+      // no content yet", so clearing on turn creation (not content arrival) also eliminates
+      // the double-indicator issue (P2-B).
+      if (turns.findIndex((t, i) => i >= sendTurnCount && t.role === 'assistant') !== -1) {
+        awaitingResponse = false;
+        if (awaitingResponseTimer) { clearTimeout(awaitingResponseTimer); awaitingResponseTimer = null; }
+        return;
+      }
+
+      // Safety net: clear if agent finished without creating any new transcript turn
+      // (e.g. already-processed input, or response completed fully before SSE batched).
+      if (hadWorkingState && !isWorking) {
+        awaitingResponse = false;
+        if (awaitingResponseTimer) { clearTimeout(awaitingResponseTimer); awaitingResponseTimer = null; }
+        hadWorkingState = false;
+      }
+    } else {
+      // Reset tracking when not awaiting
+      hadWorkingState = false;
+    }
+  });
+
+  // FIX 2: PTY fallback visibility management.
+  //
+  // Auto-hide applies ONLY to the "idle TUI banner" scenario: the fallback was
+  // armed but produced no useful bytes, the agent never entered working state,
+  // and the user hasn't sent any message in this session view. This covers the
+  // case where opening a session at rest shows only the CLI prompt/banner.
+  //
+  // If the agent DID enter working state (fallbackSawWorking=true), the PTY block
+  // represents a real response and must stay visible. When the agent then goes idle,
+  // we set fallbackDone=true so the block can update its label from
+  // "Live terminal output…" to "Response (terminal output)" and open by default.
+  //
+  // "User has interacted" = there is at least one user turn in the current turns
+  // array. Once the user sends a message we never auto-hide.
+  $effect(() => {
+    // Track if the agent became working while the fallback was open.
+    if (fallbackArmed && agentIsWorking) {
+      fallbackSawWorking = true;
+    }
+
+    // If fallback saw real work or replayed real output and the agent is now
+    // idle, mark it as done so the PTY block shows the "finished" UI.
+    if (fallbackArmed && !transcriptSeen && (fallbackSawWorking || fallbackOutputBytes > 0) && !agentIsWorking && !awaitingResponse) {
+      if (!fallbackDone) {
+        fallbackDone = true;
+      }
+    }
+
+    // Auto-dismiss ONLY when:
+    //   • fallback was armed, no real work/output was seen
+    //   • agent is idle and not awaiting response
+    //   • the user has NOT sent any message in this view (no user turns)
+    //     — once the user interacts, any PTY output is relevant and stays.
+    const userHasInteracted = turns.some(t => t.role === 'user');
+    if (fallbackArmed && !transcriptSeen && !agentIsWorking && !awaitingResponse && !fallbackSawWorking && fallbackOutputBytes === 0 && !userHasInteracted) {
+      const autoHideTimer = setTimeout(() => {
+        // Re-check inside the callback — state may have changed since scheduling.
+        const stillNoInteraction = !turns.some(t => t.role === 'user');
+        if (fallbackArmed && !transcriptSeen && !agentIsWorking && !awaitingResponse && !fallbackSawWorking && fallbackOutputBytes === 0 && stillNoInteraction) {
+          turns = turns.filter(t => t.source !== 'pty');
+          closePtyFallback();
+        }
+      }, 600);
+      return () => clearTimeout(autoHideTimer);
+    }
+  });
+
   // ---- Input handling -------------------------------------------------------
 
   async function sendInput() {
@@ -1242,6 +1664,16 @@
       await api.sessions.input(session.id, encoder.encode(payload));
       await new Promise((r) => setTimeout(r, 60));
       await api.sessions.input(session.id, encoder.encode('\r'));
+      // Round 4: optimistic indicator — show "awaiting response" bubble immediately.
+      sendTurnCount = turns.length; // P1: snapshot index of new-turn boundary
+      awaitingResponse = true;
+      hadWorkingState = false;
+      scheduleScroll(); // P2-E: scroll bubble into view immediately
+      if (awaitingResponseTimer) clearTimeout(awaitingResponseTimer);
+      awaitingResponseTimer = setTimeout(() => {
+        awaitingResponse = false;
+        awaitingResponseTimer = null;
+      }, 90_000);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       toast.error(`Send failed: ${msg}`);
@@ -1269,13 +1701,13 @@
 
   let thinkingExpanded = $state<Record<string, boolean>>({});
 
-  function toggleThinking(turnId: string, streaming: boolean) {
-    thinkingExpanded[turnId] = !(thinkingExpanded[turnId] ?? streaming);
+  // Round 4: collapsed by default — user must click to expand.
+  function toggleThinking(turnId: string) {
+    thinkingExpanded[turnId] = !thinkingExpanded[turnId];
   }
 
-  function isThinkingExpanded(turnId: string, streaming: boolean): boolean {
-    if (turnId in thinkingExpanded) return thinkingExpanded[turnId];
-    return streaming;
+  function isThinkingExpanded(turnId: string): boolean {
+    return thinkingExpanded[turnId] ?? false;
   }
 
   // ---- JSON pretty print ----------------------------------------------------
@@ -1286,6 +1718,87 @@
     } catch {
       return String(val);
     }
+  }
+
+  function rawObject(ev: TranscriptEvent): Record<string, unknown> {
+    return ev.raw && typeof ev.raw === 'object' ? (ev.raw as Record<string, unknown>) : {};
+  }
+
+  function metaEventLabel(ev: TranscriptEvent): string | null {
+    const raw = rawObject(ev);
+    const topType = typeof raw.type === 'string' ? raw.type : '';
+    const payload =
+      raw.payload && typeof raw.payload === 'object' ? (raw.payload as Record<string, unknown>) : raw;
+    const payloadType = typeof payload.type === 'string' ? payload.type : topType;
+
+    if (topType === 'permission-mode') {
+      const mode = String(raw.permissionMode ?? raw.mode ?? 'unknown');
+      return `Permission mode: ${mode}`;
+    }
+    if (payloadType.includes('approval') || payloadType.includes('permission')) {
+      return `Approval event: ${payloadType}`;
+    }
+    if (payloadType === 'task_complete') {
+      const duration = typeof payload.duration_ms === 'number' ? ` in ${formatDuration(payload.duration_ms)}` : '';
+      return `Task complete${duration}`;
+    }
+    if (payloadType === 'turn_context') return null;
+    if (topType === 'session_meta') return null;
+    if (topType === 'ai-title') return null;
+    return null;
+  }
+
+  function firstString(raw: Record<string, unknown>, keys: string[]): string | null {
+    for (const key of keys) {
+      const value = raw[key];
+      if (typeof value === 'string' && value.trim()) return value.trim();
+      if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+    }
+    return null;
+  }
+
+  function specialSystemTurn(ev: TranscriptEvent): ChatTurn | null {
+    const raw = rawObject(ev);
+    const type = typeof raw.type === 'string' ? raw.type : '';
+
+    if (type === 'pr-link') {
+      const href = firstString(raw, ['url', 'href', 'link', 'pr_url']);
+      const number = firstString(raw, ['number', 'pr_number']);
+      const title = firstString(raw, ['title', 'name']);
+      const label = number ? `Pull request #${number}` : 'Pull request created';
+      return systemTurn(ev.seq, label, {
+        systemKind: 'link',
+        systemHref: href ?? undefined,
+        systemDetail: title ?? href ?? undefined
+      });
+    }
+
+    if (type.includes('approval') || type.includes('permission')) {
+      const tool = firstString(raw, ['tool', 'tool_name', 'name', 'command']);
+      return systemTurn(ev.seq, tool ? `Approval required: ${tool}` : 'Approval required', {
+        systemKind: 'approval',
+        systemDetail: tool ? undefined : type
+      });
+    }
+
+    return null;
+  }
+
+  function systemNoteLabel(ev: TranscriptEvent): string | null {
+    if (ev.subtype === 'token_count' && ev.usage) {
+      const total = ev.usage.total_tokens;
+      return typeof total === 'number' ? `Token usage: ${formatInt(total)} total` : 'Token usage updated';
+    }
+    if (ev.subtype === 'init') return 'Session initialized';
+    if (ev.subtype === 'compact') return 'Context compacted';
+    return ev.subtype ? ev.subtype.replaceAll('_', ' ') : null;
+  }
+
+  function unknownEventLabel(ev: TranscriptEvent): string | null {
+    const raw = rawObject(ev);
+    const type = typeof raw.type === 'string' ? raw.type : ev.kind;
+    if (!type) return null;
+    return `Unparsed ${ev.source} event: ${type}`;
   }
 
   function formatInt(value: number | null | undefined): string {
@@ -1306,12 +1819,50 @@
     return 'running';
   }
 
+  // Round 5: returns last 2 non-empty lines of thinking for the live status line.
+  function thinkingTailShort(thinking: string): string {
+    const lines = thinking.split('\n').filter(l => l.trim().length > 0);
+    if (lines.length <= 2) return lines.join('\n');
+    return lines.slice(lines.length - 2).join('\n');
+  }
+
+  // Round 5: derives the live status line for the working indicator from the
+  // current workingActiveTurn. Priority: running tool > thinking tail > idle.
+  function workingStatusLine(turn: ChatTurn | null) {
+    if (!turn) return { kind: 'idle' as const };
+    const runningBlock = [...turn.toolBlocks].reverse().find(b => toolState(b) === 'running');
+    if (runningBlock) return { kind: 'tool' as const, name: runningBlock.name };
+    if (turn.thinking) return { kind: 'thinking' as const, tail: thinkingTailShort(turn.thinking) };
+    return { kind: 'idle' as const };
+  }
+
   function toolPreview(value: unknown): string {
     if (value == null) return '';
     if (typeof value === 'string') return value.slice(0, 140);
     if (Array.isArray(value)) return `${value.length} item${value.length === 1 ? '' : 's'}`;
     if (typeof value === 'object') return Object.keys(value as Record<string, unknown>).join(', ');
     return String(value);
+  }
+
+  async function decideCurrentApproval(decision: Decision): Promise<void> {
+    if (!currentApproval) return;
+    try {
+      await approvalsState.decide(currentApproval.id, decision);
+      toast.success(decision === 'allow' ? 'Approval allowed' : 'Approval denied');
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to submit approval decision');
+    }
+  }
+
+  async function sendCliApprovalChoice(choice: '1' | '2' | '3'): Promise<void> {
+    if (!session || stopped) return;
+    try {
+      await api.sessions.input(session.id, encoder.encode(choice));
+      await new Promise((r) => setTimeout(r, 40));
+      await api.sessions.input(session.id, encoder.encode('\r'));
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to send approval choice');
+    }
   }
 
   // ---- Attachment file icon helper ------------------------------------------
@@ -1369,6 +1920,33 @@
     bind:this={scrollEl}
     onscroll={onChatScrolled}
   >
+    {#snippet awaitingBubble()}
+      <!-- Round 5: working indicator — persists while awaitingResponse OR while the
+           last assistant turn is streaming without visible content yet. Shows 3 dots
+           + a live status line (running tool > thinking tail > "Working…"). -->
+      {@const _activeTurn = workingActiveTurn}
+      {@const _status = workingStatusLine(_activeTurn)}
+      <div class="chat-turn assistant-turn awaiting-turn" aria-live="polite" aria-label="Agent is processing">
+        <div class="turn-rail">
+          <div class="turn-avatar agent-avatar"><Bot size={14} /></div>
+        </div>
+        <div class="turn-body">
+          <div class="turn-meta"><span>Agent</span></div>
+          <div class="awaiting-indicator">
+            <span class="processing-dots" aria-label="Processing">
+              <span></span><span></span><span></span>
+            </span>
+            {#if _status.kind === 'tool'}
+              <span class="working-status-line">Running <span class="working-status-name">{_status.name}</span>…</span>
+            {:else if _status.kind === 'thinking'}
+              <span class="working-status-line working-status-thinking">{_status.tail}</span>
+            {:else}
+              <span class="working-status-line working-status-idle">Working…</span>
+            {/if}
+          </div>
+        </div>
+      </div>
+    {/snippet}
     {#if !session}
       <!-- No session selected -->
       <div class="empty-chat mx-auto flex h-full max-w-[760px] flex-col items-center justify-center gap-4 px-6 text-center">
@@ -1377,22 +1955,38 @@
         <p class="empty-subtitle">The structured transcript will appear here.</p>
       </div>
     {:else if turns.length === 0}
-      <!-- Empty state -->
-      <div class="empty-chat mx-auto flex h-full max-w-[760px] flex-col items-center justify-center gap-4 px-6 text-center">
-        <div class="empty-mark" aria-hidden="true">✳</div>
-        <p class="empty-title">Ready when you are</p>
-        <p class="empty-subtitle">
-          {#if session.has_transcript === false}
-            No transcript yet. The agent will write one as it works.
-          {:else if transcriptUnavailable}
-            Transcript not available.
-          {:else if fallbackArmed}
-            Reading live agent output…
-          {:else}
-            Waiting for transcript events…
+      {#if showWorkingIndicator}
+        <!-- Round 5: working indicator while no turns exist yet (awaiting or pre-content). -->
+        <div class="chat-thread mx-auto max-w-[820px] px-5 py-8 sm:px-7">
+          {@render awaitingBubble()}
+        </div>
+      {:else}
+        <!-- Empty state -->
+        <div class="empty-chat mx-auto flex h-full max-w-[760px] flex-col items-center justify-center gap-4 px-6 text-center">
+          <div class="empty-mark" aria-hidden="true">✳</div>
+          <p class="empty-title">Ready when you are</p>
+          <p class="empty-subtitle">
+            {#if session.has_transcript === false}
+              No transcript yet. The agent will write one as it works.
+            {:else if transcriptUnavailable}
+              Transcript not available.
+            {:else if fallbackArmed}
+              Reading live agent output…
+            {:else if agentIsWorking}
+              Agent is working. Live transcript events will appear here.
+            {:else}
+              Waiting for transcript events…
+            {/if}
+          </p>
+          {#if agentIsWorking || fallbackArmed}
+            <div class="live-empty-card" aria-live="polite">
+              <span class="live-empty-icon"><Loader2 size={14} class="animate-spin" /></span>
+              <span class="live-empty-main">Working</span>
+              <span class="live-empty-sub">watching transcript and terminal output</span>
+            </div>
           {/if}
-        </p>
-      </div>
+        </div>
+      {/if}
     {:else}
       <div class="chat-thread mx-auto max-w-[820px] px-5 py-8 sm:px-7">
         <!-- BUG D: historical turns from previous session (shown dimmed before separator) -->
@@ -1449,6 +2043,7 @@
                     <span class="meta-dot"></span>
                     <span class="usage-chip">{formatInt(fallbackOutputBytes)} chars</span>
                   {/if}
+                  <!-- Round 4: live-state-chip and "thought complete" removed — redundant with thinking disclosure and pending bubble -->
                   {#if usageLabel(turn.usage)}
                     <span class="meta-dot"></span>
                     <span class="usage-chip">{usageLabel(turn.usage)}</span>
@@ -1456,58 +2051,69 @@
                 </div>
 
                 <!-- Thinking block (Fix 2: live tail while streaming, collapse on content/done) -->
-                {#if turn.thinking}
+                <!-- Round 4 — Thinking disclosure: lightweight, collapsed by default. -->
+                <!-- Round 5: suppressed while this turn is the workingActiveTurn — the
+                     working indicator already shows the thinking tail, so showing the
+                     disclosure simultaneously would duplicate the thinking text. It
+                     reappears once the turn has content or finishes streaming. -->
+                {#if turn.thinking && turn !== workingActiveTurn}
                   {@const thinkingActive = turn.isStreaming && !turn.content}
-                  {@const expanded = isThinkingExpanded(turn.id, thinkingActive)}
+                  {@const expanded = isThinkingExpanded(turn.id)}
                   <div
-                    class="action-block thinking-block"
-                    class:action-open={expanded}
+                    class="thinking-disclosure"
+                    class:thinking-disclosure-open={expanded}
                   >
                     <button
                       type="button"
-                      onclick={() => toggleThinking(turn.id, thinkingActive)}
-                      class="action-header"
+                      onclick={() => toggleThinking(turn.id)}
+                      class="thinking-disc-header"
+                      aria-expanded={expanded}
                     >
-                      <span class="action-icon subtle">
+                      <span class="thinking-disc-icon" aria-hidden="true">
                         {#if thinkingActive}
-                          <Loader2 size={13} class="animate-spin" />
+                          <Loader2 size={12} class="animate-spin" />
                         {:else}
-                          <ChevronDown size={13} />
+                          <ChevronDown size={12} />
                         {/if}
                       </span>
                       {#if thinkingActive}
-                        <!-- Live: animated dots while actively thinking -->
-                        <span class="action-title thinking-live-title">
+                        <!-- Live: shimmer "Thinking..." label -->
+                        <span class="thinking-disc-label">
                           Thinking<span class="thinking-dots" aria-hidden="true"><span>.</span><span>.</span><span>.</span></span>
                         </span>
-                        <span class="action-preview"></span>
                       {:else}
-                        <!-- Completed: "Thought (N.Ns)" summary -->
-                        <span class="action-title">
-                          Thought{#if turn.durationMs}&thinsp;<span class="thinking-dur">({formatDuration(turn.durationMs)})</span>{/if}
+                        <!-- Completed: "Thought for N.Ns" -->
+                        <span class="thinking-disc-label">
+                          Thought{#if turn.durationMs}&thinsp;<span class="thinking-dur">{formatDuration(turn.durationMs)}</span>{/if}
                         </span>
-                        <span class="action-preview">{turn.thinking.slice(0, 90)}</span>
                       {/if}
-                      <span class="action-caret">
-                        {#if expanded}<ChevronUp size={13} />{:else}<ChevronDown size={13} />{/if}
+                      <span class="thinking-disc-caret" aria-hidden="true">
+                        {#if expanded}<ChevronUp size={12} />{:else}<ChevronDown size={12} />{/if}
                       </span>
                     </button>
+                    {#if !expanded && !thinkingActive && turn.thinking}
+                      <!-- Collapsed preview: ~2 lines with fade clamp, not shown while actively streaming -->
+                      <div class="thinking-disc-preview" aria-hidden="true">
+                        {turn.thinking}
+                      </div>
+                    {/if}
                     {#if expanded}
-                      {#if thinkingActive}
-                        <!-- Live tail: last ~10 lines, auto-scrolled; does not conflict with
-                             scheduleScroll which operates on the outer chat-scroll element. -->
-                        <div
-                          class="action-detail thinking-detail thinking-tail"
-                          use:thinkingScroll={turn.thinking}
-                        >
-                          {thinkingTail(turn.thinking)}
-                        </div>
-                      {:else}
-                        <!-- Completed: full thinking text -->
-                        <div class="action-detail thinking-detail">
-                          {turn.thinking}
-                        </div>
-                      {/if}
+                      <div class="thinking-disc-body">
+                        {#if thinkingActive}
+                          <!-- Live tail: last ~10 lines, auto-scrolled (action on separate element, no conflict with outer scroll) -->
+                          <div
+                            class="thinking-tail thinking-disc-text"
+                            use:thinkingScroll={turn.thinking}
+                          >
+                            {thinkingTail(turn.thinking)}
+                          </div>
+                        {:else}
+                          <!-- Completed: full thinking text -->
+                          <div class="thinking-disc-text">
+                            {turn.thinking}
+                          </div>
+                        {/if}
+                      </div>
                     {/if}
                   </div>
                 {/if}
@@ -1621,11 +2227,20 @@
                 <!-- Main content: raw text while streaming, rendered HTML when done -->
                 {#if turn.content}
                   {#if turn.source === 'pty'}
-                    <!-- BUG C: PTY blob shown as collapsed block; transcript arrival removes this turn -->
-                    <details class="pty-block">
+                    <!-- FIX 2: PTY fallback block.
+                         - While agent is working: label "Live terminal output…" (collapsed).
+                         - When agent finishes without transcript (fallbackDone): label
+                           "Response (terminal output)" with open attribute — auto-expanded.
+                         - Transcript arrival removes this turn entirely (handled in openTranscriptSSE).
+                         - "View in Terminal tab" link always present for full context. -->
+                    <details class="pty-block" open={fallbackDone || !agentIsWorking}>
                       <summary class="pty-block-summary">
-                        <Loader2 size={11} class="animate-spin pty-block-icon" />
-                        <span>Terminal output (waiting for transcript…)</span>
+                        <Terminal size={11} class="pty-block-icon" />
+                        {#if fallbackDone || !agentIsWorking}
+                          <span>Response (terminal output)</span>
+                        {:else}
+                          <span>Live terminal output…</span>
+                        {/if}
                         {#if onSwitchToTerminal}
                           <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
                           <span
@@ -1636,7 +2251,20 @@
                           >View in Terminal tab</span>
                         {/if}
                       </summary>
-                      <pre class="pty-fallback-text">{turn.content}</pre>
+                      <div class="pty-pretty-stream" aria-label="Agent output rendered as activity stream">
+                        {#each ptyPrettyLines(turn.content) as line (line.id)}
+                          <div class="pty-pretty-line pty-line-{line.kind}">
+                            <span class="pty-line-glyph" aria-hidden="true">
+                              {#if line.kind === 'prompt'}❯
+                              {:else if line.kind === 'action'}•
+                              {:else if line.kind === 'result'}✓
+                              {:else if line.kind === 'error'}!
+                              {:else}└{/if}
+                            </span>
+                            <span class="pty-line-text">{line.text}</span>
+                          </div>
+                        {/each}
+                      </div>
                     </details>
                   {:else if turn.renderedHtml}
                     <!-- Completed turn: safe rendered markdown.
@@ -1686,6 +2314,47 @@
                         </div>
                       {/if}
                     {/each}
+                    {#each turn.mermaidScenes as scene, i (i)}
+                      {#if scene.svgHtml}
+                        <div class="diagram-container">
+                          <!-- eslint-disable-next-line svelte/no-at-html-tags -->
+                          {@html scene.svgHtml}
+                        </div>
+                      {:else if scene.failed}
+                        <details class="excalidraw-fallback diagram-fallback" open>
+                          <summary class="excalidraw-fallback-summary">
+                            Mermaid source (diagram syntax needs attention)
+                          </summary>
+                          {#if scene.error}
+                            <p class="diagram-error">
+                              Mermaid could not render this block. The source is preserved below.
+                            </p>
+                          {/if}
+                          <pre class="action-json">{scene.raw}</pre>
+                        </details>
+                      {:else}
+                        <div class="excalidraw-loading">
+                          <Loader2 size={14} class="animate-spin" />
+                          <span>Rendering diagram...</span>
+                        </div>
+                      {/if}
+                    {/each}
+                    {#each turn.chartScenes as scene, i (i)}
+                      {#if scene.svgHtml}
+                        <div class="diagram-container chart-container">
+                          <!-- eslint-disable-next-line svelte/no-at-html-tags -->
+                          {@html scene.svgHtml}
+                        </div>
+                      {:else if scene.failed}
+                        <details class="excalidraw-fallback">
+                          <summary class="excalidraw-fallback-summary">
+                            Chart (render unavailable)
+                          </summary>
+                          {#if scene.error}<p class="diagram-error">{scene.error}</p>{/if}
+                          <pre class="action-json">{scene.raw}</pre>
+                        </details>
+                      {/if}
+                    {/each}
                   {:else}
                     <!-- Streaming turn: raw text, no markdown parse overhead -->
                     <p class="chat-streaming-text whitespace-pre-wrap break-words">
@@ -1713,10 +2382,37 @@
               class="system-turn my-4 flex justify-center"
               style="contain: content; content-visibility: auto; contain-intrinsic-size: 32px;"
             >
-              <span>{turn.content}</span>
+              {#if turn.systemKind === 'link' && turn.systemHref}
+                <a href={turn.systemHref} target="_blank" rel="noreferrer" class="system-card system-link">
+                  <Link2 size={13} />
+                  <span class="system-main">{turn.content}</span>
+                  {#if turn.systemDetail}<span class="system-detail">{turn.systemDetail}</span>{/if}
+                </a>
+              {:else if turn.systemKind === 'approval'}
+                <span class="system-card system-approval">
+                  <AlertTriangle size={13} />
+                  <span class="system-main">{turn.content}</span>
+                  {#if turn.systemDetail}<span class="system-detail">{turn.systemDetail}</span>{/if}
+                  {#if !stopped}
+                    <span class="system-approval-actions">
+                      <button type="button" onclick={() => void sendCliApprovalChoice('1')}>Yes</button>
+                      <button type="button" onclick={() => void sendCliApprovalChoice('2')}>Always</button>
+                      <button type="button" onclick={() => void sendCliApprovalChoice('3')}>No</button>
+                    </span>
+                  {/if}
+                </span>
+              {:else}
+                <span>{turn.content}</span>
+              {/if}
             </div>
           {/if}
         {/each}
+
+        <!-- Round 5: working indicator — persists through awaitingResponse AND the
+             pre-content streaming phase (thinking/tool-only, no text yet). -->
+        {#if showWorkingIndicator}
+          {@render awaitingBubble()}
+        {/if}
       </div>
     {/if}
   </div>
@@ -1732,8 +2428,38 @@
   {/if}
 
   <!-- Chat input footer -->
-  <div class="chat-composer-wrap shrink-0 px-4 pb-4 pt-3">
-    <div class="chat-composer mx-auto">
+  <div class="chat-composer-wrap shrink-0 px-4 pb-4 pt-3" class:chat-composer-stopped={stopped}>
+    {#if currentApproval}
+      <div class="approval-inline mx-auto" role="status" aria-live="polite">
+        <div class="approval-inline-icon">
+          <AlertTriangle size={15} />
+        </div>
+        <div class="approval-inline-copy">
+          <span class="approval-inline-title">Approval required</span>
+          <span class="approval-inline-detail">
+            {currentApproval.tool}
+            {#if sessionApprovals.length > 1}
+              · {sessionApprovals.length - 1} more pending
+            {/if}
+          </span>
+        </div>
+        <button
+          type="button"
+          class="approval-inline-btn approval-deny"
+          onclick={() => void decideCurrentApproval('deny')}
+        >
+          Deny
+        </button>
+        <button
+          type="button"
+          class="approval-inline-btn approval-allow"
+          onclick={() => void decideCurrentApproval('allow')}
+        >
+          Allow
+        </button>
+      </div>
+    {/if}
+    <div class="chat-composer mx-auto" class:chat-composer-stopped={stopped}>
       <!-- Attachment bar (shown when session has attached files) -->
       {#if attachments.length > 0 && session}
         {@const sid = session.id}
@@ -1784,7 +2510,7 @@
       {/if}
 
       <!-- Textarea row (BUG E: show restart CTA when session is stopped) -->
-      <div class="px-4 pt-3 pb-1">
+      <div class="composer-input-row px-4 pt-3 pb-1" class:composer-input-stopped={stopped}>
         {#if stopped && onRestart}
           <div class="stopped-cta">
             <span class="stopped-label">Session not running</span>
@@ -1807,6 +2533,7 @@
         {/if}
       </div>
       <!-- Action bar: attach left, send right -->
+      {#if !stopped}
       <div class="flex items-center justify-between px-3 pb-3">
         <!-- Hidden file input -->
         <input
@@ -1842,6 +2569,7 @@
           <Send size={14} />
         </button>
       </div>
+      {/if}
     </div>
   </div>
 </div>
@@ -1925,6 +2653,39 @@
     line-height: 1.6;
     margin: 0;
     max-width: 32rem;
+  }
+
+  .live-empty-card {
+    align-items: center;
+    background: var(--surface-window);
+    border: 1px solid var(--border-subtle);
+    border-radius: 0.7rem;
+    color: var(--fg-muted);
+    display: grid;
+    font-size: 0.76rem;
+    gap: 0.5rem;
+    grid-template-columns: auto auto minmax(0, 1fr);
+    line-height: 1.4;
+    max-width: min(30rem, 100%);
+    padding: 0.55rem 0.7rem;
+    text-align: left;
+  }
+
+  .live-empty-icon {
+    color: var(--accent);
+    display: flex;
+  }
+
+  .live-empty-main {
+    color: var(--fg-default);
+    font-weight: 700;
+  }
+
+  .live-empty-sub {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   /* ---- Turn layout ------------------------------------------------------- */
@@ -2013,6 +2774,8 @@
     border-color: transparent;
     padding-inline: 0;
   }
+
+  /* Round 4: .live-state-chip, .live-state-chip::before, .thinking-now removed (redundant with thinking disclosure + pending bubble) */
 
   .meta-dot {
     background: var(--border-subtle);
@@ -2148,14 +2911,7 @@
     padding: 0.65rem;
   }
 
-  .thinking-detail {
-    color: var(--fg-muted);
-    font-size: 0.78rem;
-    font-style: italic;
-    line-height: 1.65;
-    white-space: pre-wrap;
-    word-break: break-word;
-  }
+  /* Round 4: .thinking-detail removed — replaced by .thinking-disc-text */
 
   /* Fix 2 — Live thinking tail: capped height, scrollable, separate from global scroll */
   .thinking-tail {
@@ -2164,10 +2920,7 @@
     scroll-behavior: auto; /* instant, not smooth — keeps up with fast thinking */
   }
 
-  /* Fix 2 — Animated "Thinking..." dots in the header */
-  .thinking-live-title {
-    white-space: nowrap;
-  }
+  /* Round 4: .thinking-live-title removed (now using .thinking-disc-label) */
 
   .thinking-dots span {
     animation: thinking-blink 1.4s ease-in-out infinite;
@@ -2188,11 +2941,171 @@
     40% { opacity: 1; }
   }
 
-  /* Fix 2 — Smaller muted duration shown in the collapsed "Thought" header */
+  /* Fix 2 — Smaller muted duration shown in the "Thought for N.Ns" header */
   .thinking-dur {
     color: var(--fg-muted);
     font-size: 0.64rem;
     font-weight: 400;
+  }
+
+  /* ---- Round 4: Thinking disclosure (lightweight, collapses by default) ----- */
+
+  .thinking-disclosure {
+    background: color-mix(in srgb, var(--surface-window) 50%, transparent);
+    border: 1px solid var(--border-subtle);
+    border-radius: 0.55rem;
+    margin-bottom: 0.75rem;
+    overflow: hidden;
+  }
+
+  .thinking-disc-header {
+    align-items: center;
+    color: var(--fg-muted);
+    display: flex;
+    font-size: 0.74rem;
+    gap: 0.45rem;
+    line-height: 1.4;
+    min-height: 2.1rem;
+    padding: 0.38rem 0.6rem;
+    text-align: left;
+    transition: background 120ms ease;
+    width: 100%;
+  }
+
+  .thinking-disc-header:hover {
+    background: color-mix(in srgb, var(--fg-default) 4%, transparent);
+  }
+
+  .thinking-disc-icon {
+    align-items: center;
+    color: var(--accent);
+    display: flex;
+    flex-shrink: 0;
+  }
+
+  .thinking-disc-label {
+    color: var(--fg-default);
+    flex: 1;
+    font-weight: 500;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .thinking-disc-caret {
+    align-items: center;
+    color: var(--fg-muted);
+    display: flex;
+    flex-shrink: 0;
+    transition: transform 200ms ease;
+  }
+
+  .thinking-disclosure-open .thinking-disc-caret {
+    transform: rotate(180deg);
+  }
+
+  .thinking-disc-preview {
+    /* 2-line clamp preview with fade, shown when collapsed and completed */
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    border-top: 1px solid var(--border-subtle);
+    color: var(--fg-muted);
+    display: -webkit-box;
+    font-size: 0.74rem;
+    font-style: italic;
+    line-height: 1.5;
+    overflow: hidden;
+    padding: 0.3rem 0.6rem 0.45rem;
+    white-space: normal;
+    /* Fade at bottom */
+    -webkit-mask-image: linear-gradient(to bottom, black 30%, transparent 100%);
+    mask-image: linear-gradient(to bottom, black 30%, transparent 100%);
+  }
+
+  .thinking-disc-body {
+    border-top: 1px solid var(--border-subtle);
+    padding: 0.6rem;
+  }
+
+  .thinking-disc-text {
+    color: var(--fg-muted);
+    font-size: 0.78rem;
+    font-style: italic;
+    line-height: 1.65;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
+  /* ---- Round 4: Awaiting response bubble ---------------------------------- */
+
+  .awaiting-turn {
+    margin-bottom: 1rem;
+  }
+
+  .awaiting-indicator {
+    /* Round 5: column layout so status line sits below the dots */
+    align-items: flex-start;
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+    padding: 0.3rem 0 0.5rem;
+  }
+
+  /* Processing dots — reuses @keyframes thinking-blink from the thinking header */
+  .processing-dots {
+    align-items: center;
+    display: inline-flex;
+    gap: 0.3rem;
+  }
+
+  .processing-dots span {
+    animation: thinking-blink 1.4s ease-in-out infinite;
+    background: var(--fg-muted);
+    border-radius: 50%;
+    display: inline-block;
+    height: 0.42rem;
+    opacity: 0;
+    width: 0.42rem;
+  }
+
+  .processing-dots span:nth-child(2) {
+    animation-delay: 0.22s;
+  }
+
+  .processing-dots span:nth-child(3) {
+    animation-delay: 0.44s;
+  }
+
+  /* Round 5 — Working indicator status line */
+  .working-status-line {
+    color: var(--fg-muted);
+    font-size: 0.76rem;
+    line-height: 1.45;
+    max-width: 56ch;
+    overflow: hidden;
+  }
+
+  .working-status-name {
+    color: var(--fg-default);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-size: 0.73rem;
+  }
+
+  /* Thinking tail: 2-line clamp, italic, faded */
+  .working-status-thinking {
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    display: -webkit-box;
+    font-style: italic;
+    line-clamp: 2;
+    opacity: 0.7;
+    overflow: hidden;
+  }
+
+  .working-status-idle {
+    opacity: 0.6;
   }
 
   /* Fix 4 — Duration metadata row under assistant turn content */
@@ -2323,6 +3236,39 @@
     padding: 0.5rem;
   }
 
+  .diagram-container {
+    background: #fff;
+    border: 1px solid var(--border-subtle);
+    border-radius: 0.6rem;
+    margin-top: 0.75rem;
+    max-height: 520px;
+    overflow: auto;
+    padding: 0.75rem;
+  }
+
+  :global(.diagram-container svg) {
+    display: block;
+    height: auto;
+    max-width: 100%;
+  }
+
+  .chart-container {
+    padding: 0.9rem;
+  }
+
+  .diagram-error {
+    color: var(--dot-warn);
+    font-size: 0.72rem;
+    margin: 0.15rem 0 0.5rem;
+  }
+
+  .diagram-fallback {
+    border: 1px solid color-mix(in srgb, var(--dot-warn) 24%, var(--border-subtle));
+    border-radius: 0.55rem;
+    background: color-mix(in srgb, var(--dot-warn) 6%, var(--surface-window));
+    padding: 0.35rem 0.55rem 0.55rem;
+  }
+
   :global(.excalidraw-container svg) {
     display: block;
     max-width: 100%;
@@ -2366,13 +3312,77 @@
   }
 
   /* ---- System turn ------------------------------------------------------- */
-  .system-turn span {
+  .system-turn > span:not(.system-card) {
     background: var(--surface-window);
     border: 1px solid var(--border-subtle);
     border-radius: 999px;
     color: var(--fg-muted);
     font-size: 0.72rem;
     padding: 0.28rem 0.75rem;
+  }
+
+  .system-card {
+    align-items: center;
+    background: var(--surface-window);
+    border: 1px solid var(--border-subtle);
+    border-radius: 999px;
+    color: var(--fg-muted);
+    display: inline-grid;
+    font-size: 0.72rem;
+    gap: 0.4rem;
+    grid-template-columns: auto auto minmax(0, 1fr);
+    line-height: 1.35;
+    max-width: min(42rem, 100%);
+    padding: 0.33rem 0.75rem;
+    text-decoration: none;
+  }
+
+  .system-card :global(svg) {
+    color: var(--accent);
+  }
+
+  .system-main {
+    color: var(--fg-default);
+    font-weight: 700;
+    white-space: nowrap;
+  }
+
+  .system-detail {
+    color: var(--fg-muted);
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .system-link:hover {
+    border-color: color-mix(in srgb, var(--accent) 40%, var(--border-subtle));
+    color: var(--accent);
+  }
+
+  .system-approval {
+    border-color: color-mix(in srgb, var(--dot-warn) 36%, var(--border-subtle));
+    border-radius: 0.8rem;
+    grid-template-columns: auto auto minmax(0, 1fr) auto;
+  }
+
+  .system-approval-actions {
+    display: inline-flex;
+    gap: 0.25rem;
+  }
+
+  .system-approval-actions button {
+    border: 1px solid var(--border-subtle);
+    border-radius: 0.45rem;
+    color: var(--fg-default);
+    font-size: 0.68rem;
+    font-weight: 700;
+    min-height: 1.55rem;
+    padding: 0.12rem 0.45rem;
+  }
+
+  .system-approval-actions button:hover {
+    background: color-mix(in srgb, var(--fg-default) 6%, transparent);
   }
 
   /* ---- Composer ---------------------------------------------------------- */
@@ -2385,12 +3395,93 @@
     );
   }
 
+  .approval-inline {
+    align-items: center;
+    background: var(--surface-window);
+    border: 1px solid color-mix(in srgb, var(--dot-warn) 36%, var(--border-subtle));
+    border-radius: 0.75rem;
+    box-shadow: 0 12px 32px rgb(0 0 0 / 0.12);
+    color: var(--fg-default);
+    display: grid;
+    gap: 0.65rem;
+    grid-template-columns: auto minmax(0, 1fr) auto auto;
+    margin-bottom: 0.55rem;
+    max-width: 780px;
+    padding: 0.55rem 0.65rem;
+  }
+
+  .approval-inline-icon {
+    color: var(--dot-warn);
+    display: flex;
+  }
+
+  .approval-inline-copy {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+
+  .approval-inline-title {
+    font-size: 0.76rem;
+    font-weight: 700;
+    line-height: 1.3;
+  }
+
+  .approval-inline-detail {
+    color: var(--fg-muted);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-size: 0.68rem;
+    line-height: 1.35;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .approval-inline-btn {
+    border: 1px solid var(--border-subtle);
+    border-radius: 0.55rem;
+    font-size: 0.72rem;
+    font-weight: 700;
+    min-height: 1.9rem;
+    min-width: 3.8rem;
+    padding: 0.28rem 0.65rem;
+  }
+
+  .approval-inline-btn:hover {
+    transform: translateY(-1px);
+  }
+
+  .approval-deny {
+    color: var(--dot-danger);
+  }
+
+  .approval-allow {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: var(--surface-canvas);
+  }
+
+  .chat-composer-wrap.chat-composer-stopped {
+    padding-bottom: 0.75rem;
+    padding-top: 0.45rem;
+  }
+
   .chat-composer {
     background: var(--surface-window);
     border: 1px solid var(--border-subtle);
     border-radius: 1.05rem;
     box-shadow: 0 18px 50px rgb(0 0 0 / 0.18);
     max-width: 780px;
+  }
+
+  .chat-composer.chat-composer-stopped {
+    border-radius: 0.8rem;
+    box-shadow: 0 10px 28px rgb(0 0 0 / 0.12);
+  }
+
+  .composer-input-stopped {
+    padding-bottom: 0.55rem;
+    padding-top: 0.55rem;
   }
 
   .composer-textarea {
@@ -2568,6 +3659,18 @@
   :global(.chat-prose table) {
     margin-top: 0.7em;
     margin-bottom: 0.7em;
+  }
+
+  :global(.chat-prose .katex-display) {
+    margin: 0.9rem 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding: 0.35rem 0;
+  }
+
+  :global(.chat-prose .katex) {
+    color: var(--fg-default);
+    font-size: 1.02em;
   }
 
   :global(.chat-prose a) {
@@ -2824,6 +3927,72 @@
     color: var(--accent);
   }
 
+  .pty-pretty-stream {
+    background:
+      linear-gradient(180deg, color-mix(in srgb, var(--surface-window) 84%, transparent), var(--surface-window)),
+      var(--surface-window);
+    border-top: 1px solid var(--border-subtle);
+    display: grid;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-size: 0.78rem;
+    line-height: 1.55;
+    max-height: min(34rem, 58vh);
+    overflow: auto;
+    padding: 0.5rem 0;
+  }
+
+  .pty-pretty-line {
+    align-items: start;
+    color: var(--fg-default);
+    display: grid;
+    gap: 0.55rem;
+    grid-template-columns: 1.2rem minmax(0, 1fr);
+    min-width: 0;
+    padding: 0.12rem 0.75rem;
+  }
+
+  .pty-pretty-line:hover {
+    background: color-mix(in srgb, var(--fg-default) 3%, transparent);
+  }
+
+  .pty-line-glyph {
+    color: var(--fg-muted);
+    font-weight: 800;
+    line-height: 1.55;
+    text-align: center;
+  }
+
+  .pty-line-text {
+    min-width: 0;
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
+  }
+
+  .pty-line-prompt .pty-line-glyph,
+  .pty-line-prompt .pty-line-text {
+    color: var(--accent);
+    font-weight: 700;
+  }
+
+  .pty-line-action .pty-line-glyph {
+    color: var(--dot-warn);
+  }
+
+  .pty-line-result .pty-line-glyph,
+  .pty-line-result .pty-line-text {
+    color: var(--dot-ok);
+  }
+
+  .pty-line-error .pty-line-glyph,
+  .pty-line-error .pty-line-text {
+    color: var(--dot-danger);
+  }
+
+  .pty-line-output .pty-line-glyph,
+  .pty-line-muted .pty-line-glyph {
+    color: color-mix(in srgb, var(--fg-muted) 72%, transparent);
+  }
+
   /* ---- Historical turns — previous session (BUG D) ----------------------- */
   .prev-history-wrap {
     margin-bottom: 0.5rem;
@@ -2887,7 +4056,8 @@
     display: flex;
     gap: 0.75rem;
     justify-content: center;
-    padding: 0.45rem 0;
+    min-height: 2.2rem;
+    padding: 0;
   }
 
   .stopped-label {

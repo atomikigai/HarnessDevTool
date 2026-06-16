@@ -126,6 +126,10 @@ Use full-height panes and constrained overflow instead of page-length marketing
 sections. For the root agents view, the expected rhythm is sessions column,
 main session/terminal view, and right panel for tasks/agents/info.
 
+On narrow screens, prioritize the active work surface over secondary panes:
+Chat/Terminal must remain reachable and legible, while sessions and metadata
+panels may collapse or hide until there is enough horizontal space.
+
 Use cards only for repeated items, dialogs, and genuinely framed tools. Do not
 nest cards inside cards.
 
@@ -142,6 +146,18 @@ Data-heavy surfaces must prioritize:
 - Empty/loading/error states.
 - Timestamps and metadata that are muted but still readable.
 - Stable scroll containers.
+
+Chat transcript event blocks should read like a CLI-native activity stream:
+tool calls stay collapsed by default with a concise status row, raw arguments
+or results live behind an explicit disclosure, PR/link events render as
+actionable links, and permission prompts expose compact inline actions instead
+of requiring users to inspect raw JSON.
+
+When structured transcript events are unavailable or incomplete, ChatView may
+render PTY output as a provider-agnostic agent activity stream. It should keep
+the terminal's fidelity while improving scanability with neutral line classes
+such as prompt, action, result, error, and output; never make the treatment
+specific to one CLI such as Codex or Claude.
 
 ## States
 

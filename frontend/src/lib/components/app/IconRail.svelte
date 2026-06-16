@@ -54,7 +54,7 @@
 </script>
 
 <aside
-  class="flex h-full w-[68px] shrink-0 flex-col items-center gap-1 border-r py-3"
+  class="icon-rail flex h-full w-[68px] shrink-0 flex-col items-center gap-1 border-r py-3"
   style="background: var(--surface-rail); border-color: var(--border-subtle);"
 >
   <!-- New session button — compact "+" tile at the top of the rail. -->

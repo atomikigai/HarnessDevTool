@@ -237,7 +237,7 @@
 <div class="flex h-full min-h-0 flex-col">
   <!-- Dashboard subheader -->
   <header
-    class="flex h-14 shrink-0 items-center justify-between gap-4 border-b px-5"
+    class="dashboard-header flex h-14 shrink-0 items-center justify-between gap-4 border-b px-5"
     style="background: var(--surface-window); border-color: var(--border-subtle);"
   >
     <div>
@@ -248,7 +248,7 @@
         Backend health, active sessions, and shell wiring.
       </p>
     </div>
-    <div class="flex items-center gap-2">
+    <div class="dashboard-actions flex items-center gap-2">
       <WorkspaceSwitcher />
       {#if health.protocolVersion}
         <span
@@ -342,7 +342,7 @@
   {/if}
 
   <!-- Three-column body -->
-  <div class="flex min-h-0 flex-1">
+  <div class="workbench-body flex min-h-0 flex-1">
     <SessionsColumn
       sessions={allSessions}
       {selectedSessionId}
@@ -376,3 +376,51 @@
     selectedSessionId = sessionId;
   }}
 />
+
+<style>
+  @media (max-width: 1100px) {
+    :global(.session-right-panel) {
+      display: none;
+    }
+  }
+
+  @media (max-width: 760px) {
+    .dashboard-header {
+      align-items: flex-start;
+      flex-direction: column;
+      gap: 0.5rem;
+      height: auto;
+      padding: 0.75rem 1rem;
+    }
+
+    .dashboard-header h1 {
+      font-size: 1rem;
+      line-height: 1.2rem;
+    }
+
+    .dashboard-header p {
+      display: none;
+    }
+
+    .dashboard-actions {
+      max-width: 100%;
+      overflow-x: auto;
+      padding-bottom: 0.1rem;
+      width: 100%;
+    }
+
+    .workbench-body {
+      min-width: 0;
+    }
+
+    :global(.icon-rail) {
+      width: 56px;
+    }
+
+    :global(.sessions-column) {
+      border-right: 0;
+      display: none;
+      width: 0 !important;
+    }
+  }
+</style>

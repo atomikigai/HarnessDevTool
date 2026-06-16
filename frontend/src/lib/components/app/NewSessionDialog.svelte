@@ -22,6 +22,7 @@
   import { goto } from '$app/navigation';
   import { toast } from 'svelte-sonner';
   import { Loader2 } from '$lib/icons';
+  import { health } from '$lib/stores/health.svelte';
 
   interface Props {
     open: boolean;
@@ -325,7 +326,8 @@
           onblur={lookupRepo}
         />
         <p class="text-xs text-[var(--fg-muted)]">
-          Defaults to the backend process cwd when empty.
+          Empty uses server cwd:
+          <span class="font-mono">{health.data?.server_cwd ?? 'detecting…'}</span>
         </p>
         {#if repoLookup === 'loading'}
           <p class="text-xs text-[var(--fg-muted)]">Checking project history…</p>

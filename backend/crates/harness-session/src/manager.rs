@@ -810,7 +810,7 @@ mod tests {
     }
 
     #[test]
-    fn claude_without_mcp_only_pins_session_id() {
+    fn claude_without_mcp_gets_identity_model_effort_and_bypass() {
         let opts = SpawnOpts::default();
         let args = build_extra_args(AgentKind::Claude, &opts, "sid-123");
         assert_eq!(
@@ -821,9 +821,11 @@ mod tests {
                 "--model".to_string(),
                 DEFAULT_CLAUDE_MODEL.to_string(),
                 "--effort".to_string(),
-                DEFAULT_CLAUDE_EFFORT.to_string()
+                DEFAULT_CLAUDE_EFFORT.to_string(),
+                "--dangerously-skip-permissions".to_string(),
             ]
         );
+        assert!(!args.iter().any(|a| a == "--permission-mode"));
         assert!(!args.iter().any(|a| a == "--disallowed-tools"));
         assert!(!args.iter().any(|a| a == "--mcp-config"));
     }
@@ -871,9 +873,9 @@ mod tests {
         assert_eq!(args[dis_idx + 1], "TodoWrite");
 
         // Permission prompts skipped — harness supervises the session.
-        assert!(args
-            .windows(2)
-            .any(|w| w[0] == "--permission-mode" && w[1] == "bypassPermissions"));
+        assert!(args.iter().any(|a| a == "--dangerously-skip-permissions"));
+        assert!(!args.iter().any(|a| a == "--permission-mode"));
+        assert!(!args.iter().any(|a| a == "bypassPermissions"));
 
         // No auto_intro set → no --append-system-prompt
         assert!(!args.iter().any(|a| a == "--append-system-prompt"));

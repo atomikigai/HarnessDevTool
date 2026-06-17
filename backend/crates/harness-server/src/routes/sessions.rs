@@ -1,29 +1,36 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path as FsPath, PathBuf};
 use std::sync::Arc;
 
 use axum::body::Bytes;
-use axum::extract::{Multipart, Path, Query, State};
+use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use harness_core::{ClaudeTranscriptReporter, CostReporter, Event, Item, RepoContext, SessionCost};
 use harness_session::{
-    AgentKind, AgentState, LoadedCapabilities, MailboxMessage, MailboxStore, McpServerConfig,
-    SessionError, SessionMeta, SessionRepoContext, SpawnOpts,
+    AgentKind, AgentState, LoadedCapabilities, McpServerConfig, SessionError, SessionMeta,
+    SessionRepoContext, SpawnOpts,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
 use crate::error::ApiError;
+use crate::features::sessions::attachments::{attach_files, get_attachment, list_attachments};
+use crate::features::sessions::context::{
+    clear_context_manual, get_context_status, request_context_checkpoint, search_context_status,
+};
+use crate::features::sessions::mailbox::{
+    ack_mailbox_route, list_mailbox_route, send_mailbox_route,
+};
+use crate::features::sessions::metrics::{
+    conversation_metrics_from_events, tool_call_breakdown_from_events, ConversationMetrics,
+};
 use crate::state::AppState;
 
 const MAX_INPUT_BYTES: usize = 64 * 1024;
-/// Per-attachment hard cap. The MCP `attach.read` tool (F3) will base64-encode
-/// the bytes back, so anything north of ~100 MiB hurts more than it helps.
-const MAX_ATTACHMENT_BYTES: usize = 100 * 1024 * 1024;
 const ZEUS_ROLES_FILE: &str = "zeus_roles.json";
 
 pub(crate) fn write_private_json(path: &FsPath, value: &Value) -> std::io::Result<()> {
@@ -186,99 +193,6 @@ pub struct SessionMetrics {
     pub observed_at: String,
 }
 
-#[derive(Debug, Clone, Default, Serialize)]
-#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
-#[cfg_attr(feature = "ts-export", ts(export, export_to = "../../../bindings/"))]
-pub struct ConversationMetrics {
-    pub transcript_event_count: u64,
-    pub user_message_count: u64,
-    pub assistant_message_count: u64,
-    pub thinking_event_count: u64,
-    pub tool_result_count: u64,
-    pub tool_error_count: u64,
-    #[cfg_attr(feature = "ts-export", ts(optional = nullable))]
-    pub conversation_duration_ms: Option<u64>,
-    #[cfg_attr(feature = "ts-export", ts(optional = nullable))]
-    pub max_gap_ms: Option<u64>,
-    #[cfg_attr(feature = "ts-export", ts(optional = nullable))]
-    pub max_gap_after_seq: Option<u64>,
-    pub max_output_tokens_single_turn: u64,
-    pub max_tool_args_bytes: u64,
-    pub max_tool_result_bytes: u64,
-    pub tool_duration_ms_by_name: BTreeMap<String, ToolDurationStats>,
-}
-
-#[derive(Debug, Clone, Copy, Default, Serialize)]
-#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
-#[cfg_attr(feature = "ts-export", ts(export, export_to = "../../../bindings/"))]
-pub struct ToolDurationStats {
-    pub count: u64,
-    pub total_ms: u64,
-    pub max_ms: u64,
-}
-
-#[derive(Debug, Serialize)]
-#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
-#[cfg_attr(feature = "ts-export", ts(export, export_to = "../../../bindings/"))]
-pub struct ContextGovernorStatus {
-    pub session_id: String,
-    pub thread_id: String,
-    pub task_id: Option<String>,
-    pub role: Option<String>,
-    pub latest_event_type: Option<String>,
-    pub latest_event_at: Option<i64>,
-    pub checkpoint_requested_at: Option<i64>,
-    pub checkpoint_saved_at: Option<i64>,
-    pub clear_pending_at: Option<i64>,
-    pub clear_deferred_at: Option<i64>,
-    pub clear_recommended_at: Option<i64>,
-    pub cleared_at: Option<i64>,
-    pub pressure: Option<f64>,
-    pub context_tokens: Option<u64>,
-    pub max_context_tokens: Option<u64>,
-    pub model: Option<String>,
-    pub checkpoint_preview: Option<String>,
-    pub checkpoint_structured: Option<Value>,
-    pub indexed_events: usize,
-}
-
-#[derive(Debug, Serialize)]
-#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
-#[cfg_attr(feature = "ts-export", ts(export, export_to = "../../../bindings/"))]
-pub struct ContextActionResponse {
-    pub status: String,
-    pub reason: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct ContextSearchQuery {
-    #[serde(default)]
-    pub q: String,
-    #[serde(default)]
-    pub limit: Option<usize>,
-}
-
-#[derive(Debug, Serialize)]
-#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
-#[cfg_attr(feature = "ts-export", ts(export, export_to = "../../../bindings/"))]
-pub struct ContextSearchHit {
-    pub thread_id: String,
-    pub session_id: String,
-    pub event_type: String,
-    pub at: i64,
-    pub pressure: Option<f64>,
-    pub model: Option<String>,
-    pub snippet: String,
-}
-
-#[derive(Debug, Serialize)]
-#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
-#[cfg_attr(feature = "ts-export", ts(export, export_to = "../../../bindings/"))]
-pub struct ContextSearchResponse {
-    pub query: String,
-    pub hits: Vec<ContextSearchHit>,
-}
-
 pub fn router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/api/threads/:tid/sessions", post(create_session))
@@ -300,6 +214,7 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/api/sessions/:sid/input", post(post_input))
         .route("/api/sessions/:sid/resize", post(post_resize))
         .route("/api/sessions/:sid/stop", post(stop_session))
+        .route("/api/sessions/:sid/hard-delete", post(hard_delete_session))
         .route("/api/sessions/:sid", delete(kill_session))
         .route(
             "/api/sessions/:sid/attach",
@@ -898,7 +813,7 @@ pub async fn spawn_session_internal(
             tracing::warn!(
                 session = %meta.id,
                 error = %e,
-                "could not start transcript watcher; Chat view disabled for this session"
+                "could not start transcript watcher; transcript diagnostics disabled for this session"
             );
         }
     } else if matches!(underlying, AgentKind::Codex) {
@@ -912,7 +827,7 @@ pub async fn spawn_session_internal(
             tracing::warn!(
                 session = %meta.id,
                 error = %e,
-                "could not start transcript watcher; Chat view disabled for this session"
+                "could not start transcript watcher; transcript diagnostics disabled for this session"
             );
         }
     }
@@ -1493,6 +1408,15 @@ pub(crate) fn spawn_capability_intro(
                 .to_string(),
         );
     }
+    if tool_groups.iter().any(|group| group == "azure") {
+        parts.push(
+            "[harness] Azure CLI tools are available through the Harness MCP `azure` group. \
+             Use `azure_status` and `azure_account` first to confirm installation and subscription context. \
+             `azure_cli` runs `az` without a shell; read-only commands are preferred, and resource-mutating \
+             commands require explicit `allow_mutating=true` after user approval."
+                .to_string(),
+        );
+    }
     if skills
         .iter()
         .any(|skill| skill == "excalidraw-diagram" || skill == "excalidraw-board")
@@ -1945,6 +1869,23 @@ pub(crate) fn resolve_smart_tool_groups<'a>(
         push_unique(&mut tool_groups, "ssh".to_string());
     }
 
+    let azure_terms = [
+        "azure",
+        "az cli",
+        "azure cli",
+        "aks",
+        "app service",
+        "azure functions",
+        "resource group",
+        "subscription",
+        "key vault",
+        "blob storage",
+        "cosmos db",
+    ];
+    if signals.hit_count(&azure_terms) >= 2 || signals.distinct_hit_count(&azure_terms) >= 2 {
+        push_unique(&mut tool_groups, "azure".to_string());
+    }
+
     let knowledge_terms = [
         "knowledge",
         "memory",
@@ -2005,7 +1946,6 @@ fn should_preload_repo_code_graph(signals: &SmartCapabilitySignals, cwd: Option<
         "component",
         "layout",
         "browser",
-        "tauri",
         "codex",
         "claude",
         "agent",
@@ -2260,7 +2200,10 @@ async fn get_session_metrics(
     }))
 }
 
-async fn load_session_meta(state: &AppState, sid: &str) -> Result<SessionMeta, ApiError> {
+pub(crate) async fn load_session_meta(
+    state: &AppState,
+    sid: &str,
+) -> Result<SessionMeta, ApiError> {
     if let Some(s) = state.manager.get(&sid) {
         return Ok(s.meta().await);
     }
@@ -2272,9 +2215,8 @@ async fn load_session_meta(state: &AppState, sid: &str) -> Result<SessionMeta, A
     if !path.exists() {
         return Err(ApiError::SessionNotFound(sid.to_string()));
     }
-    let bytes = std::fs::read(&path).map_err(|e| ApiError::Internal(e.to_string()))?;
-    let meta: SessionMeta =
-        serde_json::from_slice(&bytes).map_err(|e| ApiError::Internal(e.to_string()))?;
+    let bytes = std::fs::read(&path).map_err(ApiError::internal)?;
+    let meta: SessionMeta = serde_json::from_slice(&bytes).map_err(ApiError::internal)?;
     Ok(meta)
 }
 
@@ -2318,411 +2260,6 @@ async fn session_transcript_events(
     crate::transcript::read_events_since_helper(path, 0)
         .await
         .map_err(|e| ApiError::Internal(format!("read transcript metrics: {e}")))
-}
-
-fn tool_call_breakdown_from_events(
-    events: &[crate::transcript::TranscriptEvent],
-) -> BTreeMap<String, u64> {
-    let mut counts = BTreeMap::new();
-    for ev in events {
-        if ev.kind != crate::transcript::event::TranscriptKind::ToolCall {
-            continue;
-        }
-        let name = ev
-            .tool_name
-            .as_deref()
-            .filter(|name| !name.trim().is_empty())
-            .unwrap_or("(unknown)")
-            .to_string();
-        *counts.entry(name).or_insert(0) += 1;
-    }
-    counts
-}
-
-fn conversation_metrics_from_events(
-    events: &[crate::transcript::TranscriptEvent],
-) -> ConversationMetrics {
-    use crate::transcript::event::TranscriptKind;
-
-    #[derive(Debug)]
-    struct PendingToolCall {
-        name: String,
-        started_at: DateTime<Utc>,
-    }
-
-    let mut metrics = ConversationMetrics {
-        transcript_event_count: events.len() as u64,
-        ..ConversationMetrics::default()
-    };
-    let mut pending_tools: HashMap<String, PendingToolCall> = HashMap::new();
-    let mut first_ts: Option<DateTime<Utc>> = None;
-    let mut last_ts: Option<DateTime<Utc>> = None;
-    let mut previous_ts: Option<DateTime<Utc>> = None;
-    let mut previous_seq: Option<u64> = None;
-
-    for ev in events {
-        let ts = parse_event_ts(&ev.ts);
-        if let Some(current_ts) = ts {
-            first_ts = Some(first_ts.map_or(current_ts, |first| first.min(current_ts)));
-            last_ts = Some(last_ts.map_or(current_ts, |last| last.max(current_ts)));
-            if let Some(prev_ts) = previous_ts {
-                let gap_ms = current_ts.signed_duration_since(prev_ts).num_milliseconds();
-                if gap_ms > 0 {
-                    let gap_ms = gap_ms as u64;
-                    if metrics.max_gap_ms.is_none_or(|max| gap_ms > max) {
-                        metrics.max_gap_ms = Some(gap_ms);
-                        metrics.max_gap_after_seq = previous_seq;
-                    }
-                }
-            }
-            previous_ts = Some(current_ts);
-            previous_seq = Some(ev.seq);
-        }
-
-        if let Some(usage) = ev.usage.as_ref() {
-            metrics.max_output_tokens_single_turn = metrics
-                .max_output_tokens_single_turn
-                .max(usage_u64(usage, "output_tokens"));
-        }
-
-        match ev.kind {
-            TranscriptKind::Message => match ev.role.as_deref() {
-                Some("user") => metrics.user_message_count += 1,
-                Some("assistant") => metrics.assistant_message_count += 1,
-                _ => {}
-            },
-            TranscriptKind::Thinking => metrics.thinking_event_count += 1,
-            TranscriptKind::ToolCall => {
-                if let Some(args) = ev.tool_args.as_ref() {
-                    metrics.max_tool_args_bytes =
-                        metrics.max_tool_args_bytes.max(json_payload_bytes(args));
-                }
-                if let (Some(id), Some(started_at)) = (ev.tool_use_id.as_ref(), ts) {
-                    let name = ev
-                        .tool_name
-                        .as_deref()
-                        .filter(|name| !name.trim().is_empty())
-                        .unwrap_or("(unknown)")
-                        .to_string();
-                    pending_tools.insert(id.clone(), PendingToolCall { name, started_at });
-                }
-            }
-            TranscriptKind::ToolResult => {
-                metrics.tool_result_count += 1;
-                if ev.is_error.unwrap_or(false) {
-                    metrics.tool_error_count += 1;
-                }
-                if let Some(result) = ev.tool_result.as_ref() {
-                    metrics.max_tool_result_bytes = metrics
-                        .max_tool_result_bytes
-                        .max(json_payload_bytes(result));
-                }
-                if let (Some(id), Some(finished_at)) = (ev.tool_use_id.as_ref(), ts) {
-                    if let Some(pending) = pending_tools.remove(id) {
-                        let duration_ms = finished_at
-                            .signed_duration_since(pending.started_at)
-                            .num_milliseconds();
-                        if duration_ms >= 0 {
-                            let stats = metrics
-                                .tool_duration_ms_by_name
-                                .entry(pending.name)
-                                .or_default();
-                            let duration_ms = duration_ms as u64;
-                            stats.count += 1;
-                            stats.total_ms += duration_ms;
-                            stats.max_ms = stats.max_ms.max(duration_ms);
-                        }
-                    }
-                }
-            }
-            TranscriptKind::SystemNote | TranscriptKind::Meta | TranscriptKind::Unknown => {}
-        }
-    }
-
-    metrics.conversation_duration_ms = match (first_ts, last_ts) {
-        (Some(first), Some(last)) => last
-            .signed_duration_since(first)
-            .num_milliseconds()
-            .try_into()
-            .ok(),
-        _ => None,
-    };
-    metrics
-}
-
-fn parse_event_ts(ts: &str) -> Option<DateTime<Utc>> {
-    DateTime::parse_from_rfc3339(ts)
-        .ok()
-        .map(|ts| ts.with_timezone(&Utc))
-}
-
-fn usage_u64(usage: &Value, key: &str) -> u64 {
-    usage.get(key).and_then(Value::as_u64).unwrap_or(0)
-}
-
-fn json_payload_bytes(value: &Value) -> u64 {
-    serde_json::to_vec(value)
-        .map(|bytes| bytes.len() as u64)
-        .unwrap_or(0)
-}
-
-async fn get_context_status(
-    State(state): State<Arc<AppState>>,
-    Path(sid): Path<String>,
-) -> Result<Json<ContextGovernorStatus>, ApiError> {
-    let meta = load_session_meta(&state, &sid).await?;
-    ensure_context_indexed(&state, &meta.thread_id)?;
-    let events =
-        crate::context_index::context_events_for_session(&state.harness_home, &state.profile, &sid)
-            .map_err(|e| ApiError::Internal(format!("read indexed context events: {e}")))?;
-    let indexed_events = events.len();
-    Ok(Json(context_status_from_events(
-        &meta,
-        &events,
-        indexed_events,
-    )))
-}
-
-async fn search_context_status(
-    State(state): State<Arc<AppState>>,
-    Path(sid): Path<String>,
-    Query(query): Query<ContextSearchQuery>,
-) -> Result<Json<ContextSearchResponse>, ApiError> {
-    let meta = load_session_meta(&state, &sid).await?;
-    ensure_context_indexed(&state, &meta.thread_id)?;
-    let hits = crate::context_index::search_context_events(
-        &state.harness_home,
-        &state.profile,
-        &sid,
-        &query.q,
-        query.limit.unwrap_or(10),
-    )
-    .map_err(|e| ApiError::Internal(format!("search context events: {e}")))?
-    .into_iter()
-    .map(|hit| ContextSearchHit {
-        thread_id: hit.thread_id,
-        session_id: hit.session_id,
-        event_type: hit.event_type,
-        at: hit.at,
-        pressure: hit.pressure,
-        model: hit.model,
-        snippet: hit.snippet,
-    })
-    .collect();
-    Ok(Json(ContextSearchResponse {
-        query: query.q,
-        hits,
-    }))
-}
-
-fn ensure_context_indexed(state: &AppState, thread_id: &str) -> Result<usize, ApiError> {
-    match crate::context_index::last_indexed_seq(&state.harness_home, &state.profile, thread_id) {
-        Ok(Some(_)) => Ok(0),
-        Ok(None) => {
-            let events = state.store.read_events(thread_id)?;
-            crate::context_index::index_context_events(&state.harness_home, &state.profile, &events)
-                .map_err(|e| ApiError::Internal(format!("index context events: {e}")))
-        }
-        Err(e) => Err(ApiError::Internal(format!(
-            "read context index offset: {e}"
-        ))),
-    }
-}
-
-async fn request_context_checkpoint(
-    State(state): State<Arc<AppState>>,
-    Path(sid): Path<String>,
-) -> Result<Json<ContextActionResponse>, ApiError> {
-    let session = state
-        .manager
-        .get(&sid)
-        .ok_or_else(|| ApiError::SessionNotFound(sid.clone()))?;
-    let meta = session.meta().await;
-    let prompt = "\n\n[harness context governor]\n\
-        Manual checkpoint requested. Reply with a compact checkpoint headed exactly \
-        `CONTEXT CHECKPOINT`, using labels: goal, completed, current_focus, \
-        next_action, files_touched, commands_run, risks, blockers.\n";
-    session
-        .write_input(format!("{prompt}\r").as_bytes())
-        .await?;
-    let target = context_target_from_meta(&meta);
-    crate::context_governor::append_context_event(
-        &state.store,
-        &target,
-        "session.context.manual_checkpoint_requested",
-        json!({
-            "session_id": meta.id,
-            "thread_id": meta.thread_id,
-            "task_id": meta.task_id,
-            "role": meta.role,
-        }),
-        "Manual context checkpoint requested.",
-    );
-    Ok(Json(ContextActionResponse {
-        status: "requested".into(),
-        reason: None,
-    }))
-}
-
-async fn clear_context_manual(
-    State(state): State<Arc<AppState>>,
-    Path(sid): Path<String>,
-) -> Result<Json<ContextActionResponse>, ApiError> {
-    let session = state
-        .manager
-        .get(&sid)
-        .ok_or_else(|| ApiError::SessionNotFound(sid.clone()))?;
-    let meta = session.meta().await;
-    let target = context_target_from_meta(&meta);
-    if meta.status != harness_session::SessionStatus::Running
-        || meta.detected_state != Some(AgentState::Idle)
-    {
-        crate::context_governor::append_context_event(
-            &state.store,
-            &target,
-            "session.context.manual_clear_deferred",
-            json!({
-                "session_id": meta.id,
-                "thread_id": meta.thread_id,
-                "task_id": meta.task_id,
-                "role": meta.role,
-                "detected_state": meta.detected_state,
-                "reason_code": "session_not_idle",
-            }),
-            "Manual context clear deferred because the session was not idle.",
-        );
-        return Ok(Json(ContextActionResponse {
-            status: "deferred".into(),
-            reason: Some("session_not_idle".into()),
-        }));
-    }
-
-    session.write_input(b"/clear\r").await?;
-    crate::context_governor::append_context_event(
-        &state.store,
-        &target,
-        "session.context.manual_cleared",
-        json!({
-            "session_id": meta.id,
-            "thread_id": meta.thread_id,
-            "task_id": meta.task_id,
-            "role": meta.role,
-            "clear_command": "/clear",
-        }),
-        "Manually cleared live context.",
-    );
-    Ok(Json(ContextActionResponse {
-        status: "cleared".into(),
-        reason: None,
-    }))
-}
-
-fn context_target_from_meta(meta: &SessionMeta) -> crate::context_governor::ContextGovernorTarget {
-    crate::context_governor::ContextGovernorTarget {
-        session_id: meta.id.clone(),
-        thread_id: meta.thread_id.clone(),
-        task_id: meta.task_id.clone(),
-        role: meta.role.clone(),
-    }
-}
-
-fn context_status_from_events(
-    meta: &SessionMeta,
-    events: &[Event],
-    indexed_events: usize,
-) -> ContextGovernorStatus {
-    let mut status = ContextGovernorStatus {
-        session_id: meta.id.clone(),
-        thread_id: meta.thread_id.clone(),
-        task_id: meta.task_id.clone(),
-        role: meta.role.clone(),
-        latest_event_type: None,
-        latest_event_at: None,
-        checkpoint_requested_at: None,
-        checkpoint_saved_at: None,
-        clear_pending_at: None,
-        clear_deferred_at: None,
-        clear_recommended_at: None,
-        cleared_at: None,
-        pressure: None,
-        context_tokens: None,
-        max_context_tokens: None,
-        model: None,
-        checkpoint_preview: None,
-        checkpoint_structured: None,
-        indexed_events,
-    };
-    for event in events
-        .iter()
-        .filter(|event| event.event_type.starts_with("session.context."))
-        .filter(|event| {
-            event
-                .payload
-                .as_ref()
-                .and_then(|payload| payload.get("session_id"))
-                .and_then(Value::as_str)
-                == Some(meta.id.as_str())
-        })
-    {
-        status.latest_event_type = Some(event.event_type.clone());
-        status.latest_event_at = Some(event.at);
-        match event.event_type.as_str() {
-            "session.context.checkpoint_requested"
-            | "session.context.manual_checkpoint_requested" => {
-                status.checkpoint_requested_at = Some(event.at);
-            }
-            "session.context.checkpoint_saved" => {
-                status.checkpoint_saved_at = Some(event.at);
-            }
-            "session.context.clear_pending" => {
-                status.clear_pending_at = Some(event.at);
-            }
-            "session.context.clear_deferred" | "session.context.manual_clear_deferred" => {
-                status.clear_deferred_at = Some(event.at);
-            }
-            "session.context.clear_recommended" => {
-                status.clear_recommended_at = Some(event.at);
-            }
-            "session.context.cleared" | "session.context.manual_cleared" => {
-                status.cleared_at = Some(event.at);
-            }
-            _ => {}
-        }
-        if let Some(payload) = event.payload.as_ref() {
-            status.pressure = payload
-                .get("pressure")
-                .and_then(Value::as_f64)
-                .or(status.pressure);
-            status.context_tokens = payload
-                .get("context_tokens")
-                .and_then(Value::as_u64)
-                .or(status.context_tokens);
-            status.max_context_tokens = payload
-                .get("max_context_tokens")
-                .and_then(Value::as_u64)
-                .or(status.max_context_tokens);
-            status.model = payload
-                .get("model")
-                .and_then(Value::as_str)
-                .map(str::to_string)
-                .or_else(|| status.model.clone());
-            if let Some(checkpoint) = payload.get("checkpoint").and_then(Value::as_str) {
-                status.checkpoint_preview = Some(compact_preview(checkpoint, 260));
-            }
-            if let Some(structured) = payload.get("checkpoint_structured") {
-                status.checkpoint_structured = Some(structured.clone());
-            }
-        }
-    }
-    status
-}
-
-fn compact_preview(text: &str, max_chars: usize) -> String {
-    let compact = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    if compact.chars().count() <= max_chars {
-        return compact;
-    }
-    compact.chars().take(max_chars).collect::<String>() + "..."
 }
 
 async fn post_input(
@@ -2809,6 +2346,32 @@ async fn kill_session(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// `POST /api/sessions/:sid/hard-delete` — explicitly destructive delete.
+///
+/// This is separate from stop/tombstone/archive semantics: it kills the tree if
+/// live, forgets affected sessions, and removes their persisted session
+/// directories from disk.
+async fn hard_delete_session(
+    State(state): State<Arc<AppState>>,
+    Path(sid): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    let result = state.manager.hard_delete_tree(&sid).await;
+    for id in result.affected {
+        state.cleanup_session_resources(&id);
+    }
+    if let Some(e) = result.tombstone_error {
+        return Err(ApiError::Internal(format!(
+            "tombstone session tree before hard delete {sid}: {e}"
+        )));
+    }
+    if let Some(e) = result.delete_error {
+        return Err(ApiError::Internal(format!(
+            "hard delete session tree {sid}: {e}"
+        )));
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
 // ── Session tree routes (Zeus orchestrator) ─────────────────────────────
 //
 // These mirror the MCP tools but at the HTTP layer; the MCP server calls them
@@ -2847,16 +2410,6 @@ pub struct ChildSummary {
     pub pid: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detected_state: Option<AgentState>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct MailboxSendBody {
-    pub to_session_id: String,
-    pub body: String,
-    #[serde(default)]
-    pub task_id: Option<String>,
-    #[serde(default)]
-    pub scopes: Vec<String>,
 }
 
 fn child_summary(meta: SessionMeta) -> ChildSummary {
@@ -3057,317 +2610,6 @@ async fn cancel_child_route(
         )));
     }
     Ok(StatusCode::NO_CONTENT)
-}
-
-fn mailbox_store(state: &AppState) -> MailboxStore {
-    MailboxStore::new(
-        state
-            .harness_home
-            .join("profiles")
-            .join(&state.profile)
-            .join("sessions"),
-    )
-}
-
-async fn send_mailbox_route(
-    State(state): State<Arc<AppState>>,
-    Path(from_sid): Path<String>,
-    Json(body): Json<MailboxSendBody>,
-) -> Result<(StatusCode, Json<MailboxMessage>), ApiError> {
-    if body.body.trim().is_empty() {
-        return Err(ApiError::BadRequest("mailbox body cannot be empty".into()));
-    }
-    if body.body.len() > MAX_INPUT_BYTES {
-        return Err(ApiError::BadRequest(format!(
-            "mailbox body too large ({} bytes); cap is {MAX_INPUT_BYTES}",
-            body.body.len()
-        )));
-    }
-    if !state.manager.is_in_tree(&from_sid, &body.to_session_id) || from_sid == body.to_session_id {
-        return Err(ApiError::BadRequest(
-            "target session is not a descendant of the sender".into(),
-        ));
-    }
-
-    let msg = mailbox_store(&state)
-        .send(
-            &from_sid,
-            &body.to_session_id,
-            body.body,
-            body.task_id,
-            body.scopes,
-        )
-        .map_err(|e| ApiError::Internal(format!("mailbox send: {e}")))?;
-    Ok((StatusCode::CREATED, Json(msg)))
-}
-
-async fn list_mailbox_route(
-    State(state): State<Arc<AppState>>,
-    Path(sid): Path<String>,
-) -> Result<Json<Vec<MailboxMessage>>, ApiError> {
-    if !state
-        .manager
-        .list_metas()
-        .await
-        .iter()
-        .any(|meta| meta.id == sid)
-    {
-        return Err(ApiError::NotFound(format!("session {sid}")));
-    }
-    let messages = mailbox_store(&state)
-        .list(&sid)
-        .map_err(|e| ApiError::Internal(format!("mailbox list: {e}")))?;
-    Ok(Json(messages))
-}
-
-async fn ack_mailbox_route(
-    State(state): State<Arc<AppState>>,
-    Path((sid, message_id)): Path<(String, String)>,
-) -> Result<Json<MailboxMessage>, ApiError> {
-    if !state
-        .manager
-        .list_metas()
-        .await
-        .iter()
-        .any(|meta| meta.id == sid)
-    {
-        return Err(ApiError::NotFound(format!("session {sid}")));
-    }
-    let Some(message) = mailbox_store(&state)
-        .ack(&sid, &message_id, &sid)
-        .map_err(|e| ApiError::Internal(format!("mailbox ack: {e}")))?
-    else {
-        return Err(ApiError::NotFound(format!("mailbox message {message_id}")));
-    };
-    Ok(Json(message))
-}
-
-// ── Attachments (N5) ────────────────────────────────────────────────────────
-//
-// `POST /api/sessions/:sid/attach` accepts multipart with one or more `file`
-// parts. Files land at
-//   $HARNESS_HOME/.runtime/attach/<sid>/<sanitised-name>
-// so the MCP `attach.list` / `attach.read` tools (F3) can hand them to the
-// child CLI. We also return the saved metadata directly so the UI doesn't
-// have to wait for an SSE round-trip to show the attached file.
-
-#[derive(Debug, Serialize)]
-pub struct AttachedFile {
-    pub name: String,
-    pub size: u64,
-    pub mime: String,
-    pub path: String,
-}
-
-async fn attach_files(
-    State(state): State<Arc<AppState>>,
-    Path(sid): Path<String>,
-    mut multipart: Multipart,
-) -> Result<Json<Vec<AttachedFile>>, ApiError> {
-    // Session must exist.
-    state
-        .manager
-        .get(&sid)
-        .ok_or_else(|| ApiError::NotFound(format!("session {sid}")))?;
-
-    let dir = state.harness_home.join(".runtime/attach").join(&sid);
-    std::fs::create_dir_all(&dir).map_err(|e| ApiError::Internal(e.to_string()))?;
-
-    let mut saved: Vec<AttachedFile> = Vec::new();
-
-    while let Some(field) = multipart
-        .next_field()
-        .await
-        .map_err(|e| ApiError::BadRequest(format!("multipart error: {e}")))?
-    {
-        let raw_name = field
-            .file_name()
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| format!("attachment-{}", uuid::Uuid::new_v4()));
-        let safe_name = sanitize_filename(&raw_name);
-        let declared_mime = field
-            .content_type()
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| "application/octet-stream".into());
-
-        let data = field
-            .bytes()
-            .await
-            .map_err(|e| ApiError::BadRequest(format!("read body: {e}")))?;
-
-        if data.len() > MAX_ATTACHMENT_BYTES {
-            return Err(ApiError::BadRequest(format!(
-                "attachment '{safe_name}' is {} bytes; limit is {} bytes",
-                data.len(),
-                MAX_ATTACHMENT_BYTES
-            )));
-        }
-
-        let target = dir.join(&safe_name);
-        std::fs::write(&target, &data).map_err(|e| ApiError::Internal(e.to_string()))?;
-
-        saved.push(AttachedFile {
-            name: safe_name,
-            size: data.len() as u64,
-            mime: declared_mime,
-            path: target.to_string_lossy().to_string(),
-        });
-    }
-
-    if saved.is_empty() {
-        return Err(ApiError::BadRequest(
-            "no file parts in multipart body".into(),
-        ));
-    }
-
-    tracing::info!(session = %sid, count = saved.len(), "attached files");
-    Ok(Json(saved))
-}
-
-async fn list_attachments(
-    State(state): State<Arc<AppState>>,
-    Path(sid): Path<String>,
-) -> Result<Json<Vec<AttachedFile>>, ApiError> {
-    state
-        .manager
-        .get(&sid)
-        .ok_or_else(|| ApiError::NotFound(format!("session {sid}")))?;
-
-    let dir = state.harness_home.join(".runtime/attach").join(&sid);
-    if !dir.exists() {
-        return Ok(Json(Vec::new()));
-    }
-    let mut out: Vec<AttachedFile> = Vec::new();
-    for entry in std::fs::read_dir(&dir).map_err(|e| ApiError::Internal(e.to_string()))? {
-        let entry = entry.map_err(|e| ApiError::Internal(e.to_string()))?;
-        let path = entry.path();
-        if !path.is_file() {
-            continue;
-        }
-        let meta = entry
-            .metadata()
-            .map_err(|e| ApiError::Internal(e.to_string()))?;
-        let name = path
-            .file_name()
-            .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_default();
-        let mime = attachment_content_type(&name).to_string();
-        out.push(AttachedFile {
-            name,
-            size: meta.len(),
-            mime,
-            path: path.to_string_lossy().to_string(),
-        });
-    }
-    Ok(Json(out))
-}
-
-// `GET /api/sessions/:sid/attach/:name` serves the raw bytes of a previously
-// uploaded attachment. Like `/metrics`, this route is deliberately reachable
-// without `Authorization` or `X-Protocol-Version`: the auth middleware only
-// guards mutating methods, and the browser loads these URLs via plain
-// `<img src>` tags which cannot attach custom headers. We compensate with
-// strict name validation (no traversal), a canonicalised confinement check,
-// and a `Content-Security-Policy: sandbox` header so a hostile attachment
-// (e.g. SVG) cannot script against the API origin when opened directly.
-async fn get_attachment(
-    State(state): State<Arc<AppState>>,
-    Path((sid, name)): Path<(String, String)>,
-) -> Result<axum::response::Response, ApiError> {
-    // Axum percent-decodes path params, so `..%2F` arrives as `../`. Validate
-    // both segments before they touch the filesystem.
-    if !is_safe_attachment_segment(&sid) {
-        return Err(ApiError::BadRequest(format!("invalid session id '{sid}'")));
-    }
-    if !is_safe_attachment_segment(&name) || sanitize_filename(&name) != name {
-        return Err(ApiError::BadRequest(format!(
-            "invalid attachment name '{name}'"
-        )));
-    }
-
-    let dir = state.harness_home.join(".runtime/attach").join(&sid);
-    serve_attachment(&dir, &name).await
-}
-
-/// Reads `<dir>/<name>` and builds the HTTP response. Split out from the
-/// handler so it can be exercised in tests without a full `AppState`.
-/// Expects `name` to be pre-validated by `is_safe_attachment_segment`.
-async fn serve_attachment(dir: &FsPath, name: &str) -> Result<axum::response::Response, ApiError> {
-    // Canonicalise both ends and require the file to stay confined to the
-    // attachment dir. canonicalize() fails for missing paths → 404, and
-    // resolves symlinks, so a link pointing outside the dir is rejected too.
-    let canon_dir = dir
-        .canonicalize()
-        .map_err(|_| ApiError::NotFound(format!("attachment {name}")))?;
-    let canon_file = dir
-        .join(name)
-        .canonicalize()
-        .map_err(|_| ApiError::NotFound(format!("attachment {name}")))?;
-    if !canon_file.starts_with(&canon_dir) || !canon_file.is_file() {
-        return Err(ApiError::BadRequest(format!(
-            "attachment '{name}' escapes the attachment directory"
-        )));
-    }
-
-    // Attachments are capped at MAX_ATTACHMENT_BYTES per upload, so reading
-    // them into memory is acceptable.
-    let bytes = tokio::fs::read(&canon_file)
-        .await
-        .map_err(|e| ApiError::Internal(format!("read attachment: {e}")))?;
-
-    // `name` passed the sanitiser round-trip, so it contains no quotes or
-    // control characters and is safe to embed in the header verbatim.
-    axum::response::Response::builder()
-        .status(StatusCode::OK)
-        .header(
-            axum::http::header::CONTENT_TYPE,
-            attachment_content_type(name),
-        )
-        .header(
-            axum::http::header::CONTENT_DISPOSITION,
-            format!("inline; filename=\"{name}\""),
-        )
-        .header(axum::http::header::CONTENT_SECURITY_POLICY, "sandbox")
-        .body(axum::body::Body::from(bytes))
-        .map_err(|e| ApiError::Internal(format!("build attachment response: {e}")))
-}
-
-/// Path-segment guard for the attachment route: no separators, no traversal.
-/// Stricter than `sanitize_filename` (which rewrites); this one rejects.
-fn is_safe_attachment_segment(segment: &str) -> bool {
-    !segment.is_empty()
-        && segment != "."
-        && !segment.contains("..")
-        && !segment.contains(['/', '\\'])
-}
-
-/// Content type by extension. No `mime_guess` in the dependency tree, and the
-/// upload-declared mime is not persisted, so a small manual map keeps it
-/// honest. `.html` is intentionally served as `text/plain` so an uploaded page
-/// can never render (and script) against the API origin; `.svg` keeps its real
-/// type (required for `<img>`) — scripts don't run in image context and the
-/// `Content-Security-Policy: sandbox` response header covers direct navigation.
-fn attachment_content_type(name: &str) -> &'static str {
-    let ext = name
-        .rsplit_once('.')
-        .map(|(_, ext)| ext.to_ascii_lowercase())
-        .unwrap_or_default();
-    match ext.as_str() {
-        "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
-        "gif" => "image/gif",
-        "webp" => "image/webp",
-        "svg" => "image/svg+xml",
-        "pdf" => "application/pdf",
-        "txt" => "text/plain; charset=utf-8",
-        "md" => "text/markdown; charset=utf-8",
-        "json" => "application/json",
-        "csv" => "text/csv; charset=utf-8",
-        // Never let an uploaded page execute in the API origin.
-        "html" | "htm" => "text/plain; charset=utf-8",
-        "excalidraw" => "application/json",
-        _ => "application/octet-stream",
-    }
 }
 
 fn zeus_roles_path(state: &AppState, sid: &str) -> PathBuf {
@@ -3764,28 +3006,6 @@ fn ensure_claude_trust(cwd: &std::path::Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Block path separators, leading dots, and oversized names. Falls back to a
-/// UUID-named file when sanitisation would leave us empty-handed.
-fn sanitize_filename(raw: &str) -> String {
-    let trimmed = raw
-        .rsplit(['/', '\\'])
-        .next()
-        .unwrap_or("")
-        .trim_matches('.')
-        .trim();
-    let cleaned: String = trimmed
-        .chars()
-        .filter(|c| !c.is_control() && !matches!(c, '\0' | ':' | '*' | '?' | '"' | '<' | '>' | '|'))
-        .collect();
-    if cleaned.is_empty() {
-        return format!("attachment-{}", uuid::Uuid::new_v4());
-    }
-    if cleaned.len() > 200 {
-        return cleaned.chars().take(200).collect();
-    }
-    cleaned
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4144,6 +3364,17 @@ mod tests {
         );
         assert_eq!(ssh_groups, vec!["ssh".to_string()]);
 
+        let azure_groups = resolve_smart_tool_groups(
+            Some("cloud"),
+            Some(std::path::Path::new("/repo")),
+            [Some(
+                "Use Azure CLI to inspect AKS and resource group subscription context",
+            )],
+            &[],
+            CapabilityProfile::Auto,
+        );
+        assert_eq!(azure_groups, vec!["azure".to_string()]);
+
         let repo_groups = resolve_smart_tool_groups(
             Some("backend"),
             Some(std::path::Path::new("/repo/backend/crates")),
@@ -4358,8 +3589,8 @@ Use these defaults in DB tools: connection="conn-1", database="main".
                 expected_skills: &["agent-browser"],
             },
             Case {
-                cwd_name: "tauri-debug",
-                text: "Backend Rust cargo test Tauri Wayland debug regression.",
+                cwd_name: "pty-debug",
+                text: "Backend Rust cargo test PTY lifecycle regression.",
                 expected_skills: &["rust-tooling", "cargo-nextest"],
             },
             Case {
@@ -4824,94 +4055,6 @@ Use these defaults in DB tools: connection="conn-1", database="main".
         assert_eq!(
             scopes,
             vec!["backend".to_string(), "task:T-0001".to_string()]
-        );
-    }
-
-    // ── GET attachment content ──────────────────────────────────────────────
-
-    /// Mirrors the validation order of `get_attachment` for a fixed dir, so
-    /// the route's 400/404/200 behaviour is testable without an `AppState`.
-    async fn serve_validated(
-        dir: &std::path::Path,
-        name: &str,
-    ) -> Result<axum::response::Response, ApiError> {
-        if !is_safe_attachment_segment(name) || sanitize_filename(name) != name {
-            return Err(ApiError::BadRequest(format!(
-                "invalid attachment name '{name}'"
-            )));
-        }
-        serve_attachment(dir, name).await
-    }
-
-    #[tokio::test]
-    async fn get_attachment_serves_png_with_inline_headers() {
-        let tmp = tempfile::tempdir().unwrap();
-        std::fs::write(tmp.path().join("shot.png"), b"\x89PNG\r\n\x1a\nfake").unwrap();
-
-        let resp = serve_validated(tmp.path(), "shot.png").await.unwrap();
-
-        assert_eq!(resp.status(), StatusCode::OK);
-        let headers = resp.headers();
-        assert_eq!(
-            headers.get(axum::http::header::CONTENT_TYPE).unwrap(),
-            "image/png"
-        );
-        assert_eq!(
-            headers
-                .get(axum::http::header::CONTENT_DISPOSITION)
-                .unwrap(),
-            "inline; filename=\"shot.png\""
-        );
-        assert_eq!(
-            headers
-                .get(axum::http::header::CONTENT_SECURITY_POLICY)
-                .unwrap(),
-            "sandbox"
-        );
-    }
-
-    #[tokio::test]
-    async fn get_attachment_missing_file_is_404() {
-        let tmp = tempfile::tempdir().unwrap();
-
-        let err = serve_validated(tmp.path(), "nope.png").await.unwrap_err();
-
-        assert!(matches!(err, ApiError::NotFound(_)), "got {err:?}");
-    }
-
-    #[tokio::test]
-    async fn get_attachment_rejects_traversal_names() {
-        let tmp = tempfile::tempdir().unwrap();
-        // What `..%2Fsecret.png` decodes to by the time axum hands it over,
-        // plus raw separators and a bare parent reference.
-        for name in ["../secret.png", "sub/secret.png", "sub\\secret.png", ".."] {
-            let err = serve_validated(tmp.path(), name).await.unwrap_err();
-            assert!(
-                matches!(err, ApiError::BadRequest(_)),
-                "{name} should be a 400, got {err:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn attachment_content_type_maps_extensions() {
-        assert_eq!(attachment_content_type("a.PNG"), "image/png");
-        assert_eq!(attachment_content_type("a.jpeg"), "image/jpeg");
-        assert_eq!(attachment_content_type("a.svg"), "image/svg+xml");
-        // HTML must never render in the API origin.
-        assert_eq!(
-            attachment_content_type("a.html"),
-            "text/plain; charset=utf-8"
-        );
-        assert_eq!(attachment_content_type("a.excalidraw"), "application/json");
-        assert_eq!(attachment_content_type("noext"), "application/octet-stream");
-        // `list_attachments` infers each entry's mime from this same map, so a
-        // listed `.png` must report `image/png` (not a hardcoded octet-stream).
-        assert_eq!(attachment_content_type("screenshot.png"), "image/png");
-        // Parameterised types flow through verbatim.
-        assert_eq!(
-            attachment_content_type("notes.txt"),
-            "text/plain; charset=utf-8"
         );
     }
 }

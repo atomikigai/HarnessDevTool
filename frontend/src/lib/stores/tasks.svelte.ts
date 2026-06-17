@@ -28,20 +28,25 @@ class TasksState {
     return true;
   }
 
-  async refresh(): Promise<void> {
+  async refresh(options: { showLoading?: boolean } = {}): Promise<void> {
     if (!this.threadId) return;
+    const showLoading = options.showLoading ?? true;
     this.#controller?.abort();
-    this.#controller = new AbortController();
-    this.loading = true;
+    const controller = new AbortController();
+    this.#controller = controller;
+    if (showLoading) this.loading = true;
     try {
-      const res = await api.tasks.list(this.threadId, this.filters, this.#controller.signal);
+      const res = await api.tasks.list(this.threadId, this.filters, controller.signal);
       this.items = res.data ?? [];
       this.error = null;
     } catch (err) {
       if ((err as { name?: string }).name === 'AbortError') return;
       this.error = err instanceof Error ? err.message : String(err);
     } finally {
-      this.loading = false;
+      if (this.#controller === controller) {
+        this.#controller = null;
+        this.loading = false;
+      }
     }
   }
 

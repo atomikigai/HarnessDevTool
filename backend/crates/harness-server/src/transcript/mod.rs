@@ -4,8 +4,8 @@
 //! `TranscriptEvent`, persists it to our own profile dir, and broadcasts
 //! it through the session bus.
 //!
-//! The frontend's Chat view consumes this; the Terminal view keeps reading
-//! the raw PTY bytes. Same process, two presentations.
+//! Transcript data is retained for search, metrics, and diagnostics. The
+//! primary frontend interaction surface remains the raw PTY terminal.
 //!
 //! Per-CLI parsers live in submodules so adding Codex/Cursor support later
 //! is a matter of implementing `TranscriptParser` for that source.

@@ -4,7 +4,6 @@
 
   import { subscribeSSE, type SSEHandle } from '$lib/api/sse';
   import { api, ApiError } from '$lib/api/client';
-  import { isTauri, streamPtyOutputNative, type NativePtyStreamHandle } from '$lib/tauri';
   import { Button } from '$lib/components/ui/button';
   import { Square } from '$lib/icons';
   import { toast } from 'svelte-sonner';
@@ -27,8 +26,8 @@
   let term: Terminal | null = null;
   let fitAddon: FitAddon | null = null;
   let sse: SSEHandle | null = null;
-  let nativeStream: NativePtyStreamHandle | null = null;
   let ro: ResizeObserver | null = null;
+  let wheelTarget: HTMLDivElement | null = null;
   let resizeTimer: ReturnType<typeof setTimeout> | null = null;
   let killed = $state(false);
   let exited = $state(false);
@@ -171,7 +170,7 @@
   let resizeInFlight = false;
   let resizeQueued = false;
 
-  type TerminalTransport = 'sse' | 'tauri-channel-binary';
+  type TerminalTransport = 'sse';
 
   type TerminalPerfStats = {
     transport: TerminalTransport;
@@ -203,17 +202,6 @@
       chunksPerSecond: perfStats.chunks / elapsedSec,
       flushesPerSecond: perfStats.flushes / elapsedSec
     };
-  }
-
-  function selectedTransport(): TerminalTransport {
-    if (!isTauri) return 'sse';
-    try {
-      return localStorage.getItem('harness.ptyTransport') === 'sse'
-        ? 'sse'
-        : 'tauri-channel-binary';
-    } catch {
-      return 'tauri-channel-binary';
-    }
   }
 
   function resetPerfStats(transport: TerminalTransport) {
@@ -319,6 +307,29 @@
     });
   }
 
+  function normalizeWheelLines(ev: WheelEvent): number {
+    let rawLines: number;
+    if (ev.deltaMode === WheelEvent.DOM_DELTA_LINE) {
+      rawLines = ev.deltaY;
+    } else if (ev.deltaMode === WheelEvent.DOM_DELTA_PAGE) {
+      rawLines = ev.deltaY * (term?.rows ?? 24);
+    } else {
+      const metrics = containerEl?.querySelector('canvas')?.getBoundingClientRect();
+      const lineHeight = metrics && term?.rows ? Math.max(1, metrics.height / term.rows) : 20;
+      rawLines = ev.deltaY / lineHeight;
+    }
+    if (rawLines === 0) return 0;
+    return Math.sign(rawLines) * Math.min(12, Math.max(1, Math.ceil(Math.abs(rawLines))));
+  }
+
+  function onTerminalWheel(ev: WheelEvent) {
+    if (!term) return;
+    ev.preventDefault();
+    ev.stopImmediatePropagation();
+    const lines = normalizeWheelLines(ev);
+    if (lines !== 0) term.scrollLines(lines);
+  }
+
   function focusGhosttyInput() {
     const input = containerEl?.querySelector<HTMLTextAreaElement>(
       'textarea[aria-label="Terminal input"]'
@@ -399,84 +410,6 @@
         }
       }
     );
-  }
-
-  function openNativePtyOutput() {
-    if (!term) return;
-    resetPerfStats('tauri-channel-binary');
-    connState = reconnectAttempts > 0 ? 'reconnecting' : 'connecting';
-    if (reconnectAttempts > 0) {
-      clearOutputQueue();
-      term.reset();
-    }
-
-    void streamPtyOutputNative(
-      sessionId,
-      (bytes) => {
-        enqueueOutput(bytes);
-      },
-      (event) => {
-        if (event.type === 'started') {
-          connState = 'open';
-          reconnectAttempts = 0;
-          return;
-        }
-        if (event.type === 'lagged') {
-          nativeStream?.close();
-          nativeStream = null;
-          scheduleNativeReconnect();
-          return;
-        }
-        if (event.type === 'error') {
-          if (exited || killed) {
-            connState = 'closed';
-            return;
-          }
-          console.warn('native PTY stream failed', event.message);
-          scheduleNativeReconnect();
-          return;
-        }
-        if (event.type === 'exit') {
-          const parts: string[] = [];
-          if (event.code !== undefined && event.code !== null) parts.push(`code ${event.code}`);
-          if (event.signal) parts.push(`signal ${event.signal}`);
-          const tail = parts.length > 0 ? ` (${parts.join(' | ')})` : '';
-          flushOutput();
-          term?.write(`\r\n\x1b[33m[session ended${tail}]\x1b[0m\r\n`, scrollTerminalToBottom);
-          exited = true;
-          connState = 'closed';
-          nativeStream?.close();
-          nativeStream = null;
-        }
-      }
-    )
-      .then((handle) => {
-        nativeStream = handle;
-      })
-      .catch((err) => {
-        console.warn('native PTY stream failed to start', err);
-        scheduleNativeReconnect();
-      });
-  }
-
-  function scheduleNativeReconnect() {
-    if (exited || killed) {
-      connState = 'closed';
-      return;
-    }
-    if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
-      connState = 'closed';
-      nativeStream?.close();
-      nativeStream = null;
-      toast.error('Lost connection to session after multiple retries');
-      return;
-    }
-    connState = 'reconnecting';
-    nativeStream?.close();
-    nativeStream = null;
-    const delay = Math.min(10_000, 500 * 2 ** reconnectAttempts);
-    reconnectAttempts++;
-    reconnectTimer = setTimeout(openNativePtyOutput, delay);
   }
 
   function fitTerminal(): boolean {
@@ -614,18 +547,11 @@
       // scrollback buffer inaccessible: the user spins the wheel and the agent
       // gets ↑↑↑ instead of the viewport scrolling.
       //
-      // attachCustomWheelEventHandler: returning `true` prevents the terminal's
-      // default wheel handling (which would encode & send the event to the PTY),
-      // returning `false` lets the terminal handle it normally. We always return
-      // `true` so the PTY never sees the wheel event, and we do the viewport
-      // scroll ourselves via scrollLines().
-      //
-      // scrollLines(amount): positive = scroll down, negative = scroll up.
-      // We use ±3 lines per wheel tick which matches typical browser behavior.
-      term.attachCustomWheelEventHandler((ev: WheelEvent) => {
-        term?.scrollLines(ev.deltaY > 0 ? 3 : -3);
-        return true; // prevent ghostty from forwarding the event to the PTY
-      });
+      // ghostty-web registers its own capture listener during `open()`. Register
+      // ours first and stopImmediatePropagation so the wheel always controls the
+      // scrollback viewport and never reaches the PTY as arrow-key input.
+      wheelTarget = containerEl;
+      wheelTarget.addEventListener('wheel', onTerminalWheel, { passive: false, capture: true });
 
       // ── Clipboard wiring ───────────────────────────────────────────────
       // Ctrl+C keeps sending SIGINT when there is no selection. If text is
@@ -710,17 +636,12 @@
       ro = new ResizeObserver(scheduleResize);
       ro.observe(containerEl);
 
-      // The output replay must wait for the initial PTY resize. The native
-      // binary stream can replay history fast enough that stale cols/rows make
-      // the restored terminal screen wrap incorrectly and become unreadable.
+      // The output replay must wait for the initial PTY resize so restored
+      // terminal history wraps using the current cols/rows.
       await fitAndResize();
       if (cancelled) return;
 
-      if (selectedTransport() === 'tauri-channel-binary') {
-        openNativePtyOutput();
-      } else {
-        openSSE();
-      }
+      openSSE();
       scrollTerminalToBottom();
 
       window.addEventListener('keydown', onWindowKey, true);
@@ -753,10 +674,10 @@
     clearOutputQueue();
     ro?.disconnect();
     ro = null;
+    wheelTarget?.removeEventListener('wheel', onTerminalWheel, { capture: true });
+    wheelTarget = null;
     sse?.close();
     sse = null;
-    nativeStream?.close();
-    nativeStream = null;
     term?.dispose();
     term = null;
     window.removeEventListener('keydown', onWindowKey, true);
@@ -769,8 +690,6 @@
       killed = true;
       sse?.close();
       sse = null;
-      nativeStream?.close();
-      nativeStream = null;
       connState = 'closed';
       flushOutput();
       term?.write('\r\n\x1b[31m[killed by user]\x1b[0m\r\n', scrollTerminalToBottom);

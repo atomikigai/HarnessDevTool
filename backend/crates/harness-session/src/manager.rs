@@ -1,4 +1,5 @@
-use std::path::{Path, PathBuf};
+use std::ffi::OsStr;
+use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -91,6 +92,13 @@ impl std::fmt::Debug for Manager {
 pub struct KillTreeResult {
     pub affected: Vec<String>,
     pub tombstone_error: Option<SessionError>,
+}
+
+#[derive(Debug)]
+pub struct HardDeleteTreeResult {
+    pub affected: Vec<String>,
+    pub tombstone_error: Option<SessionError>,
+    pub delete_error: Option<SessionError>,
 }
 
 #[derive(Debug)]
@@ -418,6 +426,21 @@ impl Manager {
         self.sessions_root.join(sid).join(DELETED_MARKER).exists()
     }
 
+    fn session_dir_for_delete(&self, sid: &str) -> Result<PathBuf, SessionError> {
+        if sid.is_empty() {
+            return Err(SessionError::Invalid("empty session id".into()));
+        }
+        let mut components = Path::new(sid).components();
+        match (components.next(), components.next()) {
+            (Some(Component::Normal(name)), None) if name == OsStr::new(sid) => {
+                Ok(self.sessions_root.join(sid))
+            }
+            _ => Err(SessionError::Invalid(format!(
+                "invalid session id for hard delete: {sid}"
+            ))),
+        }
+    }
+
     // ── Session-tree helpers (Zeus orchestrator) ─────────────────────────
 
     /// Kill a session tree, remove it from the in-memory manager, and mark
@@ -472,6 +495,48 @@ impl Manager {
         KillTreeResult {
             affected,
             tombstone_error,
+        }
+    }
+
+    /// Destructively delete a session tree from the manager and from disk.
+    ///
+    /// Unlike tombstone/delete, this removes the persisted `sessions/<sid>`
+    /// directories and their transcripts/metadata. The operation is idempotent
+    /// for missing sessions: a missing id is reported as affected and any
+    /// stale directory for that id is removed if present.
+    pub async fn hard_delete_tree(&self, sid: &str) -> HardDeleteTreeResult {
+        let result = self.kill_tree_and_tombstone(sid).await;
+        let mut delete_error = None;
+
+        for id in &result.affected {
+            let dir = match self.session_dir_for_delete(id) {
+                Ok(dir) => dir,
+                Err(e) => {
+                    if delete_error.is_none() {
+                        delete_error = Some(e);
+                    }
+                    continue;
+                }
+            };
+            if dir.exists() {
+                if let Err(e) = std::fs::remove_dir_all(&dir) {
+                    tracing::warn!(
+                        session = %id,
+                        dir = %dir.display(),
+                        error = %e,
+                        "hard delete: could not remove session dir"
+                    );
+                    if delete_error.is_none() {
+                        delete_error = Some(e.into());
+                    }
+                }
+            }
+        }
+
+        HardDeleteTreeResult {
+            affected: result.affected,
+            tombstone_error: result.tombstone_error,
+            delete_error,
         }
     }
 
@@ -1222,6 +1287,35 @@ mod tests {
         assert!(result.tombstone_error.is_none());
         assert!(manager.is_tombstoned("missing"));
         assert!(sessions_root.join("missing").join(DELETED_MARKER).exists());
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn hard_delete_tree_removes_persisted_session_dir() {
+        let root = temp_test_dir("hard-delete-tree");
+        let sessions_root = root.join("sessions");
+        write_meta(
+            &sessions_root,
+            &test_meta("detached-1", "thread-1", SessionStatus::Exited, 123),
+        );
+        std::fs::write(
+            sessions_root.join("detached-1").join("output.log"),
+            b"left behind",
+        )
+        .expect("write output");
+
+        let manager = Manager::new(&sessions_root).expect("manager");
+        manager.load_existing().expect("load existing");
+        assert_eq!(manager.list_metas().await.len(), 1);
+
+        let result = manager.hard_delete_tree("detached-1").await;
+
+        assert_eq!(result.affected, vec!["detached-1".to_string()]);
+        assert!(result.tombstone_error.is_none());
+        assert!(result.delete_error.is_none());
+        assert!(manager.list_metas().await.is_empty());
+        assert!(!sessions_root.join("detached-1").exists());
 
         let _ = std::fs::remove_dir_all(root);
     }

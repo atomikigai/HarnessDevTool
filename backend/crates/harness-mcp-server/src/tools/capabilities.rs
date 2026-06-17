@@ -301,6 +301,33 @@ fn categories(runtime: CapabilityRuntime) -> Vec<CapabilityCategory> {
             },
         },
         CapabilityCategory {
+            id: "azure",
+            title: "Azure CLI",
+            description: "Inspect Azure CLI installation/account context and run guarded `az` commands from the host/container.",
+            use_when: &[
+                "Azure resource inspection",
+                "Azure CLI",
+                "AKS/App Service/Functions/Storage work",
+                "resource group or subscription context",
+            ],
+            mentions: &[
+                "azure",
+                "az cli",
+                "aks",
+                "app service",
+                "azure functions",
+                "resource group",
+                "subscription",
+            ],
+            tools: &["azure_status", "azure_account", "azure_cli"],
+            skills: &["security-tooling"],
+            status: if requested("azure") {
+                CapabilityStatus::Loaded
+            } else {
+                CapabilityStatus::AvailableOnRequest
+            },
+        },
+        CapabilityCategory {
             id: "n8n",
             title: "n8n workflow automation",
             description: "Generate, validate, save, import, activate, and smoke-test n8n workflow automations against a configured or local n8n instance.",

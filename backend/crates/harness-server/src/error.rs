@@ -23,6 +23,20 @@ pub enum ApiError {
 
 pub type ApiResult<T> = std::result::Result<T, ApiError>;
 
+impl ApiError {
+    pub fn internal(error: impl std::fmt::Display) -> Self {
+        Self::Internal(error.to_string())
+    }
+
+    pub fn internal_context(context: &'static str, error: impl std::fmt::Display) -> Self {
+        Self::Internal(format!("{context}: {error}"))
+    }
+
+    pub fn bad_request(error: impl std::fmt::Display) -> Self {
+        Self::BadRequest(error.to_string())
+    }
+}
+
 impl From<harness_core::StoreError> for ApiError {
     fn from(e: harness_core::StoreError) -> Self {
         match e {

@@ -8,6 +8,7 @@ mod context_index;
 mod data;
 mod error;
 mod evolution;
+mod features;
 mod metrics;
 mod routes;
 mod sse;

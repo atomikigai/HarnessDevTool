@@ -36,8 +36,8 @@
     selectedSessionId: string | null;
     onSelect: (sessionId: string) => void;
     onNew: () => void;
-    /** Caller deletes the session (kill PTY + drop from manager). Awaited so
-     *  the column can clear local hover/menu state synchronously. */
+    /** Caller permanently deletes the session. Awaited so the column can clear
+     *  local hover/menu state synchronously. */
     onDelete: (sessionId: string) => Promise<void> | void;
     collapsed: boolean;
     onToggleCollapsed: () => void;
@@ -141,9 +141,10 @@
     if (deleting === s.id) return;
     const label = s.kind + ' · ' + s.id.slice(0, 8);
     const ok = await confirmDialog({
-      title: `Delete session ${label}?`,
-      description: 'The PTY is killed and the card removed.',
-      confirmLabel: 'Delete',
+      title: `Permanently delete ${label}?`,
+      description:
+        'This kills the session tree and removes persisted transcript/session files from disk. This is not Stop or Archive.',
+      confirmLabel: 'Hard delete',
       destructive: true
     });
     if (!ok) return;
@@ -199,7 +200,7 @@
       onclick={(e) => handleDelete(e, s)}
       disabled={deleting === s.id}
       aria-label={'Delete session ' + s.id.slice(0, 8)}
-      title="Delete session"
+      title="Hard delete session"
       class="absolute right-2 top-2 z-10 flex h-6 w-6 items-center justify-center rounded-md border opacity-0 transition-opacity hover:bg-[color-mix(in_srgb,var(--dot-danger)_15%,transparent)] focus-visible:opacity-100 group-hover:opacity-100 disabled:opacity-50"
       style="border-color: var(--border-subtle); color: var(--dot-danger); background: var(--surface-window);"
     >

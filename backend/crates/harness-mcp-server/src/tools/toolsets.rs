@@ -56,6 +56,7 @@ impl ToolRegistry {
             "knowledge" => Some("knowledge"),
             "db" => Some("db"),
             "ssh" => Some("ssh"),
+            "azure" | "az" | "azure_cli" | "cloud_azure" => Some("azure"),
             "n8n" | "workflow_automation" | "automations" => Some("n8n"),
             "skills" => Some("skills"),
             "docs" => Some("docs"),
@@ -401,6 +402,12 @@ fn groups() -> Vec<ToolGroup> {
             ],
         },
         ToolGroup {
+            id: "azure",
+            description: "Azure CLI account/context inspection and guarded `az` command execution.",
+            includes: &[],
+            tools: &["azure_status", "azure_account", "azure_cli"],
+        },
+        ToolGroup {
             id: "n8n",
             description: "Generate, validate, save, import, activate, and smoke-test n8n workflow automations.",
             includes: &[],
@@ -502,5 +509,18 @@ mod tests {
 
         let err = registry.resolve_group_tools("a").unwrap_err();
         assert!(err.contains("a -> b -> c -> a"));
+    }
+
+    #[test]
+    fn azure_aliases_resolve_to_azure_group() {
+        let registry = ToolRegistry::new(crate::tools::list_descriptors());
+
+        assert_eq!(registry.canonical_group("az"), Some("azure"));
+        assert_eq!(registry.canonical_group("azure_cli"), Some("azure"));
+        assert_eq!(registry.group_for_tool("azure_cli"), Some("azure"));
+        assert!(registry
+            .resolve_group_tools("azure")
+            .unwrap()
+            .contains(&"azure_status"));
     }
 }

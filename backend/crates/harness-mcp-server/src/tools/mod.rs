@@ -1,4 +1,5 @@
 pub mod attachments;
+pub mod azure;
 pub mod capabilities;
 pub mod db;
 pub mod docs;
@@ -37,6 +38,49 @@ pub fn list_descriptors() -> Vec<ToolDescriptor> {
             }),
         },
         ToolDescriptor {
+            name: "azure_status".into(),
+            description: "Check whether Azure CLI (`az`) is installed and return `az version` output. Does not require Azure login."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {}
+            }),
+        },
+        ToolDescriptor {
+            name: "azure_account".into(),
+            description: "Read Azure CLI account context with `az account show` or `az account list`. Requires the host/container `az` login state."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "list": {
+                        "type": "boolean",
+                        "description": "When true, run `az account list`; otherwise run `az account show`."
+                    }
+                }
+            }),
+        },
+        ToolDescriptor {
+            name: "azure_cli".into(),
+            description: "Run Azure CLI (`az`) with explicit argv. Read-only commands are allowed by default; resource-mutating commands require allow_mutating=true."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["args"],
+                "properties": {
+                    "args": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Arguments after `az`, for example [\"group\", \"list\", \"--output\", \"json\"]. Do not include the `az` binary itself."
+                    },
+                    "allow_mutating": {
+                        "type": "boolean",
+                        "description": "Required for commands containing create/update/delete/remove/set/start/stop/restart/scale/deploy/login/logout."
+                    }
+                }
+            }),
+        },
+        ToolDescriptor {
             name: "tools_load".into(),
             description: "Load one or more Harness MCP tool groups for this session, then refresh tools/list."
                 .into(),
@@ -47,7 +91,7 @@ pub fn list_descriptors() -> Vec<ToolDescriptor> {
                     "groups": {
                         "type": "array",
                         "items": { "type": "string" },
-                        "description": "Tool groups to load, for example repo, knowledge, db, ssh, skills, docs."
+                        "description": "Tool groups to load, for example repo, knowledge, db, ssh, azure, skills, docs."
                     }
                 }
             }),
@@ -381,7 +425,7 @@ pub fn list_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "attach_list".into(),
-            description: "List files attached to this agent session from the Harness ChatView composer."
+            description: "List files attached to this agent session from the Harness UI."
                 .into(),
             input_schema: json!({
                 "type": "object",

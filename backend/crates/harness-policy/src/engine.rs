@@ -219,6 +219,7 @@ pub fn is_sensitive_tool(tool: &str) -> bool {
             | "db_query"
             | "db_backup"
             | "db_memory_write"
+            | "azure_cli"
             | "n8n_local_start"
             | "n8n_local_stop"
             | "n8n_import_workflow"

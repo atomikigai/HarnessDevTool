@@ -478,18 +478,28 @@ impl ManagerSpawner {
         }
     }
 
+    fn kind_from_role_cli(role_cli: harness_core::agents::AgentKind) -> Option<AgentKind> {
+        match role_cli {
+            harness_core::agents::AgentKind::Claude => Some(AgentKind::Claude),
+            harness_core::agents::AgentKind::Codex => Some(AgentKind::Codex),
+            harness_core::agents::AgentKind::Cursor => Some(AgentKind::Cursor),
+            harness_core::agents::AgentKind::Antigravity => Some(AgentKind::Antigravity),
+            harness_core::agents::AgentKind::Generic => None,
+        }
+    }
+
     fn kind_for_role(
         role_cli: harness_core::agents::AgentKind,
         requested_kind: &str,
     ) -> Result<AgentKind, String> {
-        match role_cli {
-            harness_core::agents::AgentKind::Claude => Ok(AgentKind::Claude),
-            harness_core::agents::AgentKind::Codex => Ok(AgentKind::Codex),
-            harness_core::agents::AgentKind::Cursor => Ok(AgentKind::Cursor),
-            harness_core::agents::AgentKind::Antigravity => Ok(AgentKind::Antigravity),
-            harness_core::agents::AgentKind::Generic => Self::kind_from_request(requested_kind)
-                .ok_or_else(|| format!("unknown kind: {requested_kind}")),
+        if let Some(kind) = Self::kind_from_request(requested_kind) {
+            return Ok(kind);
         }
+        if requested_kind == "generic" {
+            return Self::kind_from_role_cli(role_cli)
+                .ok_or_else(|| "generic agent requested for generic role".to_string());
+        }
+        Err(format!("unknown kind: {requested_kind}"))
     }
 
     fn select_kind_and_binary(
@@ -713,7 +723,6 @@ impl SessionSpawner for ManagerSpawner {
         if matches!(kind, AgentKind::Claude | AgentKind::Codex) {
             if let Some(mcp_bin) = self.mcp_server_binary.as_ref() {
                 let mcp_id = uuid::Uuid::new_v4().to_string();
-                let agent_id = format!("agent:{}-{}", kind.as_str(), &mcp_id[..8]);
                 let configs_dir = self.harness_home.join(".runtime").join("mcp-configs");
                 if let Err(e) = std::fs::create_dir_all(&configs_dir) {
                     return SpawnResult::Failed(format!("create mcp-configs dir: {e}"));
@@ -723,7 +732,7 @@ impl SessionSpawner for ManagerSpawner {
                     "--thread".to_string(),
                     req.thread_id.clone(),
                     "--agent-id".to_string(),
-                    agent_id.clone(),
+                    req.agent_id.clone(),
                     "--harness-home".to_string(),
                     self.harness_home.display().to_string(),
                     "--server-url".to_string(),
@@ -903,19 +912,35 @@ mod tests {
     }
 
     #[test]
-    fn role_cli_overrides_scheduler_requested_kind() {
+    fn scheduler_requested_kind_overrides_role_cli() {
         assert_eq!(
             ManagerSpawner::kind_for_role(RoleAgentKind::Codex, "claude").unwrap(),
-            AgentKind::Codex
+            AgentKind::Claude
         );
         assert_eq!(
             ManagerSpawner::kind_for_role(RoleAgentKind::Claude, "codex").unwrap(),
-            AgentKind::Claude
+            AgentKind::Codex
         );
     }
 
     #[test]
-    fn generic_role_uses_scheduler_requested_kind() {
+    fn generic_request_uses_role_cli_default() {
+        assert_eq!(
+            ManagerSpawner::kind_for_role(RoleAgentKind::Cursor, "generic").unwrap(),
+            AgentKind::Cursor
+        );
+        assert_eq!(
+            ManagerSpawner::kind_for_role(RoleAgentKind::Codex, "generic")
+                .unwrap()
+                .underlying_cli(),
+            AgentKind::Codex
+        );
+        assert!(ManagerSpawner::kind_for_role(RoleAgentKind::Generic, "generic").is_err());
+        assert!(ManagerSpawner::kind_for_role(RoleAgentKind::Generic, "missing").is_err());
+    }
+
+    #[test]
+    fn concrete_request_uses_requested_kind_even_for_generic_role() {
         assert_eq!(
             ManagerSpawner::kind_for_role(RoleAgentKind::Generic, "cursor").unwrap(),
             AgentKind::Cursor
@@ -926,7 +951,6 @@ mod tests {
                 .underlying_cli(),
             AgentKind::Codex
         );
-        assert!(ManagerSpawner::kind_for_role(RoleAgentKind::Generic, "missing").is_err());
     }
 
     #[test]
@@ -1068,7 +1092,7 @@ mod tests {
         for (role_name, expected) in role_matrix {
             let role = spawner.roles.get(role_name).expect("baseline role");
             let selected = spawner
-                .select_kind_and_binary(role.cli, role_name, "codex")
+                .select_kind_and_binary(role.cli, role_name, "generic")
                 .expect("role resolves to a launchable CLI");
             assert_eq!(
                 selected.kind, expected,
@@ -1077,6 +1101,21 @@ mod tests {
             assert!(
                 selected.fallback.is_none(),
                 "role {role_name} should not fallback while its primary binary is present"
+            );
+        }
+        for role_name in ["planner", "generator", "evaluator", "frontend-visual"] {
+            let role = spawner.roles.get(role_name).expect("baseline role");
+            let selected = spawner
+                .select_kind_and_binary(role.cli, role_name, "codex")
+                .expect("scheduler-selected CLI should launch");
+            assert_eq!(
+                selected.kind,
+                AgentKind::Codex,
+                "concrete scheduler kind should win for role {role_name}"
+            );
+            assert!(
+                selected.fallback.is_none(),
+                "codex is present, so role {role_name} should not fallback"
             );
         }
 

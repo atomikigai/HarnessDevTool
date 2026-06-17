@@ -99,6 +99,21 @@ pub fn pack(args: &Value) -> Result<Value, String> {
         ));
     }
 
+    if signals.azure {
+        groups.insert("azure");
+        capabilities.insert("azure");
+        skills.insert("security-tooling");
+        first_actions.push(action(
+            "azure_status",
+            "Confirm Azure CLI is installed before relying on host/container Azure context.",
+        ));
+        first_actions.push(action(
+            "azure_account",
+            "Inspect the active Azure account/subscription before reading Azure resources.",
+        ));
+        guardrails.push("Use azure_cli with explicit argv and prefer read-only Azure commands; resource mutations require explicit user approval and allow_mutating=true.");
+    }
+
     if signals.n8n {
         groups.insert("n8n");
         capabilities.insert("n8n");
@@ -320,6 +335,7 @@ struct Signals {
     contract: bool,
     db: bool,
     ssh: bool,
+    azure: bool,
     n8n: bool,
     docs: bool,
     context: bool,
@@ -364,6 +380,22 @@ impl Signals {
             db: file_match(is_db_file)
                 || contains_any(text, &["database", "sql", "schema", "table", "query"]),
             ssh: contains_any(text, &["ssh", "sftp", "remote host", "server command"]),
+            azure: contains_any(
+                text,
+                &[
+                    "azure",
+                    "az cli",
+                    "azure cli",
+                    "aks",
+                    "app service",
+                    "azure functions",
+                    "resource group",
+                    "subscription",
+                    "key vault",
+                    "blob storage",
+                    "cosmos db",
+                ],
+            ),
             n8n: contains_any(text, &["n8n", "workflow", "webhook automation"]),
             docs: file_match(is_docs_file) || contains_any(text, &["docs", "documentation"]),
             context: contains_any(
@@ -460,6 +492,9 @@ impl Signals {
         }
         if self.ssh {
             domains.push("ssh");
+        }
+        if self.azure {
+            domains.push("azure");
         }
         if self.n8n {
             domains.push("n8n");
@@ -594,7 +629,7 @@ mod tests {
     #[test]
     fn test_selector_recommends_browser_for_frontend_files() {
         let result = test_selector(&json!({
-            "files": ["frontend/src/lib/components/app/ChatView.svelte"]
+            "files": ["frontend/src/lib/components/app/TerminalView.svelte"]
         }))
         .unwrap();
         assert!(result["commands"]
@@ -620,6 +655,35 @@ mod tests {
             .unwrap()
             .iter()
             .any(|item| item["tool"] == "repo_code_graph_status"));
+    }
+
+    #[test]
+    fn planning_pack_recommends_azure_for_azure_cli_work() {
+        let result = pack(&json!({
+            "objective": "Use Azure CLI to inspect AKS resource group and subscription context"
+        }))
+        .unwrap();
+
+        assert!(result["recommended_tool_groups"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item == "azure"));
+        assert!(result["recommended_capabilities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item == "azure"));
+        assert!(result["first_actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["tool"] == "azure_status"));
+        assert!(result["first_actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["tool"] == "azure_account"));
     }
 
     #[test]

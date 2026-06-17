@@ -8,7 +8,7 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
   import HarnessIcons from './HarnessIcons.svelte';
-  import NewSessionDialog from './NewSessionDialog.svelte';
+  import NewSessionDialog from '$lib/app/new-session/NewSessionDialog.page.svelte';
   import { sessionsState } from '$lib/stores/session.svelte';
   import { cn } from '$lib/utils';
 

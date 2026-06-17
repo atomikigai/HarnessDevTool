@@ -58,6 +58,38 @@ container).
 
 Si trabajas en un dominio, no modifiques los otros.
 
+## Organización KISS por feature
+
+Frontend nuevo o refactorizado:
+
+- Pantallas/flows: `frontend/src/lib/features/<feature>/`.
+- `handlers.ts`: peticiones HTTP y side effects de red. Usar `axios` en handlers nuevos.
+- `entities.ts`: interfaces, tipos y contratos propios del feature. Re-exportar tipos
+  `ts-rs` cuando sean la fuente de verdad.
+- `schemas.ts`: validación cliente con `valibot` para formularios/pantallas.
+- Componentes grandes: `frontend/src/lib/app/<nombre>/<Componente>.page.svelte`.
+  Si el componente es pequeño, puede vivir como archivo único sin carpeta.
+- Formularios nuevos: preferir `valibot` + shadcn-svelte/formsnap cuando el flujo
+  necesite validación/errores de campo. El backend Rust sigue validando trust
+  boundaries; la validación cliente es UX, no seguridad.
+
+Backend nuevo o refactorizado:
+
+- Features grandes: `backend/crates/<crate>/src/features/<feature>/`.
+- `handlers.rs`: handlers HTTP/MCP y adaptación de request/response.
+- `entities.rs`: DTOs, tipos serializables y modelos del feature.
+- `services.rs`: lógica de negocio, IO coordinado, orquestación y llamadas a stores.
+- `helpers.rs`: helpers locales sin estado; si se usan en 2+ features, subirlos a un
+  módulo compartido explícito.
+- Mantener rutas pequeñas en `routes/<feature>.rs` si no hay complejidad real. No
+  crear carpetas por ceremonia.
+- Errores HTTP deben pasar por `crate::error::{ApiError, ApiResult}`. Usar
+  `thiserror` para errores de dominio y `anyhow` para setup/CLI/IO contextual, no
+  para respuestas HTTP tipadas.
+- Logs: usar `tracing` con campos (`session_id`, `thread_id`, `task_id`, `role`,
+  `provider`, `error`) en vez de strings sin estructura. Métricas nuevas deben
+  exponerse desde `metrics.rs` con nombres `harness_*`.
+
 ## Como correr
 
 ```bash

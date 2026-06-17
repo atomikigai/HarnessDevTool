@@ -328,7 +328,7 @@ mod tests {
                 actor: Some("context-governor".into()),
                 payload: Some(json!({
                     "session_id": "s1",
-                    "checkpoint": "CONTEXT CHECKPOINT\nnext_action: fix ChatView transcript"
+                    "checkpoint": "CONTEXT CHECKPOINT\nnext_action: fix terminal transcript"
                 })),
             },
             Event {
@@ -342,13 +342,13 @@ mod tests {
                 actor: Some("context-governor".into()),
                 payload: Some(json!({
                     "session_id": "s2",
-                    "checkpoint": "CONTEXT CHECKPOINT\nnext_action: fix ChatView transcript"
+                    "checkpoint": "CONTEXT CHECKPOINT\nnext_action: fix terminal transcript"
                 })),
             },
         ];
 
         index_context_events(dir.path(), "default", &events).unwrap();
-        let hits = search_context_events(dir.path(), "default", "s1", "ChatView", 10).unwrap();
+        let hits = search_context_events(dir.path(), "default", "s1", "terminal", 10).unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].session_id, "s1");
     }

@@ -18,7 +18,7 @@
   import SessionsColumn from '$lib/components/app/SessionsColumn.svelte';
   import SessionMainView from '$lib/components/app/SessionMainView.svelte';
   import SessionRightPanel from '$lib/components/app/SessionRightPanel.svelte';
-  import NewSessionDialog from '$lib/components/app/NewSessionDialog.svelte';
+  import NewSessionDialog from '$lib/app/new-session/NewSessionDialog.page.svelte';
   import WorkspaceSwitcher from '$lib/components/app/WorkspaceSwitcher.svelte';
   import { health } from '$lib/stores/health.svelte';
   import { sessionsState } from '$lib/stores/session.svelte';
@@ -197,11 +197,6 @@
     refreshSessions();
   }
 
-  function onSessionTokens(sessionId: string, totalTokens: number) {
-    tokenTotalsBySession = { ...tokenTotalsBySession, [sessionId]: totalTokens };
-    tokenTotalsLoaded.add(sessionId);
-  }
-
   async function preloadSessionTokenTotal(sessionId: string) {
     if (tokenTotalsLoaded.has(sessionId) || tokenTotalsLoading.has(sessionId)) return;
     tokenTotalsLoading.add(sessionId);
@@ -217,23 +212,22 @@
       tokenTotalsBySession = { ...tokenTotalsBySession, [sessionId]: total };
       tokenTotalsLoaded.add(sessionId);
     } catch {
-      // Best effort only: ChatView still reports live totals once the session is opened.
+      // Best effort only; token totals are sidebar metadata and should not block selection.
     } finally {
       tokenTotalsLoading.delete(sessionId);
     }
   }
 
-  /// Hard-delete a session from the Agents panel (kebab → Delete).
-  /// Calls DELETE /api/sessions/:id which kills the PTY and forgets the
-  /// session in the Manager so subsequent polls see it gone. We optimistically
-  /// drop the local selection so the right panel doesn't flash stale meta
-  /// while waiting for the next poll.
+  /// Hard-delete a session from the Agents panel (kebab -> Delete).
+  /// This is intentionally destructive: it kills the PTY tree, forgets runtime
+  /// resources, and removes persisted session directories from disk.
   async function onSessionDelete(sid: string) {
     try {
-      await api.sessions.kill(sid);
+      await api.sessions.hardDelete(sid);
       if (selectedSessionId === sid) {
         selectedSessionId = null;
       }
+      toast.success('Session permanently deleted');
       refreshSessions();
     } catch (err) {
       const msg =
@@ -395,7 +389,6 @@
       onSelectSession={onSelect}
       {onSessionReplaced}
       {onSessionKilled}
-      {onSessionTokens}
     />
     <SessionRightPanel
       session={selectedSession}

@@ -15,8 +15,8 @@ use crate::protocol::{
     SERVER_NAME, SERVER_VERSION,
 };
 use crate::tools::{
-    self, attachments as attachment_tools, capabilities as capability_tools, db as db_tools,
-    docs as docs_tools, evidence as evidence_tools, knowledge as knowledge_tools,
+    self, attachments as attachment_tools, azure as azure_tools, capabilities as capability_tools,
+    db as db_tools, docs as docs_tools, evidence as evidence_tools, knowledge as knowledge_tools,
     ledger as ledger_tools, memory as memory_tools, n8n as n8n_tools, planning, repo,
     session as session_tools, skills, spec, ssh as ssh_tools, tasks, toolsets::ToolRegistry,
     wrap_error, wrap_text,
@@ -258,6 +258,9 @@ impl Dispatcher {
             "tools_search" => self.tools_search(&args),
             "tools_load" => self.tools_load(&args),
             "tools_unload" => self.tools_unload(&args),
+            "azure_status" => azure_tools::status(),
+            "azure_account" => azure_tools::account(&args),
+            "azure_cli" => azure_tools::cli(&args),
             "planning_pack" => planning::pack(&args),
             "test_selector" => planning::test_selector(&args),
             "contract_guard" => planning::contract_guard(&args),

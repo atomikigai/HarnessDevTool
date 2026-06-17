@@ -18,13 +18,16 @@ class HealthStore {
   lastUpdated = $state<Date | null>(null);
 
   private controller: AbortController | null = null;
+  private requestSeq = 0;
 
   async refresh(): Promise<void> {
     this.controller?.abort();
     this.controller = new AbortController();
+    const seq = ++this.requestSeq;
     if (this.state !== 'ok') this.state = 'connecting';
     try {
       const res = await api.health(this.controller.signal);
+      if (seq !== this.requestSeq) return;
       this.data = res.data;
       this.protocolVersion = res.protocolVersion;
       this.error = null;
@@ -32,8 +35,11 @@ class HealthStore {
       this.state = 'ok';
     } catch (e) {
       if ((e as { name?: string }).name === 'AbortError') return;
+      if (seq !== this.requestSeq) return;
       this.error = e instanceof Error ? e.message : String(e);
-      this.data = null;
+      if (!this.data) {
+        this.protocolVersion = null;
+      }
       this.state = 'down';
     }
   }

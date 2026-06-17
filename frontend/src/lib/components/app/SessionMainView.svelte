@@ -19,19 +19,11 @@
 -->
 <script lang="ts">
   import { api, ApiError, type SessionMeta, type ZeusRoleSelection } from '$lib/api/client';
-  import { Bot, MessageSquare, Paperclip, RotateCcw, Send, Terminal } from '$lib/icons';
+  import { Bot, Paperclip, RotateCcw, Send, Terminal } from '$lib/icons';
   import { toast } from 'svelte-sonner';
   import TerminalView from './TerminalView.svelte';
-  import ChatView from './ChatView.svelte';
   import HarnessIcons from './HarnessIcons.svelte';
-  import {
-    kindChip,
-    statusColor,
-    tokensLabel,
-    uiStatus,
-    uptime,
-    isTerminal
-  } from '$lib/sessionDisplay';
+  import { kindChip, statusColor, uiStatus, uptime, isTerminal } from '$lib/sessionDisplay';
 
   interface Props {
     session: SessionMeta | null;
@@ -42,8 +34,6 @@
     onSessionReplaced?: (newSessionId: string) => void;
     /** Notified after a Kill so the parent can refresh its list. */
     onSessionKilled?: (sessionId: string) => void;
-    /** Notified when ChatView computes transcript token totals. */
-    onSessionTokens?: (sessionId: string, totalTokens: number) => void;
   }
 
   let {
@@ -51,46 +41,15 @@
     relatedSessions = [],
     onSelectSession,
     onSessionReplaced,
-    onSessionKilled,
-    onSessionTokens
+    onSessionKilled
   }: Props = $props();
 
-  let mainTab = $state<'terminal' | 'chat'>('chat');
   let input = $state('');
   let sending = $state(false);
   let stopping = $state(false);
   let restarting = $state(false);
   let attaching = $state(false);
   let fileInputEl: HTMLInputElement | null = $state(null);
-
-  // BUG D: old session ID passed to ChatView so it can show history above separator
-  let prevSidForChat = $state<string | null>(null);
-  // P1 fix: the session ID that the last restart created. Used to guard prevSidForChat:
-  // if session.id changes to something other than this, the user navigated away and we
-  // must clear prevSidForChat so the new session doesn't show A's history.
-  let expectedNewSid: string | null = null;
-
-  $effect(() => {
-    const sid = session?.id ?? null;
-    // Clear prevSidForChat when the selected session is NOT the one created by the
-    // last restart. The condition is intentionally guarded by prevSidForChat !== null
-    // so it's a no-op until a restart actually sets it.
-    //
-    // Root-cause fix (2026-06-10): after restart, `selectedSessionId` is set to the
-    // new session's ID but `allSessions` may not contain it yet (polling lag). While
-    // waiting, `selectedSession` is null → `sid = null`. Without the `sid !== null`
-    // guard, `null !== expectedNewSid` evaluates to TRUE and the condition fires,
-    // clearing prevSidForChat before the new ChatView even mounts. Adding the null
-    // guard ensures we only clear on an actual *different* session navigation.
-    if (prevSidForChat !== null && sid !== null && sid !== expectedNewSid && sid !== prevSidForChat) {
-      prevSidForChat = null;
-      expectedNewSid = null;
-    }
-  });
-
-  // BUG E: token totals received from ChatView via onTotalTokens callback
-  let chatInputTok = $state(0);
-  let chatOutputTok = $state(0);
 
   const encoder = new TextEncoder();
 
@@ -191,11 +150,6 @@
     if (!session || restarting) return;
     restarting = true;
     const { thread_id, kind, cwd, id: oldId } = session;
-    // BUG D: capture old SID before killing so ChatView can load history
-    prevSidForChat = oldId;
-    // BUG E: reset token counter when restarting
-    chatInputTok = 0;
-    chatOutputTok = 0;
     // Fetch the zeus_roles matrix before killing so the Zeus profile survives
     // the restart. The session prop comes from the list and won't carry
     // zeus_roles, so we always do a GET here. Degrade to [] on any error.
@@ -224,17 +178,11 @@
         capability_profile: 'auto',
         zeus_roles: zeusRoles
       });
-      // P1 fix: record the expected new session ID BEFORE notifying the parent so
-      // the $effect on session?.id won't clear prevSidForChat when the parent
-      // reselects the freshly-created session.
-      expectedNewSid = res.data.session_id;
       toast.success('Session restarted');
       onSessionReplaced?.(res.data.session_id);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       toast.error(`Restart failed: ${msg}`);
-      prevSidForChat = null; // clear on failure
-      expectedNewSid = null;
     } finally {
       restarting = false;
     }
@@ -305,7 +253,7 @@
       {/if}
       <div class="ml-auto flex shrink-0 items-center gap-3">
         <span class="font-mono text-[11px]" style="color: var(--fg-muted);">
-          {uptime(session.started_at)} · {tokensLabel(chatInputTok + chatOutputTok)}
+          {uptime(session.started_at)}
         </span>
         <div class="flex gap-1.5">
           <button
@@ -376,22 +324,22 @@
       </nav>
     {/if}
 
-    <!-- Window frame (macOS dots + cwd line + terminal/chat) -->
+    <!-- Window frame (macOS dots + cwd line + terminal) -->
     <div class="flex min-h-0 flex-1 flex-col p-3">
       <div
         class="flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border"
         style="
-          background: {mainTab === 'terminal' ? '#0b1220' : 'var(--surface-canvas)'};
+          background: #0b1220;
           border-color: var(--border-subtle);
           box-shadow: var(--shadow-card);
         "
       >
-        <!-- "Title bar" — purely decorative; adapts to active tab -->
+        <!-- "Title bar" — purely decorative -->
         <div
           class="flex h-8 shrink-0 items-center gap-2 border-b px-3"
           style="
-            background: {mainTab === 'terminal' ? 'rgba(0, 0, 0, 0.3)' : 'var(--surface-window)'};
-            border-color: {mainTab === 'terminal' ? 'rgba(255, 255, 255, 0.06)' : 'var(--border-subtle)'};
+            background: rgba(0, 0, 0, 0.3);
+            border-color: rgba(255, 255, 255, 0.06);
           "
         >
           <div class="flex gap-1.5">
@@ -401,68 +349,24 @@
           </div>
           <span
             class="ml-2 truncate font-mono text-[10.5px]"
-            style="color: {mainTab === 'terminal' ? '#94a3b8' : 'var(--fg-muted)'};"
+            style="color: #94a3b8;"
             title={session.cwd ?? ''}
           >
             {k?.label ?? session.kind} · {session.cwd ?? '(default cwd)'}
           </span>
-          <span class="ml-auto shrink-0 font-mono text-[10px]" style="color: {mainTab === 'terminal' ? '#4a5568' : 'var(--fg-muted)'};">
-            {tokensLabel(chatInputTok + chatOutputTok)}
+          <span class="ml-auto shrink-0 font-mono text-[10px]" style="color: #4a5568;">
+            terminal
           </span>
         </div>
 
-        <!-- Tab bar: Chat | Terminal (chat is primary) -->
-        <div
-          class="flex shrink-0 border-b"
-          style="
-            border-color: {mainTab === 'terminal' ? 'rgba(255, 255, 255, 0.06)' : 'var(--border-subtle)'};
-            background: {mainTab === 'terminal' ? 'rgba(0, 0, 0, 0.2)' : 'var(--surface-window)'};
-          "
-        >
-          {#each [{ id: 'chat' as const, icon: MessageSquare, label: 'Chat' }, { id: 'terminal' as const, icon: Terminal, label: 'Terminal' }] as t (t.id)}
-            <button
-              type="button"
-              onclick={() => (mainTab = t.id)}
-              class="flex items-center gap-1.5 px-4 py-2 text-xs font-medium border-b-2 transition-colors"
-              style={mainTab === t.id
-                ? 'border-color: var(--accent); color: var(--accent);'
-                : `border-color: transparent; color: ${mainTab === 'terminal' ? '#94a3b8' : 'var(--fg-muted)'};`}
-            >
-              <t.icon size={12} />
-              {t.label}
-            </button>
-          {/each}
-        </div>
-
-        <!-- Body. Keep ChatView mounted while the Terminal tab is visible so
-             its replayed transcript and live SSE state are not discarded on
-             every tab toggle. The keyed wrapper still remounts both views when
-             the selected session changes. -->
+        <!-- Body -->
         <div class="min-h-0 flex-1 overflow-hidden flex flex-col">
           {#key session.id}
-            <div class:hidden={mainTab !== 'chat'} class="min-h-0 flex flex-1 flex-col overflow-hidden" aria-hidden={mainTab !== 'chat'}>
-              <ChatView
-                {session}
-                prevSid={prevSidForChat}
-                onSwitchToTerminal={() => (mainTab = 'terminal')}
-                {onRestart}
-                onTotalTokens={(inp, out) => {
-                  chatInputTok = inp;
-                  chatOutputTok = out;
-                  const sid = session.id;
-                  const total = inp + out;
-                  queueMicrotask(() => onSessionTokens?.(sid, total));
-                }}
-              />
-            </div>
-            {#if mainTab === 'terminal'}
-              <TerminalView threadId={session.thread_id} sessionId={session.id} embedded />
-            {/if}
+            <TerminalView threadId={session.thread_id} sessionId={session.id} embedded />
           {/key}
         </div>
 
-        <!-- Footer prompt (terminal tab only) -->
-        {#if mainTab === 'terminal'}
+        <!-- Footer prompt -->
         <div
           class="flex shrink-0 items-center gap-2 border-t px-3 py-2"
           style="
@@ -522,7 +426,6 @@
             {/if}
           </div>
         </div>
-        {/if}
       </div>
     </div>
   {/if}

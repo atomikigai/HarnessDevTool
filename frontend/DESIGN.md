@@ -127,7 +127,7 @@ sections. For the root agents view, the expected rhythm is sessions column,
 main session/terminal view, and right panel for tasks/agents/info.
 
 On narrow screens, prioritize the active work surface over secondary panes:
-Chat/Terminal must remain reachable and legible, while sessions and metadata
+the terminal must remain reachable and legible, while sessions and metadata
 panels may collapse or hide until there is enough horizontal space.
 
 Use cards only for repeated items, dialogs, and genuinely framed tools. Do not
@@ -147,28 +147,11 @@ Data-heavy surfaces must prioritize:
 - Timestamps and metadata that are muted but still readable.
 - Stable scroll containers.
 
-Chat transcript event blocks should read like a CLI-native activity stream:
-tool calls stay collapsed by default with a concise status row, raw arguments
-or results live behind an explicit disclosure, PR/link events render as
-actionable links, and permission prompts expose compact inline actions instead
-of requiring users to inspect raw JSON. Repetitive operational notes such as
-permission mode changes should not interrupt the main chat stream when the same
-state is visible elsewhere. Long user prompts should remain readable without
-taking over the viewport.
-
-Technical reports in chat should preserve structure: headings, lists, prose,
-Markdown tables, and terminal-style box tables must remain readable without
-spilling across the pane. Prefer semantic Markdown tables when possible; when
-box-drawing tables appear, render them as bounded monospaced blocks with
-horizontal scroll.
-
-When structured transcript events are unavailable or incomplete, ChatView may
-render PTY output as a provider-agnostic agent activity stream. It should keep
-the terminal's fidelity while improving scanability with neutral line classes
-such as prompt, action, result, error, and output; never make the treatment
-specific to one CLI such as Codex or Claude. Raw PTY output must not render as
-a terminal dump inside chat, even behind a disclosure or preview; show only a
-compact status row with an explicit Terminal action for full fidelity.
+The terminal is the primary agent interaction surface. Preserve raw PTY
+fidelity, fast output replay, copy/paste ergonomics, resize stability, and a
+compact prompt footer for sending text plus Enter. Any structured transcript
+or metrics surfaces are secondary diagnostics; they must not compete with or
+block terminal operation.
 
 ## States
 

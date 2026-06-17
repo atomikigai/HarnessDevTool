@@ -25,20 +25,14 @@ pub fn router() -> Router<Arc<AppState>> {
 async fn pause_all(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    state
-        .pause
-        .set(true)
-        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    state.pause.set(true).map_err(ApiError::internal)?;
     Ok(Json(json!({ "paused": state.pause.is_paused() })))
 }
 
 async fn resume_all(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    state
-        .pause
-        .set(false)
-        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    state.pause.set(false).map_err(ApiError::internal)?;
     Ok(Json(json!({ "paused": state.pause.is_paused() })))
 }
 
@@ -50,11 +44,11 @@ async fn pause_thread(
     State(state): State<Arc<AppState>>,
     Path(tid): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    validate_thread_id(&tid).map_err(ApiError::BadRequest)?;
+    validate_thread_id(&tid).map_err(ApiError::bad_request)?;
     state
         .pause
         .set_thread(&tid, true)
-        .map_err(|e| ApiError::Internal(e.to_string()))?;
+        .map_err(ApiError::internal)?;
     Ok(Json(json!({ "thread_id": tid, "paused": true })))
 }
 
@@ -62,11 +56,11 @@ async fn resume_thread(
     State(state): State<Arc<AppState>>,
     Path(tid): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    validate_thread_id(&tid).map_err(ApiError::BadRequest)?;
+    validate_thread_id(&tid).map_err(ApiError::bad_request)?;
     state
         .pause
         .set_thread(&tid, false)
-        .map_err(|e| ApiError::Internal(e.to_string()))?;
+        .map_err(ApiError::internal)?;
     Ok(Json(json!({ "thread_id": tid, "paused": false })))
 }
 
@@ -74,7 +68,7 @@ async fn get_thread_pause(
     State(state): State<Arc<AppState>>,
     Path(tid): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    validate_thread_id(&tid).map_err(ApiError::BadRequest)?;
+    validate_thread_id(&tid).map_err(ApiError::bad_request)?;
     Ok(Json(json!({
         "thread_id": tid,
         "paused": state.pause.is_thread_paused(&tid)

@@ -46,13 +46,10 @@
   let contextBusy = $state(false);
   let contextSearchBusy = $state(false);
   let childrenError = $state<string | null>(null);
-  // Unified visibility-aware polling.
-  // children: every tick (~1500ms), context: every 2nd tick (~3000ms), metrics: every 4th (~6000ms).
-  const TICK_MS = 1500;
-  const CONTEXT_EVERY = 2;
-  const METRICS_EVERY = 4;
+  // Visibility-aware background refresh. Keep this slow enough that the panel
+  // reads as stable; SSE still handles task-level live updates.
+  const PANEL_REFRESH_MS = 30_000;
   let pollTimer: ReturnType<typeof setInterval> | null = null;
-  let pollTick = 0;
   let childrenAbort: AbortController | null = null;
   let metricsAbort: AbortController | null = null;
   let contextAbort: AbortController | null = null;
@@ -276,39 +273,29 @@
     contextHits = [];
   }
 
-  function tickPoll(sessionId: string): void {
-    pollTick += 1;
-    // Children — every tick
+  function refreshPanelSnapshot(sessionId: string): void {
+    if (!session || session.id !== sessionId) return;
+    if (tasksState.threadId === session.thread_id) {
+      void tasksState.refresh({ showLoading: false });
+    }
+
     childrenAbort?.abort();
     childrenAbort = new AbortController();
     void loadChildren(sessionId, childrenAbort.signal);
-    // Context status — every CONTEXT_EVERY ticks; initial load is in startPanelPoll (tick 0)
-    if (pollTick % CONTEXT_EVERY === 0) {
-      contextAbort?.abort();
-      contextAbort = new AbortController();
-      void loadContextStatus(sessionId, contextAbort.signal);
-    }
-    // Metrics — every METRICS_EVERY ticks; initial load is in startPanelPoll (tick 0)
-    if (pollTick % METRICS_EVERY === 0) {
-      metricsAbort?.abort();
-      metricsAbort = new AbortController();
-      void loadMetrics(sessionId, metricsAbort.signal);
-    }
+
+    contextAbort?.abort();
+    contextAbort = new AbortController();
+    void loadContextStatus(sessionId, contextAbort.signal);
+
+    metricsAbort?.abort();
+    metricsAbort = new AbortController();
+    void loadMetrics(sessionId, metricsAbort.signal);
   }
 
   function startPanelPoll(sessionId: string): void {
     stopPanelPoll();
-    pollTick = 0;
-    // Eagerly load context and metrics once (counts as tick-0 of each cadence).
-    // tickPoll will then fire them again at CONTEXT_EVERY / METRICS_EVERY intervals.
-    contextAbort?.abort();
-    contextAbort = new AbortController();
-    void loadContextStatus(sessionId, contextAbort.signal);
-    metricsAbort?.abort();
-    metricsAbort = new AbortController();
-    void loadMetrics(sessionId, metricsAbort.signal);
-    tickPoll(sessionId);
-    pollTimer = setInterval(() => tickPoll(sessionId), TICK_MS);
+    refreshPanelSnapshot(sessionId);
+    pollTimer = setInterval(() => refreshPanelSnapshot(sessionId), PANEL_REFRESH_MS);
   }
 
   function onVisibilityChange(): void {

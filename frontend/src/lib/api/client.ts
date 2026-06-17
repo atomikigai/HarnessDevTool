@@ -778,6 +778,8 @@ export const api = {
       apiRequest<null>(`/sessions/${sessionId}/stop`, { method: 'POST', signal }),
     kill: (sessionId: string, signal?: AbortSignal) =>
       apiRequest<null>(`/sessions/${sessionId}`, { method: 'DELETE', signal }),
+    hardDelete: (sessionId: string, signal?: AbortSignal) =>
+      apiRequest<null>(`/sessions/${sessionId}/hard-delete`, { method: 'POST', signal }),
     resize: (sessionId: string, cols: number, rows: number, signal?: AbortSignal) =>
       apiRequest<null>(`/sessions/${sessionId}/resize`, {
         method: 'POST',

@@ -56,6 +56,10 @@
     if (turnId in thinkingExpanded) return thinkingExpanded[turnId];
     return streaming;
   }
+
+  function isNoisySystemTurn(turn: ChatTurn): boolean {
+    return turn.role === 'system' && /^Permission mode:/i.test(turn.content.trim());
+  }
 </script>
 
 {#snippet workingIndicator()}
@@ -103,7 +107,9 @@
   {/if}
 
   {#each turns as turn (turn.id)}
-    {#if turn.role === 'user'}
+    {#if isNoisySystemTurn(turn)}
+      <!-- Permission mode is operational metadata; the session header/status surfaces it better. -->
+    {:else if turn.role === 'user'}
       <div
         class="chat-turn user-turn"
         style="contain: content; content-visibility: auto; contain-intrinsic-size: 80px;"
@@ -424,7 +430,10 @@
     background: color-mix(in srgb, var(--surface-window) 72%, transparent);
     border: 1px solid var(--border-subtle);
     border-radius: 0.85rem;
+    max-height: 13.5rem;
     padding: 0.8rem 0.95rem;
+    overflow: auto;
+    scrollbar-gutter: stable;
     width: fit-content;
     max-width: min(82ch, 100%);
   }

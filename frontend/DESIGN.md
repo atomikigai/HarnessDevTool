@@ -151,7 +151,10 @@ Chat transcript event blocks should read like a CLI-native activity stream:
 tool calls stay collapsed by default with a concise status row, raw arguments
 or results live behind an explicit disclosure, PR/link events render as
 actionable links, and permission prompts expose compact inline actions instead
-of requiring users to inspect raw JSON.
+of requiring users to inspect raw JSON. Repetitive operational notes such as
+permission mode changes should not interrupt the main chat stream when the same
+state is visible elsewhere. Long user prompts should remain readable without
+taking over the viewport.
 
 When structured transcript events are unavailable or incomplete, ChatView may
 render PTY output as a provider-agnostic agent activity stream. It should keep

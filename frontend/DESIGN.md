@@ -156,6 +156,12 @@ permission mode changes should not interrupt the main chat stream when the same
 state is visible elsewhere. Long user prompts should remain readable without
 taking over the viewport.
 
+Technical reports in chat should preserve structure: headings, lists, prose,
+Markdown tables, and terminal-style box tables must remain readable without
+spilling across the pane. Prefer semantic Markdown tables when possible; when
+box-drawing tables appear, render them as bounded monospaced blocks with
+horizontal scroll.
+
 When structured transcript events are unavailable or incomplete, ChatView may
 render PTY output as a provider-agnostic agent activity stream. It should keep
 the terminal's fidelity while improving scanability with neutral line classes

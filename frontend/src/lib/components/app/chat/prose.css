@@ -1,6 +1,7 @@
 .chat-prose {
   font-size: 0.9rem;
   line-height: 1.75;
+  overflow-wrap: anywhere;
 }
 
 .chat-prose > :first-child {
@@ -27,9 +28,11 @@
 }
 
 .chat-prose h2 {
+  border-top: 1px solid var(--border-subtle);
   font-size: 1.15rem;
-  margin-top: 1.3em;
+  margin-top: 1.45em;
   margin-bottom: 0.55em;
+  padding-top: 0.85em;
 }
 
 .chat-prose h3 {
@@ -92,8 +95,10 @@
   border: 1px solid var(--border-subtle);
   border-radius: 6px;
   color: var(--fg-default);
-  overflow-x: auto;
+  max-height: min(28rem, 62vh);
+  overflow: auto;
   padding: 0.85rem 1rem;
+  scrollbar-gutter: stable;
 }
 
 .chat-prose pre code {
@@ -113,23 +118,49 @@
   padding: 0.08rem 0.28rem;
 }
 
-.chat-prose table {
-  border-collapse: collapse;
-  display: block;
+.chat-table-wrap {
+  border: 1px solid var(--border-subtle);
+  border-radius: 0.5rem;
   max-width: 100%;
   overflow-x: auto;
+  scrollbar-gutter: stable;
+}
+
+.chat-prose table {
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 0.82rem;
+  min-width: min(100%, 38rem);
+  table-layout: auto;
+  width: 100%;
 }
 
 .chat-prose th,
 .chat-prose td {
-  border: 1px solid var(--border-subtle);
+  border-bottom: 1px solid var(--border-subtle);
+  border-right: 1px solid var(--border-subtle);
   padding: 0.45rem 0.6rem;
+  text-align: left;
+  vertical-align: top;
+  overflow-wrap: anywhere;
 }
 
 .chat-prose th {
   background: var(--surface-window);
   color: var(--fg-default);
   font-weight: 600;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.chat-prose th:last-child,
+.chat-prose td:last-child {
+  border-right: 0;
+}
+
+.chat-prose tr:last-child td {
+  border-bottom: 0;
 }
 
 .chat-prose img {

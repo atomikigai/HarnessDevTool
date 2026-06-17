@@ -63,7 +63,8 @@ async function renderMathMarkdown(text: string): Promise<string> {
 }
 
 export async function renderMarkdown(text: string): Promise<string> {
-  const mathReady = await renderMathMarkdown(text);
+  const normalized = fenceBoxDrawingTables(text);
+  const mathReady = await renderMathMarkdown(normalized);
   if (isTauri) {
     const html = await invokeCommand<string>('parse_markdown', { text: mathReady });
     return sanitizeMarkdownHtml(html);
@@ -131,6 +132,14 @@ export function highlightRenderedMarkdown(
   node: HTMLElement,
   openLightbox: (src: string) => void
 ): { destroy: () => void } {
+  node.querySelectorAll('table').forEach((table) => {
+    if (table.parentElement?.classList.contains('chat-table-wrap')) return;
+    const wrapper = document.createElement('div');
+    wrapper.className = 'chat-table-wrap';
+    table.parentNode?.insertBefore(wrapper, table);
+    wrapper.appendChild(table);
+  });
+
   getHljs()
     .then((hljs) => {
       node.querySelectorAll('pre code').forEach((block) => {
@@ -165,6 +174,49 @@ export function highlightRenderedMarkdown(
 
   node.addEventListener('click', handleContentClick);
   return { destroy: () => node.removeEventListener('click', handleContentClick) };
+}
+
+function fenceBoxDrawingTables(text: string): string {
+  const lines = text.split('\n');
+  const out: string[] = [];
+  let inFence = false;
+  let tableBlock: string[] = [];
+
+  const flush = () => {
+    if (tableBlock.length === 0) return;
+    if (tableBlock.length >= 2) {
+      out.push('```text', ...tableBlock, '```');
+    } else {
+      out.push(...tableBlock);
+    }
+    tableBlock = [];
+  };
+
+  for (const line of lines) {
+    if (/^\s*```/.test(line)) {
+      flush();
+      inFence = !inFence;
+      out.push(line);
+      continue;
+    }
+
+    if (!inFence && isBoxDrawingLine(line)) {
+      tableBlock.push(line);
+      continue;
+    }
+
+    flush();
+    out.push(line);
+  }
+
+  flush();
+  return out.join('\n');
+}
+
+function isBoxDrawingLine(line: string): boolean {
+  if (!line.trim()) return false;
+  if (/[╭╮╰╯┌┐└┘├┤┬┴┼└┘┌┐┬┴┼─━═│┃]/.test(line)) return true;
+  return /^\s*│.*│\s*$/.test(line);
 }
 
 function isExternalHttpUrl(href: string): boolean {

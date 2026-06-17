@@ -62,6 +62,8 @@
   let knownIds = $state<Set<string>>(new Set());
   let knownStatuses = $state<Map<string, string>>(new Map());
   let activeSessionId: string | null = null;
+  let pollingSessionId: string | null = null;
+  let lastTasksRefreshKey = '';
 
   // Convenience — keep counts reactive without re-fetching.
   const prog = $derived(taskProgress(tasksState.items));
@@ -263,6 +265,17 @@
     childrenAbort = metricsAbort = contextAbort = null;
   }
 
+  function resetPanelState(): void {
+    resetChildren();
+    activeSessionId = null;
+    metrics = null;
+    metricsError = null;
+    contextStatus = null;
+    contextError = null;
+    contextQuery = '';
+    contextHits = [];
+  }
+
   function tickPoll(sessionId: string): void {
     pollTick += 1;
     // Children — every tick
@@ -311,37 +324,35 @@
   // dropped (timing race, MCP fallback to local FS, etc.) the user still
   // sees the latest state by clicking through. Cheap (~few KB).
   $effect(() => {
-    if (tab === 'tasks' && session) {
+    const sessionId = session?.id ?? null;
+    if (tab !== 'tasks' || !sessionId) {
+      lastTasksRefreshKey = '';
+      return;
+    }
+    const key = `${sessionId}:tasks`;
+    if (key !== lastTasksRefreshKey) {
+      lastTasksRefreshKey = key;
       void tasksState.refresh();
     }
   });
 
-  // Single unified polling effect — replaces the former three separate setInterval blocks.
-  // Pauses automatically when the tab is hidden (via onVisibilityChange); resumes on focus.
+  // Single unified polling effect — compare by session id, not object reference.
+  // The sessions list is refreshed periodically and can hand us a fresh object
+  // for the same id. Restarting the poller on those reference changes creates
+  // request bursts, so cleanup lives in onDestroy and this effect only reacts to
+  // real id changes.
   $effect(() => {
-    if (session) {
-      const sessionId = session.id;
-      resetChildren();
-      activeSessionId = sessionId;
-      metrics = null;
-      metricsError = null;
-      contextStatus = null;
-      contextError = null;
-      contextQuery = '';
-      contextHits = [];
-      if (!document.hidden) startPanelPoll(sessionId);
-    } else {
+    const sessionId = session?.id ?? null;
+    if (sessionId === pollingSessionId) return;
+
+    pollingSessionId = sessionId;
+    resetPanelState();
+
+    if (sessionId && !document.hidden) {
+      startPanelPoll(sessionId);
+    } else if (!sessionId) {
       stopPanelPoll();
-      resetChildren();
-      activeSessionId = null;
-      metrics = null;
-      metricsError = null;
-      contextStatus = null;
-      contextError = null;
-      contextQuery = '';
-      contextHits = [];
     }
-    return () => stopPanelPoll();
   });
 
   onMount(() => {

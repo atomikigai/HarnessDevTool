@@ -87,7 +87,7 @@
   </div>
 {/snippet}
 
-<div class="chat-thread mx-auto max-w-[820px] px-5 py-8 sm:px-7">
+<div class="chat-thread mx-auto max-w-[900px] px-5 py-6 sm:px-7">
   {#if historicalLoaded && historicalTurns.length > 0}
     <div class="prev-history-wrap">
       {#each historicalTurns as ht (ht.id)}
@@ -322,14 +322,14 @@
 
   .chat-turn {
     display: grid;
-    gap: 0.85rem;
+    gap: 0.75rem;
     grid-template-columns: 1.75rem minmax(0, 1fr);
     color: var(--fg-default);
-    margin-bottom: 2rem;
+    margin-bottom: 1.65rem;
   }
 
   .assistant-turn {
-    margin-bottom: 2.35rem;
+    margin-bottom: 1.95rem;
   }
 
   .turn-rail {
@@ -417,7 +417,7 @@
     color: var(--fg-default);
     font-size: 0.92rem;
     line-height: 1.75;
-    max-width: 74ch;
+    max-width: 82ch;
   }
 
   .chat-user-text {
@@ -426,7 +426,7 @@
     border-radius: 0.85rem;
     padding: 0.8rem 0.95rem;
     width: fit-content;
-    max-width: min(74ch, 100%);
+    max-width: min(82ch, 100%);
   }
 
   .turn-duration-row {

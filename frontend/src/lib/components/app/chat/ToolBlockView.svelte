@@ -119,10 +119,10 @@
 
 <style>
   .action-block {
-    background: color-mix(in srgb, var(--surface-window) 66%, transparent);
+    background: color-mix(in srgb, var(--surface-window) 54%, transparent);
     border: 1px solid var(--border-subtle);
-    border-radius: 0.7rem;
-    margin-bottom: 0.75rem;
+    border-radius: 0.6rem;
+    margin-bottom: 0.55rem;
     overflow: hidden;
   }
 
@@ -139,11 +139,11 @@
     color: var(--fg-muted);
     display: grid;
     font-size: 0.74rem;
-    gap: 0.55rem;
-    grid-template-columns: 1.15rem minmax(max-content, 11rem) minmax(0, 1fr) auto auto;
+    gap: 0.5rem;
+    grid-template-columns: 1.15rem minmax(7rem, 10rem) minmax(0, 1fr) auto auto;
     line-height: 1.4;
-    min-height: 2.35rem;
-    padding: 0.48rem 0.65rem;
+    min-height: 2.2rem;
+    padding: 0.42rem 0.6rem;
     text-align: left;
     width: 100%;
   }
@@ -190,11 +190,22 @@
     color: var(--fg-muted);
     font-size: 0.63rem;
     padding: 0.06rem 0.42rem;
+    white-space: nowrap;
   }
 
   .action-detail {
     border-top: 1px solid var(--border-subtle);
     padding: 0.65rem;
+  }
+
+  @media (max-width: 640px) {
+    .action-header {
+      grid-template-columns: 1.15rem minmax(0, 1fr) auto auto;
+    }
+
+    .action-preview {
+      display: none;
+    }
   }
 
   .action-label {

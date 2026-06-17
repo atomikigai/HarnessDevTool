@@ -88,14 +88,16 @@ Evidence should be short, readable, and true to the source.
 
 Build large diagrams section by section:
 
-1. Create the canvas structure and first section.
+1. Start with a compact overview: target 20-30 elements for the first pass.
 2. Add one section per pass.
 3. Use stable descriptive IDs.
 4. Keep each section visually distinct.
 5. Connect sections after both sides exist.
 6. Validate spacing, text fit, and arrow routing.
 
-Do not generate a comprehensive diagram as one giant unreviewed blob.
+Do not generate a comprehensive diagram as one giant unreviewed blob. If the
+diagram needs more detail, deliver the overview first and ask whether to expand
+specific sections.
 
 ## Harness Diagram Defaults
 

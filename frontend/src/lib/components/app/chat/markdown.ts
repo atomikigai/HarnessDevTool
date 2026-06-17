@@ -140,14 +140,47 @@ export function highlightRenderedMarkdown(
     })
     .catch(() => {});
 
-  function handleImgClick(ev: MouseEvent) {
+  node.querySelectorAll('a[href]').forEach((anchor) => {
+    const href = (anchor as HTMLAnchorElement).href;
+    if (isExternalHttpUrl(href)) {
+      (anchor as HTMLAnchorElement).target = '_blank';
+      (anchor as HTMLAnchorElement).rel = 'noopener noreferrer';
+    }
+  });
+
+  function handleContentClick(ev: MouseEvent) {
     const target = ev.target as HTMLElement;
+    const anchor = target.closest('a[href]') as HTMLAnchorElement | null;
+    if (anchor && isExcalidrawUrl(anchor.href)) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      window.open(anchor.href, '_blank', 'noopener,noreferrer');
+      return;
+    }
     if (target.tagName === 'IMG') {
       const src = (target as HTMLImageElement).src;
       if (src) openLightbox(src);
     }
   }
 
-  node.addEventListener('click', handleImgClick);
-  return { destroy: () => node.removeEventListener('click', handleImgClick) };
+  node.addEventListener('click', handleContentClick);
+  return { destroy: () => node.removeEventListener('click', handleContentClick) };
+}
+
+function isExternalHttpUrl(href: string): boolean {
+  try {
+    const url = new URL(href, window.location.href);
+    return url.protocol === 'http:' || url.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
+function isExcalidrawUrl(href: string): boolean {
+  try {
+    const url = new URL(href, window.location.href);
+    return url.hostname === 'excalidraw.com' || url.hostname.endsWith('.excalidraw.com');
+  } catch {
+    return false;
+  }
 }

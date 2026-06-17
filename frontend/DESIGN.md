@@ -157,7 +157,9 @@ When structured transcript events are unavailable or incomplete, ChatView may
 render PTY output as a provider-agnostic agent activity stream. It should keep
 the terminal's fidelity while improving scanability with neutral line classes
 such as prompt, action, result, error, and output; never make the treatment
-specific to one CLI such as Codex or Claude.
+specific to one CLI such as Codex or Claude. Raw PTY output must not auto-open
+as a full terminal dump inside chat; show a compact preview with an explicit
+Terminal action and keep raw text behind a disclosure.
 
 ## States
 

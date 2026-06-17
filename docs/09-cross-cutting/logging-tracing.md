@@ -42,5 +42,20 @@ En vez de exporters dedicados (v1), las métricas viven como atributos del span:
 
 Un parser CLI (`harness stats --since 1d`) agrega del log JSON.
 
+## Métricas consultables
+- `GET /metrics` expone métricas Prometheus agregadas del proceso: sesiones,
+  tasks, presión de contexto, lag SSE y build info. Es público para scraping y
+  usa labels opacos cuando hay información de sesión.
+- `GET /api/sessions/:sid/metrics` expone una foto privada por sesión. Además
+  de tokens/costo/capabilities, el bloque `conversation` deriva observabilidad
+  desde el transcript append-only: cantidad de eventos, mensajes user/assistant,
+  thinking, resultados de tools, errores de tools, duración total, mayor gap
+  entre eventos, mayor payload de argumentos/resultados y duración total/max
+  por nombre de tool emparejando `tool_use_id`.
+
+Usa las métricas por sesión para investigar conversaciones lentas, skills/MCPs
+que generan payloads grandes, tools que fallan seguido o gaps largos donde el
+agente parece quedarse sin feedback visible.
+
 ## UI debug
 Atajo `Cmd/Ctrl+Shift+D` abre panel con últimos 100 spans del thread activo en tiempo real.

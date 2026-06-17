@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::Write;
 use std::path::{Path as FsPath, PathBuf};
 use std::sync::Arc;
@@ -8,7 +8,7 @@ use axum::extract::{Multipart, Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use harness_core::{ClaudeTranscriptReporter, CostReporter, Event, Item, RepoContext, SessionCost};
 use harness_session::{
     AgentKind, AgentState, LoadedCapabilities, MailboxMessage, MailboxStore, McpServerConfig,
@@ -180,9 +180,41 @@ pub struct SessionMetrics {
     pub cost_usd: f64,
     pub tool_call_count: u64,
     pub tool_call_breakdown: BTreeMap<String, u64>,
+    pub conversation: ConversationMetrics,
     pub loaded_capabilities: LoadedCapabilities,
     /// RFC3339 timestamp for when the metric snapshot was derived.
     pub observed_at: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export, export_to = "../../../bindings/"))]
+pub struct ConversationMetrics {
+    pub transcript_event_count: u64,
+    pub user_message_count: u64,
+    pub assistant_message_count: u64,
+    pub thinking_event_count: u64,
+    pub tool_result_count: u64,
+    pub tool_error_count: u64,
+    #[cfg_attr(feature = "ts-export", ts(optional = nullable))]
+    pub conversation_duration_ms: Option<u64>,
+    #[cfg_attr(feature = "ts-export", ts(optional = nullable))]
+    pub max_gap_ms: Option<u64>,
+    #[cfg_attr(feature = "ts-export", ts(optional = nullable))]
+    pub max_gap_after_seq: Option<u64>,
+    pub max_output_tokens_single_turn: u64,
+    pub max_tool_args_bytes: u64,
+    pub max_tool_result_bytes: u64,
+    pub tool_duration_ms_by_name: BTreeMap<String, ToolDurationStats>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export, export_to = "../../../bindings/"))]
+pub struct ToolDurationStats {
+    pub count: u64,
+    pub total_ms: u64,
+    pub max_ms: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -599,6 +631,21 @@ pub async fn spawn_session_internal(
     push_db_tool_group_for_bound_connection(
         &mut smart_tool_groups,
         args.db_connection_id.as_deref(),
+    );
+    append_session_spawn_event(
+        state,
+        &args.thread_id,
+        "session.capabilities.resolved",
+        json!({
+            "session_id": session_id,
+            "parent_session_id": args.parent_session_id,
+            "role": args.role,
+            "cwd": args.cwd,
+            "capability_profile": args.capability_profile,
+            "load_crawl4ai": load_crawl4ai,
+            "skills": smart_skills.clone(),
+            "tool_groups": smart_tool_groups.clone(),
+        }),
     );
 
     let (mut opts, config_path) = build_spawn_opts(
@@ -1446,6 +1493,18 @@ pub(crate) fn spawn_capability_intro(
                 .to_string(),
         );
     }
+    if skills
+        .iter()
+        .any(|skill| skill == "excalidraw-diagram" || skill == "excalidraw-board")
+    {
+        parts.push(
+            "[harness] Excalidraw rail is active. Keep the first diagram compact: target 20-30 \
+             elements, avoid giant JSON/tool payloads, and deliver a readable overview first. \
+             For comprehensive diagrams, create a small overview, then expand one section per \
+             follow-up pass or ask before generating a large board."
+                .to_string(),
+        );
+    }
     if skills.iter().any(|skill| skill == "kiss") {
         parts.push(
             "[harness] KISS rail is active. Before adding code, check whether the need can be \
@@ -1592,23 +1651,23 @@ pub(crate) fn resolve_smart_skills<'a>(
         push_unique(&mut skills, "crawl4ai-context".to_string());
     }
 
-    let frontend = signals.matches(
-        &[
-            "frontend",
-            ".svelte",
-            ".css",
-            ".html",
-            ".tsx",
-            ".jsx",
-            "sveltekit",
-            "ui",
-            "browser",
-            "dashboard",
-            "component",
-            "layout",
-        ],
-        4,
-    );
+    let frontend_terms = [
+        "frontend",
+        ".svelte",
+        ".css",
+        ".html",
+        ".tsx",
+        ".jsx",
+        "sveltekit",
+        "svelte",
+        "ui",
+        "browser",
+        "dashboard",
+        "component",
+        "layout",
+    ];
+    let frontend =
+        signals.matches(&frontend_terms, 4) || signals.distinct_hit_count(&frontend_terms) >= 2;
     if frontend {
         push_unique(&mut skills, "agent-browser".to_string());
         if signals.matches(
@@ -1635,20 +1694,19 @@ pub(crate) fn resolve_smart_skills<'a>(
         }
     }
 
-    let rust_backend = signals.matches(
-        &[
-            "backend",
-            ".rs",
-            "rust",
-            "cargo",
-            "axum",
-            "tokio",
-            "harness-server",
-            "harness-session",
-            "harness-core",
-        ],
-        4,
-    );
+    let rust_backend_terms = [
+        "backend",
+        ".rs",
+        "rust",
+        "cargo",
+        "axum",
+        "tokio",
+        "harness-server",
+        "harness-session",
+        "harness-core",
+    ];
+    let rust_backend = signals.matches(&rust_backend_terms, 4)
+        || signals.distinct_hit_count(&rust_backend_terms) >= 2;
     if rust_backend {
         push_unique(&mut skills, "rust-tooling".to_string());
         if signals.matches(&["test", "tests", "nextest", "qa", "regression"], 1) {
@@ -1656,20 +1714,19 @@ pub(crate) fn resolve_smart_skills<'a>(
         }
     }
 
-    if signals.matches(
-        &[
-            "review",
-            "quality gate",
-            "before merge",
-            "audit change",
-            "lgtm",
-        ],
-        4,
-    ) {
+    let review_terms = [
+        "review",
+        "quality gate",
+        "before merge",
+        "audit change",
+        "lgtm",
+    ];
+    if signals.matches(&review_terms, 4) || signals.distinct_hit_count(&review_terms) >= 2 {
         push_unique(&mut skills, "code-review-and-quality".to_string());
         push_unique(&mut skills, "difftastic".to_string());
     }
-    if signals.matches(&["refactor", "simplify", "clarity", "cleanup"], 4) {
+    let refactor_terms = ["refactor", "simplify", "clarity", "cleanup"];
+    if signals.matches(&refactor_terms, 4) || signals.distinct_hit_count(&refactor_terms) >= 2 {
         push_unique(&mut skills, "code-simplification".to_string());
     }
     let kiss_explicit = signals.matches(
@@ -1699,50 +1756,58 @@ pub(crate) fn resolve_smart_skills<'a>(
         push_unique(&mut skills, "kiss".to_string());
         push_unique(&mut skills, "code-simplification".to_string());
     }
-    if signals.matches(
-        &[
-            "performance",
-            "perf",
-            "slow",
-            "latency",
-            "benchmark",
-            "profile",
-        ],
-        4,
-    ) {
+    let performance_terms = [
+        "performance",
+        "perf",
+        "slow",
+        "latency",
+        "benchmark",
+        "profile",
+    ];
+    if signals.matches(&performance_terms, 4) || signals.distinct_hit_count(&performance_terms) >= 2
+    {
         push_unique(&mut skills, "performance-optimization".to_string());
     }
-    if signals.matches(
-        &[
-            "security",
-            "secret",
-            "cve",
-            "vulnerability",
-            "sandbox",
-            "auth",
-        ],
-        4,
-    ) {
+    let security_terms = [
+        "security",
+        "secret",
+        "cve",
+        "vulnerability",
+        "sandbox",
+        "auth",
+    ];
+    if signals.matches(&security_terms, 4) || signals.distinct_hit_count(&security_terms) >= 2 {
         push_unique(&mut skills, "security-tooling".to_string());
         if rust_backend {
             push_unique(&mut skills, "cargo-audit".to_string());
         }
     }
-    if signals.matches(&["docs", "documentation", "api reference", "context7"], 4) {
+    let docs_terms = ["docs", "documentation", "api reference", "context7"];
+    if signals.matches(&docs_terms, 4) || signals.distinct_hit_count(&docs_terms) >= 2 {
         push_unique(&mut skills, "context7".to_string());
     }
-    if signals.matches(
-        &["diagram", "excalidraw", "architecture board", "wireframe"],
-        4,
-    ) {
+    let diagram_terms = ["diagram", "excalidraw", "architecture board", "wireframe"];
+    if signals.matches(&diagram_terms, 4) || signals.distinct_hit_count(&diagram_terms) >= 2 {
         push_unique(&mut skills, "excalidraw-diagram".to_string());
         push_unique(&mut skills, "excalidraw-board".to_string());
     }
-    if signals.matches(&["pdf", ".pdf"], 4) {
+    if signals.matches(&["pdf", ".pdf"], 1) {
         push_unique(&mut skills, "pdf-oxide".to_string());
     }
-    if signals.matches(&["skill", "skills", "skill loader", "capability"], 4) {
+    let skill_terms = ["skill", "skills", "skill loader", "capability"];
+    if signals.matches(&skill_terms, 4) || signals.distinct_hit_count(&skill_terms) >= 2 {
         push_unique(&mut skills, "skill-creator".to_string());
+    }
+    if signals.matches(&["n8n"], 1)
+        || signals.distinct_hit_count(&[
+            "workflow",
+            "workflows",
+            "automation",
+            "automatizacion",
+            "automatización",
+        ]) >= 2
+    {
+        push_unique(&mut skills, "n8n-workflow-automation".to_string());
     }
 
     skills
@@ -1761,6 +1826,10 @@ pub(crate) fn resolve_smart_tool_groups<'a>(
 
     let signals = SmartCapabilitySignals::new(role, cwd, texts, scopes);
     let mut tool_groups = Vec::new();
+    if should_preload_repo_code_graph(&signals, cwd) {
+        push_unique(&mut tool_groups, "repo".to_string());
+        push_unique(&mut tool_groups, "code_graph".to_string());
+    }
     let file_format_score = signals.score(&[
         "csv",
         ".csv",
@@ -1782,7 +1851,30 @@ pub(crate) fn resolve_smart_tool_groups<'a>(
         "hoja de calculo",
         "hoja de cálculo",
     ]);
-    if file_format_score > 0 && file_format_score + data_context_score >= 5 {
+    let file_format_distinct = signals.distinct_hit_count(&[
+        "csv",
+        ".csv",
+        "tsv",
+        ".tsv",
+        "xlsx",
+        ".xlsx",
+        "xlsm",
+        ".xlsm",
+        "excel",
+        "spreadsheet",
+    ]);
+    let data_context_distinct = signals.distinct_hit_count(&[
+        "data",
+        "datos",
+        "dataset",
+        "dataframe",
+        "tabla",
+        "hoja de calculo",
+        "hoja de cálculo",
+    ]);
+    if (file_format_score > 0 && file_format_score + data_context_score >= 5)
+        || (file_format_distinct > 0 && file_format_distinct + data_context_distinct >= 2)
+    {
         push_unique(&mut tool_groups, "data_loader".to_string());
         push_unique(&mut tool_groups, "knowledge".to_string());
     }
@@ -1825,7 +1917,7 @@ pub(crate) fn resolve_smart_tool_groups<'a>(
         push_unique(&mut tool_groups, "code_graph".to_string());
     }
 
-    if signals.hit_count(&[
+    let db_terms = [
         "database",
         "db",
         "sql",
@@ -1837,8 +1929,8 @@ pub(crate) fn resolve_smart_tool_groups<'a>(
         "table",
         "tabla",
         "export csv",
-    ]) >= 3
-    {
+    ];
+    if signals.hit_count(&db_terms) >= 3 || signals.distinct_hit_count(&db_terms) >= 3 {
         push_unique(&mut tool_groups, "db".to_string());
     }
 
@@ -1853,7 +1945,7 @@ pub(crate) fn resolve_smart_tool_groups<'a>(
         push_unique(&mut tool_groups, "ssh".to_string());
     }
 
-    if signals.hit_count(&[
+    let knowledge_terms = [
         "knowledge",
         "memory",
         "pdf",
@@ -1867,22 +1959,105 @@ pub(crate) fn resolve_smart_tool_groups<'a>(
         "documentación",
         "api reference",
         "context7",
-    ]) >= 2
+    ];
+    if signals.hit_count(&knowledge_terms) >= 2 || signals.distinct_hit_count(&knowledge_terms) >= 2
     {
         push_unique(&mut tool_groups, "knowledge".to_string());
     }
 
-    if signals.hit_count(&[
+    let docs_tool_terms = [
         "docs build",
         "documentation site",
         "mdbook",
         "starlight",
         "vitepress",
-    ]) >= 2
+    ];
+    if signals.hit_count(&docs_tool_terms) >= 2 || signals.distinct_hit_count(&docs_tool_terms) >= 2
     {
         push_unique(&mut tool_groups, "docs".to_string());
     }
     tool_groups
+}
+
+fn should_preload_repo_code_graph(signals: &SmartCapabilitySignals, cwd: Option<&FsPath>) -> bool {
+    let Some(cwd) = cwd else {
+        return false;
+    };
+    if !cwd_has_repo_marker(cwd) {
+        return false;
+    }
+
+    let coding_terms = [
+        "backend",
+        "frontend",
+        "fullstack",
+        "code",
+        "codigo",
+        "código",
+        "repo",
+        "repository",
+        "workspace",
+        "rust",
+        "cargo",
+        "svelte",
+        "sveltekit",
+        "ui",
+        "component",
+        "layout",
+        "browser",
+        "tauri",
+        "codex",
+        "claude",
+        "agent",
+        "orchestrator",
+        "zeus",
+        "implement",
+        "fix",
+        "bug",
+        "test",
+        "compile",
+        "build",
+        "review",
+        "quality gate",
+        "before merge",
+        "audit change",
+        "refactor",
+        "simplify",
+        "cleanup",
+        "dependency",
+        "boilerplate",
+        "performance",
+        "benchmark",
+        "latency",
+        "metrics",
+        "tracing",
+        "docs",
+        "documentation",
+        "api reference",
+        "integration",
+        "manual",
+        "pdf",
+        ".pdf",
+        "diagram",
+        "excalidraw",
+        "architecture",
+        "architecture board",
+        "wireframe",
+        "n8n",
+        "workflow",
+        "workflows",
+        "automation",
+    ];
+    signals.matches(&coding_terms, 2) || signals.distinct_hit_count(&coding_terms) >= 2
+}
+
+fn cwd_has_repo_marker(cwd: &FsPath) -> bool {
+    cwd.ancestors().any(|path| {
+        path.join(".git").exists()
+            || path.join("Cargo.toml").is_file()
+            || path.join("package.json").is_file()
+            || path.join("Justfile").is_file()
+    })
 }
 
 #[derive(Debug)]
@@ -1974,6 +2149,7 @@ fn tokenize_capability_text(text: &str) -> Vec<String> {
         .split(|ch: char| !(ch.is_alphanumeric() || ch == '.' || ch == '-' || ch == '_'))
         .flat_map(|part| {
             part.split(|ch| ch == '-' || ch == '_')
+                .map(|token| token.trim_end_matches('.'))
                 .filter(|token| !token.is_empty())
         })
         .map(str::to_string)
@@ -2060,8 +2236,10 @@ async fn get_session_metrics(
     let meta = load_session_meta(&state, &sid).await?;
     let cost = session_cost(&meta)?;
     let transcript_path = transcript_path_for(&state, &sid);
-    let tool_call_breakdown = tool_call_breakdown(&transcript_path).await?;
+    let events = session_transcript_events(&transcript_path).await?;
+    let tool_call_breakdown = tool_call_breakdown_from_events(&events);
     let tool_call_count = tool_call_breakdown.values().copied().sum();
+    let conversation = conversation_metrics_from_events(&events);
 
     Ok(Json(SessionMetrics {
         session_id: meta.id.clone(),
@@ -2076,6 +2254,7 @@ async fn get_session_metrics(
         cost_usd: cost.cost_usd,
         tool_call_count,
         tool_call_breakdown,
+        conversation,
         loaded_capabilities: meta.loaded_capabilities,
         observed_at: Utc::now().to_rfc3339(),
     }))
@@ -2133,11 +2312,12 @@ fn transcript_path_for(state: &AppState, sid: &str) -> PathBuf {
         })
 }
 
-async fn tool_call_breakdown(path: &FsPath) -> Result<BTreeMap<String, u64>, ApiError> {
-    let events = crate::transcript::read_events_since_helper(path, 0)
+async fn session_transcript_events(
+    path: &FsPath,
+) -> Result<Vec<crate::transcript::TranscriptEvent>, ApiError> {
+    crate::transcript::read_events_since_helper(path, 0)
         .await
-        .map_err(|e| ApiError::Internal(format!("read transcript metrics: {e}")))?;
-    Ok(tool_call_breakdown_from_events(&events))
+        .map_err(|e| ApiError::Internal(format!("read transcript metrics: {e}")))
 }
 
 fn tool_call_breakdown_from_events(
@@ -2157,6 +2337,133 @@ fn tool_call_breakdown_from_events(
         *counts.entry(name).or_insert(0) += 1;
     }
     counts
+}
+
+fn conversation_metrics_from_events(
+    events: &[crate::transcript::TranscriptEvent],
+) -> ConversationMetrics {
+    use crate::transcript::event::TranscriptKind;
+
+    #[derive(Debug)]
+    struct PendingToolCall {
+        name: String,
+        started_at: DateTime<Utc>,
+    }
+
+    let mut metrics = ConversationMetrics {
+        transcript_event_count: events.len() as u64,
+        ..ConversationMetrics::default()
+    };
+    let mut pending_tools: HashMap<String, PendingToolCall> = HashMap::new();
+    let mut first_ts: Option<DateTime<Utc>> = None;
+    let mut last_ts: Option<DateTime<Utc>> = None;
+    let mut previous_ts: Option<DateTime<Utc>> = None;
+    let mut previous_seq: Option<u64> = None;
+
+    for ev in events {
+        let ts = parse_event_ts(&ev.ts);
+        if let Some(current_ts) = ts {
+            first_ts = Some(first_ts.map_or(current_ts, |first| first.min(current_ts)));
+            last_ts = Some(last_ts.map_or(current_ts, |last| last.max(current_ts)));
+            if let Some(prev_ts) = previous_ts {
+                let gap_ms = current_ts.signed_duration_since(prev_ts).num_milliseconds();
+                if gap_ms > 0 {
+                    let gap_ms = gap_ms as u64;
+                    if metrics.max_gap_ms.is_none_or(|max| gap_ms > max) {
+                        metrics.max_gap_ms = Some(gap_ms);
+                        metrics.max_gap_after_seq = previous_seq;
+                    }
+                }
+            }
+            previous_ts = Some(current_ts);
+            previous_seq = Some(ev.seq);
+        }
+
+        if let Some(usage) = ev.usage.as_ref() {
+            metrics.max_output_tokens_single_turn = metrics
+                .max_output_tokens_single_turn
+                .max(usage_u64(usage, "output_tokens"));
+        }
+
+        match ev.kind {
+            TranscriptKind::Message => match ev.role.as_deref() {
+                Some("user") => metrics.user_message_count += 1,
+                Some("assistant") => metrics.assistant_message_count += 1,
+                _ => {}
+            },
+            TranscriptKind::Thinking => metrics.thinking_event_count += 1,
+            TranscriptKind::ToolCall => {
+                if let Some(args) = ev.tool_args.as_ref() {
+                    metrics.max_tool_args_bytes =
+                        metrics.max_tool_args_bytes.max(json_payload_bytes(args));
+                }
+                if let (Some(id), Some(started_at)) = (ev.tool_use_id.as_ref(), ts) {
+                    let name = ev
+                        .tool_name
+                        .as_deref()
+                        .filter(|name| !name.trim().is_empty())
+                        .unwrap_or("(unknown)")
+                        .to_string();
+                    pending_tools.insert(id.clone(), PendingToolCall { name, started_at });
+                }
+            }
+            TranscriptKind::ToolResult => {
+                metrics.tool_result_count += 1;
+                if ev.is_error.unwrap_or(false) {
+                    metrics.tool_error_count += 1;
+                }
+                if let Some(result) = ev.tool_result.as_ref() {
+                    metrics.max_tool_result_bytes = metrics
+                        .max_tool_result_bytes
+                        .max(json_payload_bytes(result));
+                }
+                if let (Some(id), Some(finished_at)) = (ev.tool_use_id.as_ref(), ts) {
+                    if let Some(pending) = pending_tools.remove(id) {
+                        let duration_ms = finished_at
+                            .signed_duration_since(pending.started_at)
+                            .num_milliseconds();
+                        if duration_ms >= 0 {
+                            let stats = metrics
+                                .tool_duration_ms_by_name
+                                .entry(pending.name)
+                                .or_default();
+                            let duration_ms = duration_ms as u64;
+                            stats.count += 1;
+                            stats.total_ms += duration_ms;
+                            stats.max_ms = stats.max_ms.max(duration_ms);
+                        }
+                    }
+                }
+            }
+            TranscriptKind::SystemNote | TranscriptKind::Meta | TranscriptKind::Unknown => {}
+        }
+    }
+
+    metrics.conversation_duration_ms = match (first_ts, last_ts) {
+        (Some(first), Some(last)) => last
+            .signed_duration_since(first)
+            .num_milliseconds()
+            .try_into()
+            .ok(),
+        _ => None,
+    };
+    metrics
+}
+
+fn parse_event_ts(ts: &str) -> Option<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(ts)
+        .ok()
+        .map(|ts| ts.with_timezone(&Utc))
+}
+
+fn usage_u64(usage: &Value, key: &str) -> u64 {
+    usage.get(key).and_then(Value::as_u64).unwrap_or(0)
+}
+
+fn json_payload_bytes(value: &Value) -> u64 {
+    serde_json::to_vec(value)
+        .map(|bytes| bytes.len() as u64)
+        .unwrap_or(0)
 }
 
 async fn get_context_status(
@@ -3859,6 +4166,49 @@ mod tests {
     }
 
     #[test]
+    fn smart_loader_preloads_repo_code_graph_for_coding_workspace() {
+        let repo =
+            std::env::temp_dir().join(format!("harness-smart-code-{}", uuid::Uuid::new_v4()));
+        let cwd = repo.join("backend").join("crates").join("harness-server");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        std::fs::create_dir_all(&cwd).unwrap();
+
+        let tool_groups = resolve_smart_tool_groups(
+            Some("backend"),
+            Some(&cwd),
+            [Some("Fix the failing session route test")],
+            &[],
+            CapabilityProfile::Auto,
+        );
+
+        std::fs::remove_dir_all(&repo).unwrap();
+        assert_eq!(
+            tool_groups[..2],
+            ["repo".to_string(), "code_graph".to_string()]
+        );
+    }
+
+    #[test]
+    fn smart_loader_profile_none_skips_default_code_graph() {
+        let repo =
+            std::env::temp_dir().join(format!("harness-smart-code-none-{}", uuid::Uuid::new_v4()));
+        let cwd = repo.join("frontend");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        std::fs::create_dir_all(&cwd).unwrap();
+
+        let tool_groups = resolve_smart_tool_groups(
+            Some("frontend"),
+            Some(&cwd),
+            [Some("Implement the chat UI fix")],
+            &[],
+            CapabilityProfile::None,
+        );
+
+        std::fs::remove_dir_all(&repo).unwrap();
+        assert!(tool_groups.is_empty());
+    }
+
+    #[test]
     fn ssh_bound_spawn_forces_ssh_tool_group() {
         let mut groups = vec!["repo".to_string()];
         push_ssh_tool_group_for_bound_host(&mut groups, Some("host-1"));
@@ -3986,6 +4336,213 @@ Use these defaults in DB tools: connection="conn-1", database="main".
             skills,
             vec!["rust-tooling".to_string(), "cargo-nextest".to_string()]
         );
+    }
+
+    #[test]
+    fn smart_loader_selects_capabilities_from_task_text_without_role() {
+        struct Case {
+            cwd_name: &'static str,
+            text: &'static str,
+            expected_skills: &'static [&'static str],
+        }
+
+        let cases = [
+            Case {
+                cwd_name: "todo-app",
+                text: "Frontend SvelteKit UI browser design responsive Todo List app. Validate browser UX and responsive layout with agent-browser.",
+                expected_skills: &["agent-browser", "design-md", "frontend-design"],
+            },
+            Case {
+                cwd_name: "calculator-app",
+                text: "Frontend SvelteKit UI component browser calculator with decimals and division by zero.",
+                expected_skills: &["agent-browser"],
+            },
+            Case {
+                cwd_name: "tauri-debug",
+                text: "Backend Rust cargo test Tauri Wayland debug regression.",
+                expected_skills: &["rust-tooling", "cargo-nextest"],
+            },
+            Case {
+                cwd_name: "observability",
+                text: "Backend Rust performance benchmark observability metrics tracing slow latency.",
+                expected_skills: &["rust-tooling", "performance-optimization"],
+            },
+            Case {
+                cwd_name: "architecture-diagram",
+                text: "Architecture diagram Excalidraw board wireframe visual system overview.",
+                expected_skills: &["excalidraw-diagram", "excalidraw-board"],
+            },
+        ];
+
+        for case in cases {
+            let repo =
+                std::env::temp_dir().join(format!("harness-smart-case-{}", uuid::Uuid::new_v4()));
+            let cwd = repo.join(case.cwd_name);
+            std::fs::create_dir_all(repo.join(".git")).unwrap();
+            std::fs::create_dir_all(&cwd).unwrap();
+
+            let skills = resolve_smart_skills(
+                false,
+                None,
+                Some(&cwd),
+                [Some(case.text)],
+                &[],
+                CapabilityProfile::Auto,
+            );
+            let tool_groups = resolve_smart_tool_groups(
+                None,
+                Some(&cwd),
+                [Some(case.text)],
+                &[],
+                CapabilityProfile::Auto,
+            );
+
+            std::fs::remove_dir_all(&repo).unwrap();
+            for expected in case.expected_skills {
+                assert!(
+                    skills.iter().any(|skill| skill == expected),
+                    "{} should load skill {}; got {:?}",
+                    case.cwd_name,
+                    expected,
+                    skills
+                );
+            }
+            assert!(
+                tool_groups.contains(&"repo".to_string()),
+                "{} should preload repo; got {:?}",
+                case.cwd_name,
+                tool_groups
+            );
+            assert!(
+                tool_groups.contains(&"code_graph".to_string()),
+                "{} should preload code_graph; got {:?}",
+                case.cwd_name,
+                tool_groups
+            );
+        }
+    }
+
+    #[test]
+    fn smart_loader_selects_complex_multi_domain_capabilities_from_task_text() {
+        struct Case {
+            cwd_name: &'static str,
+            text: &'static str,
+            expected_skills: &'static [&'static str],
+            expected_tool_groups: &'static [&'static str],
+            load_crawl4ai: bool,
+        }
+
+        let cases = [
+            Case {
+                cwd_name: "fullstack-auth",
+                text: "Fullstack task: implement backend Rust Axum auth endpoint plus frontend SvelteKit UI component, browser regression tests and responsive layout.",
+                expected_skills: &[
+                    "agent-browser",
+                    "frontend-design",
+                    "rust-tooling",
+                    "cargo-nextest",
+                ],
+                expected_tool_groups: &["repo", "code_graph"],
+                load_crawl4ai: false,
+            },
+            Case {
+                cwd_name: "security-audit",
+                text: "Backend Rust security review for auth sandbox secret handling, vulnerability and CVE audit before merge.",
+                expected_skills: &[
+                    "rust-tooling",
+                    "security-tooling",
+                    "cargo-audit",
+                    "code-review-and-quality",
+                    "difftastic",
+                ],
+                expected_tool_groups: &["repo", "code_graph"],
+                load_crawl4ai: false,
+            },
+            Case {
+                cwd_name: "external-docs",
+                text: "Use the documentation and API reference at https://docs.example.com/sdk to update integration docs.",
+                expected_skills: &["crawl4ai-context", "context7"],
+                expected_tool_groups: &["repo", "code_graph", "knowledge"],
+                load_crawl4ai: true,
+            },
+            Case {
+                cwd_name: "data-db",
+                text: "Analyze CSV and XLSX dataset data, inspect spreadsheet columns, then query database SQL schema and export csv table results.",
+                expected_skills: &[],
+                expected_tool_groups: &["data_loader", "knowledge", "db"],
+                load_crawl4ai: false,
+            },
+            Case {
+                cwd_name: "review-refactor",
+                text: "Review before merge, audit change quality, refactor cleanup, simplify with KISS and remove unnecessary dependency boilerplate.",
+                expected_skills: &[
+                    "code-review-and-quality",
+                    "difftastic",
+                    "code-simplification",
+                    "kiss",
+                ],
+                expected_tool_groups: &["repo", "code_graph"],
+                load_crawl4ai: false,
+            },
+            Case {
+                cwd_name: "pdf-docs",
+                text: "Extract content from a PDF .pdf manual into knowledge memory and compare against documentation.",
+                expected_skills: &["pdf-oxide", "context7"],
+                expected_tool_groups: &["repo", "code_graph", "knowledge"],
+                load_crawl4ai: false,
+            },
+            Case {
+                cwd_name: "n8n-workflow",
+                text: "Create and validate an n8n workflow automation for webhook trigger, HTTP request, credentials and import testing.",
+                expected_skills: &["n8n-workflow-automation"],
+                expected_tool_groups: &["repo", "code_graph"],
+                load_crawl4ai: false,
+            },
+        ];
+
+        for case in cases {
+            let repo =
+                std::env::temp_dir().join(format!("harness-complex-case-{}", uuid::Uuid::new_v4()));
+            let cwd = repo.join(case.cwd_name);
+            std::fs::create_dir_all(repo.join(".git")).unwrap();
+            std::fs::create_dir_all(&cwd).unwrap();
+
+            let skills = resolve_smart_skills(
+                case.load_crawl4ai,
+                None,
+                Some(&cwd),
+                [Some(case.text)],
+                &[],
+                CapabilityProfile::Auto,
+            );
+            let tool_groups = resolve_smart_tool_groups(
+                None,
+                Some(&cwd),
+                [Some(case.text)],
+                &[],
+                CapabilityProfile::Auto,
+            );
+
+            std::fs::remove_dir_all(&repo).unwrap();
+            for expected in case.expected_skills {
+                assert!(
+                    skills.iter().any(|skill| skill == expected),
+                    "{} should load skill {}; got {:?}",
+                    case.cwd_name,
+                    expected,
+                    skills
+                );
+            }
+            for expected in case.expected_tool_groups {
+                assert!(
+                    tool_groups.iter().any(|tool_group| tool_group == expected),
+                    "{} should load tool group {}; got {:?}",
+                    case.cwd_name,
+                    expected,
+                    tool_groups
+                );
+            }
+        }
     }
 
     #[test]
@@ -4117,6 +4674,22 @@ Use these defaults in DB tools: connection="conn-1", database="main".
     }
 
     #[test]
+    fn spawn_capability_intro_names_excalidraw_compact_rail() {
+        let intro = spawn_capability_intro(
+            false,
+            &[
+                "excalidraw-diagram".to_string(),
+                "excalidraw-board".to_string(),
+            ],
+            &[],
+        );
+
+        assert!(intro.contains("Excalidraw rail is active"));
+        assert!(intro.contains("20-30 elements"));
+        assert!(intro.contains("avoid giant JSON/tool payloads"));
+    }
+
+    #[test]
     fn capability_profile_controls_mcp_and_crawl4ai_resolution() {
         assert!(CapabilityProfile::Auto.mcp_enabled());
         assert!(CapabilityProfile::Auto.resolve_crawl4ai(true));
@@ -4166,6 +4739,75 @@ Use these defaults in DB tools: connection="conn-1", database="main".
         assert_eq!(got.get("task_create"), Some(&1));
         assert_eq!(got.get("(unknown)"), Some(&1));
         assert_eq!(got.values().sum::<u64>(), 4);
+    }
+
+    #[test]
+    fn conversation_metrics_track_gaps_tools_payloads_and_errors() {
+        fn event(seq: u64, ts: &str, kind: TranscriptKind) -> TranscriptEvent {
+            TranscriptEvent {
+                seq,
+                session_id: "sid".to_string(),
+                ts: ts.to_string(),
+                source: TranscriptSource::Claude,
+                kind,
+                role: None,
+                content: None,
+                tool_name: None,
+                tool_args: None,
+                tool_use_id: None,
+                tool_result: None,
+                is_error: None,
+                model: None,
+                usage: None,
+                subtype: None,
+                raw: None,
+            }
+        }
+
+        let mut user = event(1, "2026-06-08T00:00:00Z", TranscriptKind::Message);
+        user.role = Some("user".to_string());
+        let mut bash_call = event(2, "2026-06-08T00:00:02Z", TranscriptKind::ToolCall);
+        bash_call.tool_name = Some("Bash".to_string());
+        bash_call.tool_use_id = Some("tool-a".to_string());
+        bash_call.tool_args = Some(json!({ "command": "printf test" }));
+        let mut bash_result = event(3, "2026-06-08T00:00:05Z", TranscriptKind::ToolResult);
+        bash_result.tool_use_id = Some("tool-a".to_string());
+        bash_result.tool_result = Some(json!({ "stdout": "ok" }));
+        let mut assistant = event(4, "2026-06-08T00:00:20Z", TranscriptKind::Message);
+        assistant.role = Some("assistant".to_string());
+        assistant.usage = Some(json!({ "output_tokens": 42 }));
+        let mut huge_call = event(5, "2026-06-08T00:00:21Z", TranscriptKind::ToolCall);
+        huge_call.tool_name = Some("Huge".to_string());
+        huge_call.tool_use_id = Some("tool-b".to_string());
+        huge_call.tool_args = Some(json!({ "payload": "x".repeat(128) }));
+        let mut huge_result = event(6, "2026-06-08T00:00:23Z", TranscriptKind::ToolResult);
+        huge_result.tool_use_id = Some("tool-b".to_string());
+        huge_result.tool_result = Some(json!({ "stderr": "failed" }));
+        huge_result.is_error = Some(true);
+
+        let metrics = conversation_metrics_from_events(&[
+            user,
+            bash_call,
+            bash_result,
+            assistant,
+            huge_call,
+            huge_result,
+        ]);
+
+        assert_eq!(metrics.transcript_event_count, 6);
+        assert_eq!(metrics.user_message_count, 1);
+        assert_eq!(metrics.assistant_message_count, 1);
+        assert_eq!(metrics.tool_result_count, 2);
+        assert_eq!(metrics.tool_error_count, 1);
+        assert_eq!(metrics.conversation_duration_ms, Some(23_000));
+        assert_eq!(metrics.max_gap_ms, Some(15_000));
+        assert_eq!(metrics.max_gap_after_seq, Some(3));
+        assert_eq!(metrics.max_output_tokens_single_turn, 42);
+        assert!(metrics.max_tool_args_bytes >= 128);
+        assert_eq!(metrics.tool_duration_ms_by_name["Bash"].count, 1);
+        assert_eq!(metrics.tool_duration_ms_by_name["Bash"].total_ms, 3_000);
+        assert_eq!(metrics.tool_duration_ms_by_name["Bash"].max_ms, 3_000);
+        assert_eq!(metrics.tool_duration_ms_by_name["Huge"].total_ms, 2_000);
     }
 
     #[test]

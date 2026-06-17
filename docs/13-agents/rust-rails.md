@@ -161,8 +161,9 @@ hash y max `mtime` del arbol consultado. Las respuestas incluyen
 | `repo_architecture_pack` | `path?, limit?` | stack, package manager, scripts, key files, git, code stats, manifest summary y hotspots |
 | `repo_code_snippet` | `path+line/window` o `symbol` | snippet acotado por lineas sin abrir archivo completo |
 
-Estas rails no son parte del `repo` basico. Se cargan con smart loading solo
-cuando la tarea requiere grafo de codigo, impacto amplio, arquitectura o
+Estas rails no son parte del `repo` basico. En sesiones de coding dentro de un
+workspace se precargan junto con `repo`; fuera de ese caso se cargan con smart
+loading cuando la tarea requiere grafo de codigo, impacto amplio, arquitectura o
 trazabilidad de simbolos. Si `codebase-memory-mcp` no esta disponible, Harness
 degrada a `repo_manifest`, `repo_symbol_search` ligero y `repo_related_files`.
 Cuando esta instalado, el gateway lo reutiliza como upstream persistente con

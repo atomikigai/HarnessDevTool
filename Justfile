@@ -75,6 +75,11 @@ build-sidecar:
 
 # Inicia la app Tauri en modo dev — recompila el sidecar y lanza el backend automáticamente.
 dev-tauri: build-sidecar
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Work around WebKitGTK/GTK crashes on some Wayland compositors/drivers.
+    export WEBKIT_DISABLE_COMPOSITING_MODE="${WEBKIT_DISABLE_COMPOSITING_MODE:-1}"
+    export GSK_RENDERER="${GSK_RENDERER:-ngl}"
     cargo tauri dev
 
 # Build release de la app Tauri con sidecar actualizado.

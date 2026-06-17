@@ -352,8 +352,31 @@ export interface SessionMetrics {
   cost_usd: number;
   tool_call_count: number;
   tool_call_breakdown: Record<string, number>;
+  conversation: ConversationMetrics;
   loaded_capabilities: LoadedCapabilities;
   observed_at: string;
+}
+
+export interface ConversationMetrics {
+  transcript_event_count: number;
+  user_message_count: number;
+  assistant_message_count: number;
+  thinking_event_count: number;
+  tool_result_count: number;
+  tool_error_count: number;
+  conversation_duration_ms?: number | null;
+  max_gap_ms?: number | null;
+  max_gap_after_seq?: number | null;
+  max_output_tokens_single_turn: number;
+  max_tool_args_bytes: number;
+  max_tool_result_bytes: number;
+  tool_duration_ms_by_name: Record<string, ToolDurationStats>;
+}
+
+export interface ToolDurationStats {
+  count: number;
+  total_ms: number;
+  max_ms: number;
 }
 
 export interface ContextGovernorStatus {

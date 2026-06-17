@@ -161,6 +161,11 @@
     if (ev.key === 'Escape') closeLightbox();
   }
 
+  function onWindowResize(): void {
+    if (!atBottom) return;
+    requestAnimationFrame(scrollToBottom);
+  }
+
   // ---- Turn processing ------------------------------------------------------
 
   function lastAssistantTurn(): ChatTurn | null {
@@ -988,7 +993,7 @@
   }
 </script>
 
-<svelte:window onkeyup={onWindowKeyup} />
+<svelte:window onkeyup={onWindowKeyup} onresize={onWindowResize} />
 
 <Lightbox src={lightboxSrc} onClose={closeLightbox} />
 
